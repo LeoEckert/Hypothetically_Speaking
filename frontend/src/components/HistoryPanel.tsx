@@ -6,12 +6,14 @@ export function HistoryPanel({
   runs,
   viewedRunId,
   onSelect,
+  onDelete,
   open,
   onOpenChange,
 }: {
   runs: RunRecord[]
   viewedRunId: string | null
   onSelect: (id: string) => void
+  onDelete: (id: string) => void
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
@@ -30,6 +32,7 @@ export function HistoryPanel({
               onSelect(id)
               onOpenChange(false)
             }}
+            onDelete={onDelete}
           />
         </div>
       </SheetContent>

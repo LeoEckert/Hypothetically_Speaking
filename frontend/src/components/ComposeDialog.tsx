@@ -1,6 +1,8 @@
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
+import { ToolsPanel } from "@/components/ToolsPanel"
 
 export function ComposeDialog({
   open,
@@ -9,6 +11,7 @@ export function ComposeDialog({
   onQuestionChange,
   onRun,
   runDisabled,
+  isRunLive,
   forkNote,
   maxToolCalls,
   onMaxToolCallsChange,
@@ -20,6 +23,7 @@ export function ComposeDialog({
   onQuestionChange: (v: string) => void
   onRun: () => void
   runDisabled: boolean
+  isRunLive: boolean
   forkNote: string | null
   maxToolCalls: number
   onMaxToolCallsChange: (n: number) => void
@@ -65,6 +69,13 @@ export function ComposeDialog({
             />
             <span className="text-xs">(max {maxToolCallsCeiling})</span>
           </label>
+        </div>
+
+        <Separator />
+
+        <div>
+          <p className="text-sm font-semibold mb-2">Tools</p>
+          <ToolsPanel isRunLive={isRunLive} />
         </div>
       </DialogContent>
     </Dialog>

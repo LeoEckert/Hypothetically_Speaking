@@ -21,21 +21,25 @@ export function splitReportSections(report: string): ReportSection[] {
   })
 }
 
-/** Plain-text approximation of "the gist of it" — not a generated summary,
- * just markdown/citation syntax stripped and truncated at a word boundary. */
-export function teaser(body: string, maxLen = 180): string {
-  const plain = body
+function stripMarkdown(line: string): string {
+  return line
     .replace(/\[([A-Za-z0-9_:.-]+)\]/g, "")
-    .replace(/^#+\s*/gm, "")
-    .replace(/^[-*]\s+/gm, "")
+    .replace(/^#+\s*/, "")
+    .replace(/^[-*]\s+/, "")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/\s+/g, " ")
     .replace(/\s+([.,;:!?])/g, "$1")
     .trim()
-  if (plain.length <= maxLen) return plain
-  const cut = plain.slice(0, maxLen)
-  const lastSpace = cut.lastIndexOf(" ")
-  return `${cut.slice(0, lastSpace > 40 ? lastSpace : maxLen)}…`
+}
+
+/** A complete plain-text preview — the first whole sentence (or the whole
+ * first bullet/line if it has no sentence-ending punctuation) with markdown
+ * and citation syntax stripped. Never a mid-word/mid-sentence fragment; no
+ * character cap, no ellipsis. */
+export function teaser(body: string): string {
+  const firstLine = body.split("\n").map(stripMarkdown).find((l) => l.length > 0) ?? ""
+  const sentenceMatch = firstLine.match(/^.*?[.!?](?=\s|$)/)
+  return sentenceMatch ? sentenceMatch[0].trim() : firstLine
 }

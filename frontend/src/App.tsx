@@ -12,7 +12,7 @@ import { useRunsStore } from "@/hooks/useRunsStore"
 import { cancelRun, evaluateHypothesis, startRun } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
 import { currentLiveRunId, ensureStream, onStreamFinished } from "@/lib/runStream"
-import { appendEvaluation, createRun, getRun, markCancelling } from "@/store/runsStore"
+import { appendEvaluation, createRun, deleteRun, getRun, markCancelling } from "@/store/runsStore"
 import type { SseEvent } from "@/types"
 
 function App() {
@@ -94,6 +94,18 @@ function App() {
     cancelRun(liveRunId)
   }
 
+  function handleDeleteHistory(id: string) {
+    if (id === liveRunId) {
+      cancelRun(id)
+      setLiveRunId(null)
+    }
+    if (id === viewedRunId) {
+      setViewedRunId(null)
+      setShowDetails(false)
+    }
+    deleteRun(id)
+  }
+
   function handleIterate(seedQuestion: string) {
     setQuestion(seedQuestion)
     setComposeOpen(true)
@@ -131,7 +143,6 @@ function App() {
         <div className="max-w-6xl mx-auto p-4 sm:p-6">
           <AppHeader
             runsCount={runs.length}
-            liveRunId={liveRunId}
             onOpenHistory={() => setHistoryOpen(true)}
             onNewRequest={handleNewRequest}
           />
@@ -140,6 +151,7 @@ function App() {
             runs={runs}
             viewedRunId={viewedRunId}
             onSelect={handleSelectHistory}
+            onDelete={handleDeleteHistory}
             open={historyOpen}
             onOpenChange={setHistoryOpen}
           />
@@ -151,6 +163,7 @@ function App() {
             onQuestionChange={setQuestion}
             onRun={handleRun}
             runDisabled={liveRunId !== null}
+            isRunLive={liveRunId !== null}
             forkNote={forkNote}
             maxToolCalls={maxToolCalls}
             onMaxToolCallsChange={setMaxToolCalls}

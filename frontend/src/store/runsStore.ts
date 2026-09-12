@@ -125,6 +125,14 @@ export function appendEvaluation(runId: string, evaluation: EvaluationResult) {
   notify()
 }
 
+export function deleteRun(runId: string) {
+  const idx = runs.findIndex((r) => r.id === runId)
+  if (idx === -1) return
+  runs = [...runs.slice(0, idx), ...runs.slice(idx + 1)]
+  save()
+  notify()
+}
+
 export function markCancelling(runId: string) {
   const idx = runs.findIndex((r) => r.id === runId)
   if (idx === -1) return

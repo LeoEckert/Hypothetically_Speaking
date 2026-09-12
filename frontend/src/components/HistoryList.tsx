@@ -1,3 +1,4 @@
+import { Trash2Icon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { RunRecord, RunStatus } from "@/types"
@@ -19,10 +20,12 @@ export function HistoryList({
   runs,
   viewedRunId,
   onSelect,
+  onDelete,
 }: {
   runs: RunRecord[]
   viewedRunId: string | null
   onSelect: (id: string) => void
+  onDelete: (id: string) => void
 }) {
   const sorted = [...runs].sort((a, b) => b.createdAt - a.createdAt)
   const byId = new Map(runs.map((r) => [r.id, r]))
@@ -38,27 +41,41 @@ export function HistoryList({
           const status: RunStatus = run.status
           const parent = run.parentId ? byId.get(run.parentId) : undefined
           return (
-            <button
+            <div
               key={run.id}
-              onClick={() => onSelect(run.id)}
-              className={`w-full text-left border rounded-lg p-2.5 text-sm hover:bg-accent/70 hover:border-accent-foreground/20 transition-colors ${
-                run.id === viewedRunId ? "border-primary bg-accent/50 shadow-sm" : ""
+              className={`group relative border rounded-lg transition-colors ${
+                run.id === viewedRunId ? "border-primary bg-accent/50 shadow-sm" : "hover:bg-accent/70 hover:border-accent-foreground/20"
               }`}
             >
-              <div className="line-clamp-2 font-medium">{run.question}</div>
-              <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
-                <Badge variant="outline" className={`text-[10px] ${STATUS_STYLES[status]}`}>
-                  {status}
-                </Badge>
-                <span>{new Date(run.createdAt).toLocaleString()}</span>
-                {run.cost && <span className="font-mono">${run.cost.total_usd.toFixed(3)}</span>}
-              </div>
-              {parent && (
-                <div className="text-xs text-muted-foreground italic mt-1 truncate">
-                  ↳ based on: {truncate(parent.question, 50)}
+              <button onClick={() => onSelect(run.id)} className="w-full text-left p-2.5 pr-9 text-sm">
+                <div className="line-clamp-2 font-medium">{run.question}</div>
+                <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
+                  <Badge variant="outline" className={`text-[10px] ${STATUS_STYLES[status]}`}>
+                    {status}
+                  </Badge>
+                  <span>{new Date(run.createdAt).toLocaleString()}</span>
+                  {run.cost && <span className="font-mono">${run.cost.total_usd.toFixed(3)}</span>}
                 </div>
-              )}
-            </button>
+                {parent && (
+                  <div className="text-xs text-muted-foreground italic mt-1 truncate">
+                    ↳ based on: {truncate(parent.question, 50)}
+                  </div>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (window.confirm("Delete this run from history? This can't be undone.")) {
+                    onDelete(run.id)
+                  }
+                }}
+                title="Delete from history"
+                className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground opacity-40 transition-opacity hover:bg-destructive/10 hover:text-destructive hover:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+              >
+                <Trash2Icon className="size-3.5" />
+              </button>
+            </div>
           )
         })}
       </div>

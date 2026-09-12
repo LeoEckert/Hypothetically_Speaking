@@ -36,12 +36,12 @@ function CollapsibleSection({
 }) {
   return (
     <Collapsible className="border-b pb-3 last:border-b-0 last:pb-0">
-      <CollapsibleTrigger className="group flex w-full items-start justify-between gap-2 text-left">
-        <div>
-          <h2 className="text-lg font-semibold">{heading}</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">{teaser(body)}</p>
-        </div>
-        <ChevronDownIcon className="mt-1 size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+      <h2 className="text-lg font-semibold">{heading}</h2>
+      <p className="mt-0.5 text-sm text-muted-foreground">{teaser(body)}</p>
+      <CollapsibleTrigger className="group mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+        <span className="group-data-[state=open]:hidden">More</span>
+        <span className="hidden group-data-[state=open]:inline">Less</span>
+        <ChevronDownIcon className="size-3 transition-transform group-data-[state=open]:rotate-180" />
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-2">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildComponents(evidence)}>

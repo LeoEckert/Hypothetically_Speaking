@@ -1,4 +1,4 @@
-import { HelpCircleIcon, HistoryIcon, SettingsIcon } from "lucide-react"
+import { HelpCircleIcon, HistoryIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -10,31 +10,20 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { HowItWorksPanel } from "@/components/HowItWorksPanel"
-import { ToolsPanel } from "@/components/ToolsPanel"
 
 export function AppHeader({
   runsCount,
-  liveRunId,
   onOpenHistory,
   onNewRequest,
 }: {
   runsCount: number
-  liveRunId: string | null
   onOpenHistory: () => void
   onNewRequest: () => void
 }) {
   return (
     <div className="mb-6 pb-4 border-b flex items-start justify-between gap-4 flex-wrap">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Hypothetically Speaking</h1>
-        <p className="text-muted-foreground mt-1">
-          A Longevity AI Scientist — ask an ageing/longevity research question, watch it plan, retrieve,
-          compute, and cite.
-        </p>
-      </div>
-
-      <div className="flex items-center gap-2 shrink-0">
-        <Button variant="outline" size="icon-lg" onClick={onOpenHistory} title="History" className="relative">
+      <div className="flex items-start gap-3">
+        <Button variant="outline" size="icon-lg" onClick={onOpenHistory} title="History" className="relative shrink-0">
           <HistoryIcon className="size-4" />
           {runsCount > 0 && (
             <Badge variant="default" className="absolute -top-1.5 -right-1.5 h-4 min-w-4 px-1 text-[10px]">
@@ -43,23 +32,16 @@ export function AppHeader({
           )}
         </Button>
 
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="outline" size="icon-lg" title="Settings — available tools">
-              <SettingsIcon className="size-4" />
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Available tools</DialogTitle>
-              <DialogDescription>
-                Enable or disable which tools the agent can call. Takes effect on the next run.
-              </DialogDescription>
-            </DialogHeader>
-            <ToolsPanel isRunLive={liveRunId !== null} />
-          </DialogContent>
-        </Dialog>
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Hypothetically Speaking</h1>
+          <p className="text-muted-foreground mt-1">
+            A Longevity AI Scientist — ask an ageing/longevity research question, watch it plan, retrieve,
+            compute, and cite.
+          </p>
+        </div>
+      </div>
 
+      <div className="flex items-center gap-2 shrink-0">
         <Dialog>
           <DialogTrigger asChild>
             <Button variant="outline" size="icon-lg" title="How it works">
