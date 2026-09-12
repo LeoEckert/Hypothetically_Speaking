@@ -85,38 +85,42 @@ function App() {
 
   return (
     <TooltipProvider>
-      <div className="max-w-6xl mx-auto p-6">
-        <h1 className="text-2xl font-bold">Hypothetically Speaking</h1>
-        <p className="text-muted-foreground mb-6">
-          A Longevity AI Scientist — ask an ageing/longevity research question, watch it plan, retrieve, compute,
-          and cite.
-        </p>
+      <div className="min-h-screen bg-muted/20">
+        <div className="max-w-6xl mx-auto p-6">
+          <div className="mb-6 pb-4 border-b">
+            <h1 className="text-2xl font-bold tracking-tight">Hypothetically Speaking</h1>
+            <p className="text-muted-foreground mt-1">
+              A Longevity AI Scientist — ask an ageing/longevity research question, watch it plan, retrieve,
+              compute, and cite.
+            </p>
+          </div>
 
-        <div className="flex flex-col md:flex-row gap-6 items-start">
-          <Sidebar
-            runs={runs}
-            liveRunId={liveRunId}
-            viewedRunId={viewedRunId}
-            onNewRequest={handleNewRequest}
-            onSelectHistory={handleSelectHistory}
-          />
-
-          <main className="flex-1 min-w-0">
-            <ComposeBox
-              question={question}
-              onQuestionChange={setQuestion}
-              onRun={handleRun}
-              runDisabled={liveRunId !== null}
-              statusText={statusText}
-              forkNote={forkNote}
-              showLiveBanner={liveRunId !== null && viewedRunId !== liveRunId}
-              onViewLive={handleViewLive}
+          <div className="flex flex-col md:flex-row gap-6 items-start">
+            <Sidebar
+              runs={runs}
+              liveRunId={liveRunId}
+              viewedRunId={viewedRunId}
+              onNewRequest={handleNewRequest}
+              onSelectHistory={handleSelectHistory}
             />
 
-            {viewedRun && <TraceTimeline events={viewedRun.events} />}
-            {viewedRun?.cost && <CostPanel cost={viewedRun.cost} />}
-            {doneEvent && <ReportView report={doneEvent.report} evidence={doneEvent.evidence} />}
-          </main>
+            <main className="flex-1 min-w-0">
+              <ComposeBox
+                question={question}
+                onQuestionChange={setQuestion}
+                onRun={handleRun}
+                runDisabled={liveRunId !== null}
+                statusText={statusText}
+                forkNote={forkNote}
+                showLiveBanner={liveRunId !== null && viewedRunId !== liveRunId}
+                onViewLive={handleViewLive}
+              />
+
+              {viewedRun && <TraceTimeline events={viewedRun.events} />}
+              {viewedRun?.cost && <CostPanel cost={viewedRun.cost} />}
+              {doneEvent && <ReportView report={doneEvent.report} evidence={doneEvent.evidence} />}
+            </main>
+          </div>
         </div>
       </div>
     </TooltipProvider>

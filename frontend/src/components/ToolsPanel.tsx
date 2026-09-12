@@ -12,7 +12,7 @@ export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
   const { tools, loading, toggle } = useTools()
 
   return (
-    <Collapsible defaultOpen className="border rounded-lg p-3">
+    <Collapsible defaultOpen className="border rounded-lg p-3 bg-card shadow-sm">
       <CollapsibleTrigger className="text-sm font-semibold cursor-pointer">Available tools</CollapsibleTrigger>
       <CollapsibleContent className="mt-2 space-y-3">
         {isRunLive && (
@@ -22,15 +22,25 @@ export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
         )}
         {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
         {tools.map((tool) => (
-          <div key={tool.name} className="flex items-start justify-between gap-3">
+          <div
+            key={tool.name}
+            className="flex items-start justify-between gap-3 rounded-md p-1.5 -mx-1.5 hover:bg-accent/40 transition-colors"
+          >
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">{toolLabel(tool.name)}</span>
-                <Badge variant={tool.enabled ? "secondary" : "outline"} className="text-[10px]">
+                <Badge
+                  variant="outline"
+                  className={
+                    tool.enabled
+                      ? "text-[10px] border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/40 dark:text-green-300"
+                      : "text-[10px] text-muted-foreground"
+                  }
+                >
                   {tool.enabled ? "enabled" : "disabled"}
                 </Badge>
               </div>
-              <p className="text-xs text-muted-foreground">{tool.description}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{tool.description}</p>
             </div>
             <Switch
               checked={tool.enabled}

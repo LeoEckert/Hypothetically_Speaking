@@ -19,11 +19,11 @@ export function Sidebar({
 }) {
   return (
     <aside className="w-full md:w-[320px] shrink-0 space-y-4">
-      <Button className="w-full font-semibold" onClick={onNewRequest}>
+      <Button className="w-full font-semibold" size="lg" onClick={onNewRequest}>
         + New Request
       </Button>
 
-      <div className="border rounded-lg p-3">
+      <div className="border rounded-lg p-3 bg-card shadow-sm">
         <p className="text-sm font-semibold mb-2">History</p>
         <HistoryList runs={runs} liveRunId={liveRunId} viewedRunId={viewedRunId} onSelect={onSelectHistory} />
       </div>

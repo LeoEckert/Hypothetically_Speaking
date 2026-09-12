@@ -6,17 +6,11 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s
 }
 
-function statusBadgeVariant(status: RunStatus): "default" | "secondary" | "destructive" | "outline" {
-  switch (status) {
-    case "running":
-      return "default"
-    case "done":
-      return "secondary"
-    case "partial":
-      return "outline"
-    case "error":
-      return "destructive"
-  }
+const STATUS_STYLES: Record<RunStatus, string> = {
+  running: "border-transparent bg-primary text-primary-foreground animate-pulse",
+  done: "border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/40 dark:text-green-300",
+  partial: "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
+  error: "border-transparent bg-destructive text-white",
 }
 
 export function HistoryList({
@@ -47,21 +41,21 @@ export function HistoryList({
             <button
               key={run.id}
               onClick={() => onSelect(run.id)}
-              className={`w-full text-left border rounded-lg p-2 text-sm hover:bg-accent transition-colors ${
-                run.id === viewedRunId ? "border-primary bg-accent/50" : ""
+              className={`w-full text-left border rounded-lg p-2.5 text-sm hover:bg-accent/70 hover:border-accent-foreground/20 transition-colors ${
+                run.id === viewedRunId ? "border-primary bg-accent/50 shadow-sm" : ""
               }`}
             >
-              <div className="truncate">{run.question}</div>
-              <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                <Badge variant={statusBadgeVariant(status)} className="text-[10px]">
+              <div className="truncate font-medium">{run.question}</div>
+              <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
+                <Badge variant="outline" className={`text-[10px] ${STATUS_STYLES[status]}`}>
                   {status}
                 </Badge>
                 <span>{new Date(run.createdAt).toLocaleString()}</span>
-                {run.cost && <span>· ${run.cost.total_usd.toFixed(3)}</span>}
+                {run.cost && <span className="font-mono">${run.cost.total_usd.toFixed(3)}</span>}
               </div>
               {parent && (
-                <div className="text-xs text-muted-foreground italic mt-1">
-                  based on: {truncate(parent.question, 60)}
+                <div className="text-xs text-muted-foreground italic mt-1 truncate">
+                  ↳ based on: {truncate(parent.question, 50)}
                 </div>
               )}
             </button>
