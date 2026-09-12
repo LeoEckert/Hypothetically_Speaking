@@ -150,12 +150,54 @@ same thing, don't keep retrying — use the dashboard instead:
 
 ## CI/CD
 
-**Frontend** — already automatic: the Vercel project is git-linked, so
-every push to `claude/gracious-curie-lkjlq1` triggers a new build/deploy
-with no extra setup. `frontend/src/lib/api.ts` also hardcodes a production
-fallback backend URL (`PROD_API_BASE_FALLBACK`), so a fresh deploy works
-immediately even without `VITE_API_BASE_URL` set in the Vercel dashboard —
-that env var only needs setting if the backend URL ever changes.
+**Frontend** — `.github/workflows/deploy-frontend.yml`: on every push to
+`claude/gracious-curie-lkjlq1` (or manually via `workflow_dispatch`), a
+GitHub Actions job runs `vercel deploy --prod` against the existing Vercel
+project (`frontend`), authenticated with a personal access token rather
+than Vercel's native git integration.
+
+This exists because Vercel's GitHub App auto-files a "request to join the
+team" for any GitHub identity that pushes to a linked repo and isn't
+already a team member — and the Hobby plan can neither add members nor
+resolve/dismiss that request, so the pending request alone blocks *all*
+deploys, even ones authored by the project owner (confirmed: this happened
+after an external contributor pushed to `main`, and persisted even after
+making the repo public — visibility isn't the trigger, the git integration
+itself is). The fix: the git integration is disconnected
+(`vercel git disconnect`, confirmed under Project Settings → Git in the
+dashboard, for both the `frontend` project and a stray duplicate project
+`hypothetically-speaking` that was also git-linked to this repo) and
+`vercel.json` sets `git.deploymentEnabled: false` as a backstop, so this
+workflow is now the only thing that deploys the frontend. A CLI/token
+deploy authenticates by the token's own project permissions, not by
+pushing GitHub identity, so it isn't subject to the same restriction —
+confirmed working directly against the `frontend` project.
+
+Requires three repository secrets (Settings → Secrets and variables →
+Actions), obtained once by the project owner and not derivable by an
+agent: `VERCEL_TOKEN` (Account Settings → Tokens), `VERCEL_ORG_ID` and
+`VERCEL_PROJECT_ID` (from `vercel link`'s `.vercel/project.json`, or
+Project Settings → General) — the same pattern as `NEBIUS_SSH_KEY`/
+`NEBIUS_VM_HOST` above. `frontend/src/lib/api.ts` also hardcodes a
+production fallback backend URL (`PROD_API_BASE_FALLBACK`), so a fresh
+deploy works even without `VITE_API_BASE_URL` set in the Vercel dashboard —
+that env var only needs setting if the backend URL ever changes, and it's
+still applied correctly since the workflow uses Vercel's remote build
+(`vercel deploy` uploads source and lets Vercel build it against the
+dashboard-configured project settings, rather than building locally in
+Actions where that dashboard-only env var wouldn't be visible).
+
+**Limitation:** since git deploys are fully disabled repo-wide, Preview
+deployments for PRs/other branches no longer happen automatically — only
+pushes to `claude/gracious-curie-lkjlq1` deploy anything now. A manual
+`vercel deploy` (without `--prod`) can still produce an ad hoc preview if
+ever needed.
+
+**Note:** a "sujoung requests to join your team" entry may still be
+visible in the Vercel dashboard from before this fix. It's a harmless
+leftover — once the git integration is disconnected it can't block
+anything or recur, and Hobby still doesn't expose a way to dismiss it.
+Ignore it, or clean it up later if Vercel ever adds that ability.
 
 **Backend** — `.github/workflows/deploy-backend.yml`: on every push to
 `claude/gracious-curie-lkjlq1` (or manually via `workflow_dispatch`), a

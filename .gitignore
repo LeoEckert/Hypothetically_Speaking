@@ -17,3 +17,7 @@ secret_*.txt
 
 # grounding knowledge base / run archives (local cache, regenerated on demand)
 runs/
+
+.vercel
+frontend/.vercel
+.env*
