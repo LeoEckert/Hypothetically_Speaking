@@ -61,7 +61,7 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
 
     state = RunState(
         question=question,
-        max_tool_calls=int(os.environ.get("MAX_TOOL_CALLS", 15)),
+        max_tool_calls=int(os.environ.get("MAX_TOOL_CALLS", 30)),
         max_run_seconds=int(os.environ.get("MAX_RUN_SECONDS", 1080)),
     )
     if run_id:

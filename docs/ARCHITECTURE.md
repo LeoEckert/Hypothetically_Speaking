@@ -102,7 +102,7 @@ tool off and watch it change" test.
             citation ID resolvable in the evidence registry.
 ```
 
-Budget enforcement: `MAX_TOOL_CALLS` (default 15) and a wall-clock
+Budget enforcement: `MAX_TOOL_CALLS` (default 30) and a wall-clock
 timeout (default 18 min) in `state.py`. On timeout the loop still forces a
 REPORT pass over whatever evidence exists, flagged as a partial run —
 never silently truncates without saying so.
