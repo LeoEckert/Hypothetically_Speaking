@@ -290,6 +290,19 @@ Production **redeployed during this audit** — the bundle hash moved from
 grounding references, so it redeployed the same non-`main` branch. The
 branch is evidently still receiving deploys.
 
+**Why it is stale — both halves of the deploy are pinned to that branch:**
+
+- Frontend: Vercel's production branch is `claude/gracious-curie-lkjlq1`.
+- Backend: `.github/workflows/deploy-backend.yml` triggers on
+  `push: branches: [claude/gracious-curie-lkjlq1]`.
+- GitHub's own default branch for the repo is also
+  `claude/gracious-curie-lkjlq1`, so PRs opened without an explicit base
+  target it rather than `main`.
+
+So merging to `main` deploys nothing, to either half. Whatever the intended
+trunk is, those three settings and the branch everyone works on need to
+agree — otherwise this recurs silently.
+
 Reconciling this is a deploy change on a live URL, so it is left as a
 decision rather than a fix. Worth settling before any demo, or the
 grounding work is not in what people see.
