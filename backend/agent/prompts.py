@@ -80,3 +80,12 @@ evidence-gathering was complete. Write the final report from the evidence
 gathered so far, and explicitly flag in Confidence & Uncertainty that this
 was a partial run and which evidence categories are missing or thin.
 """
+
+CANCELLED_RUN_NOTICE = """\
+NOTE: the user cancelled this run before evidence-gathering was complete.
+Write the final report from the evidence gathered so far — treat any
+candidate hypotheses and evidence found up to this point as real,
+citable findings, not as discarded work. Explicitly flag in Confidence &
+Uncertainty that this was a user-cancelled run and which evidence
+categories are missing or thin.
+"""

@@ -11,6 +11,8 @@ export const API_BASE =
 export interface ConfigResponse {
   dev_mode: boolean
   demo_question: string
+  max_tool_calls_default: number
+  max_tool_calls_ceiling: number
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {
@@ -32,13 +34,20 @@ export async function setToolEnabled(name: string, enabled: boolean) {
   return res.json()
 }
 
-export async function startRun(question: string): Promise<{ run_id: string }> {
+export async function startRun(
+  question: string,
+  maxToolCalls?: number
+): Promise<{ run_id: string; max_tool_calls: number }> {
   const res = await fetch(`${API_BASE}/api/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, max_tool_calls: maxToolCalls }),
   })
   return res.json()
+}
+
+export async function cancelRun(runId: string): Promise<void> {
+  await fetch(`${API_BASE}/api/run/${runId}/cancel`, { method: "POST" })
 }
 
 export function runStreamUrl(runId: string): string {

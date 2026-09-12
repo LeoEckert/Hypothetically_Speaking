@@ -52,7 +52,7 @@ export function Sidebar({
 
       <div className="border rounded-lg p-3 bg-card shadow-sm">
         <p className="text-sm font-semibold mb-2">History</p>
-        <HistoryList runs={runs} liveRunId={liveRunId} viewedRunId={viewedRunId} onSelect={onSelectHistory} />
+        <HistoryList runs={runs} viewedRunId={viewedRunId} onSelect={onSelectHistory} />
       </div>
 
       <HowItWorksPanel />

@@ -8,19 +8,19 @@ function truncate(s: string, n: number): string {
 
 const STATUS_STYLES: Record<RunStatus, string> = {
   running: "border-transparent bg-primary text-primary-foreground animate-pulse",
+  cancelling: "border-transparent bg-primary/60 text-primary-foreground animate-pulse",
   done: "border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/40 dark:text-green-300",
   partial: "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
+  cancelled: "border-muted-foreground/30 bg-muted text-muted-foreground",
   error: "border-transparent bg-destructive text-white",
 }
 
 export function HistoryList({
   runs,
-  liveRunId,
   viewedRunId,
   onSelect,
 }: {
   runs: RunRecord[]
-  liveRunId: string | null
   viewedRunId: string | null
   onSelect: (id: string) => void
 }) {
@@ -35,7 +35,7 @@ export function HistoryList({
     <ScrollArea className="h-[45vh] pr-2">
       <div className="space-y-2">
         {sorted.map((run) => {
-          const status: RunStatus = run.id === liveRunId ? "running" : run.status
+          const status: RunStatus = run.status
           const parent = run.parentId ? byId.get(run.parentId) : undefined
           return (
             <button

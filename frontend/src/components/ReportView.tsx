@@ -59,12 +59,12 @@ export function ReportView({
   const lines = report.split("\n")
 
   return (
-    <div className="mt-6 p-4 border rounded-lg space-y-1">
+    <div className="mt-4 p-6 border rounded-xl shadow-md bg-card space-y-1">
       {lines.map((line, idx) => {
         const key = `line-${idx}`
         if (line.startsWith("## ")) {
           return (
-            <h2 key={key} className="text-lg font-semibold mt-4 mb-1">
+            <h2 key={key} className="text-lg font-semibold mt-5 mb-1.5 pb-1 border-b first:mt-0">
               {line.slice(3)}
             </h2>
           )

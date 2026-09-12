@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-from backend.agent.loop import run_agent  # noqa: E402
+from backend.agent.loop import HARD_MAX_TOOL_CALLS, run_agent  # noqa: E402
 from backend.tools import registry  # noqa: E402
 from backend.tools.registry import all_specs, enabled_tool_names  # noqa: E402
 
@@ -49,6 +49,7 @@ DEMO_QUESTION = (
     "test that mechanism?"
 )
 IS_DEV_MODE = os.environ.get("APP_ENV", "development") != "production"
+DEFAULT_MAX_TOOL_CALLS = min(int(os.environ.get("MAX_TOOL_CALLS", 30)), HARD_MAX_TOOL_CALLS)
 
 _run_events: dict[str, list[dict]] = {}
 # Pure wake-up signals for stream_run — content is never read, just used to
@@ -57,10 +58,12 @@ _run_events: dict[str, list[dict]] = {}
 # double-deliver events regardless of when they attach.
 _wakeups: dict[str, queue.Queue] = {}
 _results: dict[str, dict] = {}
+_cancel_events: dict[str, threading.Event] = {}
 
 
 class RunRequest(BaseModel):
     question: str
+    max_tool_calls: int | None = None
 
 
 class ToolToggleRequest(BaseModel):
@@ -74,7 +77,12 @@ def index():
 
 @app.get("/api/config")
 def get_config():
-    return {"dev_mode": IS_DEV_MODE, "demo_question": DEMO_QUESTION if IS_DEV_MODE else ""}
+    return {
+        "dev_mode": IS_DEV_MODE,
+        "demo_question": DEMO_QUESTION if IS_DEV_MODE else "",
+        "max_tool_calls_default": DEFAULT_MAX_TOOL_CALLS,
+        "max_tool_calls_ceiling": HARD_MAX_TOOL_CALLS,
+    }
 
 
 @app.get("/api/tools")
@@ -106,20 +114,41 @@ def start_run(req: RunRequest):
     run_id = uuid.uuid4().hex[:8]
     _run_events[run_id] = []
     _wakeups[run_id] = queue.Queue()
+    cancel_event = threading.Event()
+    _cancel_events[run_id] = cancel_event
+
+    requested = req.max_tool_calls if req.max_tool_calls is not None else DEFAULT_MAX_TOOL_CALLS
+    effective_max_tool_calls = max(1, min(requested, HARD_MAX_TOOL_CALLS))
 
     def _worker():
         def on_event(event: dict) -> None:
             _run_events[run_id].append(event)
             _wakeups[run_id].put(None)
 
-        result = run_agent(req.question, on_event=on_event, run_id=run_id)
+        result = run_agent(
+            req.question,
+            on_event=on_event,
+            run_id=run_id,
+            max_tool_calls=effective_max_tool_calls,
+            should_cancel=cancel_event.is_set,
+        )
         _results[run_id] = result
         (REPORTS_DIR / f"{run_id}.json").write_text(json.dumps(result, indent=2, default=str))
         _run_events[run_id].append({"type": "stream_end"})
         _wakeups[run_id].put(None)
+        _cancel_events.pop(run_id, None)
 
     threading.Thread(target=_worker, daemon=True).start()
-    return {"run_id": run_id}
+    return {"run_id": run_id, "max_tool_calls": effective_max_tool_calls}
+
+
+@app.post("/api/run/{run_id}/cancel")
+def cancel_run(run_id: str):
+    event = _cancel_events.get(run_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="run not found or already finished")
+    event.set()
+    return {"run_id": run_id, "cancelling": True}
 
 
 @app.get("/api/run/{run_id}/stream")

@@ -6,20 +6,30 @@ export function ComposeBox({
   question,
   onQuestionChange,
   onRun,
+  onCancel,
   runDisabled,
+  isRunning,
   statusText,
   forkNote,
   showLiveBanner,
   onViewLive,
+  maxToolCalls,
+  onMaxToolCallsChange,
+  maxToolCallsCeiling,
 }: {
   question: string
   onQuestionChange: (v: string) => void
   onRun: () => void
+  onCancel: () => void
   runDisabled: boolean
+  isRunning: boolean
   statusText: string
   forkNote: string | null
   showLiveBanner: boolean
   onViewLive: () => void
+  maxToolCalls: number
+  onMaxToolCallsChange: (n: number) => void
+  maxToolCallsCeiling: number
 }) {
   return (
     <Card className="py-4 shadow-sm">
@@ -41,10 +51,34 @@ export function ComposeBox({
           placeholder="e.g. Does SIRT1 activation plausibly extend human healthspan via mitochondrial biogenesis?"
           className="min-h-[90px] resize-y"
         />
-        <div className="flex items-center gap-3">
-          <Button onClick={onRun} disabled={runDisabled || !question.trim()} size="lg">
-            Run
-          </Button>
+        <div className="flex items-center gap-3 flex-wrap">
+          {isRunning ? (
+            <Button onClick={onCancel} variant="destructive" size="lg">
+              Cancel
+            </Button>
+          ) : (
+            <Button onClick={onRun} disabled={runDisabled || !question.trim()} size="lg">
+              Run
+            </Button>
+          )}
+
+          <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            Tool budget:
+            <input
+              type="number"
+              min={1}
+              max={maxToolCallsCeiling}
+              value={maxToolCalls}
+              disabled={isRunning}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10)
+                if (!Number.isNaN(n)) onMaxToolCallsChange(Math.max(1, Math.min(n, maxToolCallsCeiling)))
+              }}
+              className="w-16 rounded-md border border-input bg-transparent px-2 py-1 text-sm disabled:opacity-50"
+            />
+            <span className="text-xs">(max {maxToolCallsCeiling})</span>
+          </label>
+
           <span className="text-sm font-medium text-muted-foreground">{statusText}</span>
         </div>
       </CardContent>

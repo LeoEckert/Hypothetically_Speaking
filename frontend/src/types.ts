@@ -62,13 +62,14 @@ export type SseEvent =
       type: "done"
       report: string
       partial: boolean
+      cancelled: boolean
       run_id: string
       cost: CostSummary
       evidence: Record<string, EvidenceItem>
     }
   | { type: "stream_end" }
 
-export type RunStatus = "running" | "done" | "partial" | "error"
+export type RunStatus = "running" | "cancelling" | "done" | "partial" | "cancelled" | "error"
 
 export interface RunRecord {
   id: string

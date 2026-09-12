@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from anthropic import Anthropic
 
 from backend.agent.prompts import (
+    CANCELLED_RUN_NOTICE,
     PARTIAL_RUN_NOTICE,
     REVISE_PROMPT,
     SYSTEM_PROMPT,
@@ -24,6 +25,13 @@ from backend.tools import amass_tool
 from backend.tools.registry import enabled_tool_names, get_specs, run_tool
 
 EventCallback = Optional[Callable[[dict], None]]
+CancelCheck = Optional[Callable[[], bool]]
+
+# Absolute ceiling on tool calls for any run, regardless of what a caller
+# (the API's max_tool_calls request field, MAX_TOOL_CALLS env var, or a
+# future caller) asks for — protects against runaway cost/time no matter
+# where a request originates.
+HARD_MAX_TOOL_CALLS = 40
 
 _NUDGE_NO_TOOLS = (
     "You have not called any tools yet. Use the available tools now to "
@@ -54,14 +62,21 @@ def _strip_empty_text_blocks(content_blocks):
     ]
 
 
-def run_agent(question: str, on_event: EventCallback = None, run_id: str | None = None) -> dict:
+def run_agent(
+    question: str,
+    on_event: EventCallback = None,
+    run_id: str | None = None,
+    max_tool_calls: int | None = None,
+    should_cancel: CancelCheck = None,
+) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
     client = Anthropic(api_key=api_key)
 
+    requested_max = max_tool_calls if max_tool_calls is not None else int(os.environ.get("MAX_TOOL_CALLS", 30))
     state = RunState(
         question=question,
-        max_tool_calls=int(os.environ.get("MAX_TOOL_CALLS", 30)),
+        max_tool_calls=min(requested_max, HARD_MAX_TOOL_CALLS),
         max_run_seconds=int(os.environ.get("MAX_RUN_SECONDS", 1080)),
     )
     if run_id:
@@ -76,6 +91,10 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
     no_tool_nudges = 0
     try:
         while True:
+            if should_cancel and should_cancel():
+                state.cancelled = True
+                state.partial = True
+                break
             if state.budget_exceeded():
                 state.partial = True
                 break
@@ -104,6 +123,16 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
             tool_results = []
             for block in response.content:
                 if getattr(block, "type", None) != "tool_use":
+                    continue
+                if should_cancel and should_cancel():
+                    state.cancelled = True
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": "Run cancelled by the user; call skipped.",
+                        }
+                    )
                     continue
                 if state.budget_exceeded():
                     tool_results.append(
@@ -165,7 +194,9 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
         # --- REPORT ---
         _emit(on_event, {"type": "phase", "phase": "report"})
         report_instructions = final_report_prompt(state.citation_index())
-        if state.partial:
+        if state.cancelled:
+            report_instructions = CANCELLED_RUN_NOTICE + "\n\n" + report_instructions
+        elif state.partial:
             report_instructions = PARTIAL_RUN_NOTICE + "\n\n" + report_instructions
         messages.append({"role": "user", "content": report_instructions})
         report_resp = client.messages.create(model=model, max_tokens=4096, system=SYSTEM_PROMPT, messages=messages)
@@ -191,6 +222,7 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
         "question": question,
         "report": report_text,
         "partial": state.partial,
+        "cancelled": state.cancelled,
         "trace": [vars(t) for t in state.trace],
         "evidence": evidence_dict,
         "cost": cost_summary,
@@ -201,6 +233,7 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
             "type": "done",
             "report": report_text,
             "partial": state.partial,
+            "cancelled": state.cancelled,
             "run_id": state.run_id,
             "cost": cost_summary,
             "evidence": evidence_dict,

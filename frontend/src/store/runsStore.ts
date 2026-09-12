@@ -72,7 +72,7 @@ export function appendEvent(runId: string, event: SseEvent) {
   const run = runs[idx]
   const updated: RunRecord = { ...run, events: [...run.events, event] }
   if (event.type === "done") {
-    updated.status = event.partial ? "partial" : "done"
+    updated.status = event.cancelled ? "cancelled" : event.partial ? "partial" : "done"
     updated.cost = event.cost
     updated.evidence = event.evidence
   } else if (event.type === "error") {
@@ -85,11 +85,22 @@ export function appendEvent(runId: string, event: SseEvent) {
   notify()
 }
 
-export function markErrored(runId: string) {
+export function markCancelling(runId: string) {
   const idx = runs.findIndex((r) => r.id === runId)
   if (idx === -1) return
   const run = runs[idx]
   if (run.status !== "running") return
+  const updated: RunRecord = { ...run, status: "cancelling" }
+  runs = [...runs.slice(0, idx), updated, ...runs.slice(idx + 1)]
+  save()
+  notify()
+}
+
+export function markErrored(runId: string) {
+  const idx = runs.findIndex((r) => r.id === runId)
+  if (idx === -1) return
+  const run = runs[idx]
+  if (run.status !== "running" && run.status !== "cancelling") return
   const updated: RunRecord = { ...run, status: "error" }
   runs = [...runs.slice(0, idx), updated, ...runs.slice(idx + 1)]
   save()

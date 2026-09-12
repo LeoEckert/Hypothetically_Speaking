@@ -37,6 +37,7 @@ class RunState:
     evidence: dict[str, EvidenceItem] = field(default_factory=dict)
     trace: list[ToolCallRecord] = field(default_factory=list)
     partial: bool = False  # set True if we hit a budget limit and force-finalized
+    cancelled: bool = False  # set True if the user cancelled the run (also implies partial)
 
     # Tools allowed for this run, snapshotted once at start — toggling tools
     # mid-run must not change an in-flight run's behavior or cost accounting.

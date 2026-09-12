@@ -7,7 +7,9 @@ export function useConfig() {
   useEffect(() => {
     fetchConfig()
       .then(setConfig)
-      .catch(() => setConfig({ dev_mode: false, demo_question: "" }))
+      .catch(() =>
+        setConfig({ dev_mode: false, demo_question: "", max_tool_calls_default: 30, max_tool_calls_ceiling: 40 })
+      )
   }, [])
 
   return config
