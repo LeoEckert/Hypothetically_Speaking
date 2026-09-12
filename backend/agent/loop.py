@@ -137,7 +137,7 @@ def _plan_message(grounding_text: str, n_candidates: int = 0) -> str:
             "propose 2-4 concrete, testable hypotheses\nthat could answer the research question, each grounded in a plausible\nageing-biology mechanism.",
             f"propose exactly {n_candidates} hypothes{'is' if n_candidates == 1 else 'es'}: the grounded "
             f"candidate{'' if n_candidates == 1 else 's'} listed above, statement{'' if n_candidates == 1 else 's'} "
-            "kept as written. Do not add hypotheses of your own.",
+            "kept as written. Do not add hypotheses of your own; this overrides the 2-4 range in the system instructions.",
         )
     return (
         "Grounding context from a prior extraction step. Use this when "
@@ -145,6 +145,25 @@ def _plan_message(grounding_text: str, n_candidates: int = 0) -> str:
         f"{grounding_text}\n\n"
         + prompt
     )
+
+
+def _adopt_candidates(raw_plan: list, candidates: list[dict]) -> list[dict]:
+    """When the grounding produced candidates, the PLAN roster is exactly those,
+    in order. PLAN's own additions are dropped (its system prompt still says
+    "2-4", and the model pads the list with compound, ungrounded hypotheses);
+    only its seed_question is kept where it wrote about the same statement."""
+    def norm(text: str) -> str:
+        return re.sub(r"[^a-z0-9 ]", "", str(text).lower()).strip()
+
+    by_statement = {norm(h.get("statement", "")): h for h in raw_plan if isinstance(h, dict)}
+    adopted = []
+    for candidate in candidates:
+        planned = by_statement.get(norm(candidate["statement"]), {})
+        seed = str(planned.get("seed_question") or "").strip() or (
+            f"Does {candidate['intervention']} change {candidate['readout']} in {candidate['model_system']}?"
+        )
+        adopted.append({"statement": candidate["statement"], "seed_question": seed})
+    return adopted
 
 
 def _text_of(content_blocks) -> str:
@@ -351,6 +370,8 @@ def run_agent(
         state.record_anthropic_usage(plan_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})
         raw_plan_hyps = _parse_hypotheses(_text_of(plan_resp.content))
+        if grounding.get("hypotheses"):
+            raw_plan_hyps = _adopt_candidates(raw_plan_hyps, grounding["hypotheses"])
         state.hypotheses = _normalize_hypotheses(raw_plan_hyps, "plan", {}, set(state.evidence))
         _emit(on_event, {"type": "hypotheses", "stage": "plan", "hypotheses": state.hypotheses})
         messages.append({"role": "user", "content": _PLAN_TO_ACT_NUDGE})
