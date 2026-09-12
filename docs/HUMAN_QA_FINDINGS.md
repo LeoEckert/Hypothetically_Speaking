@@ -26,6 +26,7 @@ This file is appended to as more findings come in.
 | HQ-03 | Medium | Report sections render as bullets in one run and a prose wall in the next | `main` @ `c3a958e` |
 | HQ-04 | Medium | The original research question disappears from both the results and full-report views | `main` @ `c3a958e` |
 | HQ-05 | Medium | Collapsed section preview shows only the list marker ("1.") and no text | `main` @ `c3a958e` |
+| HQ-06 | Low | "partial estimate" collides with the `partial` run status and is unexplained at the point of use | `main` @ `c3a958e` |
 
 ---
 
@@ -395,6 +396,69 @@ is shorter than a threshold, use the full line instead.
 Worth adding a unit test for `teaser()` covering these five inputs — it is a
 pure function with no dependencies, so the test is trivial and this is
 plainly a class of bug that recurs.
+
+---
+
+## HQ-06 — "partial estimate" collides with the `partial` run status
+
+**Severity:** low. **Reported:** *"What does partial estimate mean?"* —
+correctly flagged by the tester as unclear UX rather than a bug. Agreed: the
+behaviour is correct, the wording is not.
+
+**What it actually means.** The badge is gated on `cost.total_usd_is_partial`
+(`CostPanel.tsx:83-87`), which the backend sets as
+`total_usd_is_partial = bool(unpriced)` (`backend/agent/costs.py:189`), where
+`unpriced` collects whichever of `nebius`, `amass` and `tavily` have no
+configured price rate (`costs.py:136-142`).
+
+So it means: **the dollar total leaves out providers whose price is not
+configured.** In the screenshot, `$0.2702` is Anthropic alone; the Nebius,
+Amass and Tavily calls really happened, they just are not costed. This is
+deliberate and good — `costs.py:1-4` states the rule that every figure is
+"either computed from a real, confirmed rate or explicitly marked unpriced
+… never silently invented."
+
+**Why the wording is a real problem, not just vague.** `partial` already
+means something else in this application: `RunStatus` includes `"partial"`
+(`frontend/src/types.ts`), meaning *the run was cut short before evidence
+gathering finished*. Both meanings appear in the same results view, and they
+are unrelated:
+
+| Phrase | Means |
+|---|---|
+| run status `partial` | the run hit its tool/time budget and stopped early |
+| cost badge `partial estimate` | the money total omits unpriced providers |
+
+A reader who has seen one meaning will reasonably assume the other. This is
+not hypothetical — during the automated audit this badge was initially read
+as a run-status signal, and it is currently the *only* thing on a truncated
+run's results page containing the word "partial" (see `HS-01`, where the
+terminal status is never rendered). So on a budget-truncated run the one
+visible "partial" refers to something else entirely.
+
+**The explanation exists but is nowhere near the badge.** `CostPanel.tsx:103-105`
+does render "Not priced: nebius, amass, tavily — set their price env vars to
+include them." But it sits *below the entire "Cost by provider" bar list* —
+four provider rows away from the badge it explains — and the badge itself
+carries no tooltip (the tooltips at `CostPanel.tsx:36,43,50,60` are on the
+provider bars).
+
+**Suggested fix.** Cheapest first:
+
+1. **Rename the badge** to something that cannot be confused with run state:
+   `excludes unpriced providers`, or `Anthropic only`, or simply
+   `incomplete pricing`. Avoid the word "partial" in the cost panel entirely
+   while `RunStatus.partial` exists.
+2. **Attach the explanation to the badge** as a tooltip, so the answer is
+   where the question is asked. The string already exists at
+   `CostPanel.tsx:103-105` and can be reused verbatim.
+3. Optionally show which providers are covered inline, e.g.
+   `$0.2702 · Anthropic only`, which answers the question without needing
+   any interaction at all.
+
+Note this is a distinct fix from `HS-01`. Renaming the cost badge does not
+give a truncated run its missing status message — it only stops the cost
+badge from being mistaken for one.
 
 ---
 
