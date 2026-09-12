@@ -111,7 +111,7 @@ function App() {
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-muted/20">
-        <div className="max-w-6xl mx-auto p-6">
+        <div className="max-w-6xl mx-auto p-4 sm:p-6">
           <div className="mb-6 pb-4 border-b">
             <h1 className="text-2xl font-bold tracking-tight">Hypothetically Speaking</h1>
             <p className="text-muted-foreground mt-1">

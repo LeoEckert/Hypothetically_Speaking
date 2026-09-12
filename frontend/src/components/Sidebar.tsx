@@ -1,4 +1,4 @@
-import { SettingsIcon } from "lucide-react"
+import { HelpCircleIcon, SettingsIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -48,14 +48,26 @@ export function Sidebar({
             <ToolsPanel isRunLive={liveRunId !== null} />
           </DialogContent>
         </Dialog>
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button variant="outline" size="icon-lg" title="How it works">
+              <HelpCircleIcon className="size-4" />
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>How it works</DialogTitle>
+              <DialogDescription>The agent moves through five phases on every run.</DialogDescription>
+            </DialogHeader>
+            <HowItWorksPanel />
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="border rounded-lg p-3 bg-card shadow-sm">
         <p className="text-sm font-semibold mb-2">History</p>
         <HistoryList runs={runs} viewedRunId={viewedRunId} onSelect={onSelectHistory} />
       </div>
-
-      <HowItWorksPanel />
     </aside>
   )
 }

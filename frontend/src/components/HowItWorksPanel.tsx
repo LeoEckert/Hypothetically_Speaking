@@ -30,16 +30,13 @@ const PHASES = [
 
 export function HowItWorksPanel() {
   return (
-    <div className="border rounded-lg p-3 bg-card shadow-sm">
-      <p className="text-sm font-semibold mb-2">How it works</p>
-      <Accordion type="single" collapsible>
-        {PHASES.map((phase, idx) => (
-          <AccordionItem key={phase.title} value={`phase-${idx}`}>
-            <AccordionTrigger className="text-sm">{phase.title}</AccordionTrigger>
-            <AccordionContent className="text-xs text-muted-foreground">{phase.body}</AccordionContent>
-          </AccordionItem>
-        ))}
-      </Accordion>
-    </div>
+    <Accordion type="single" collapsible>
+      {PHASES.map((phase, idx) => (
+        <AccordionItem key={phase.title} value={`phase-${idx}`}>
+          <AccordionTrigger className="text-sm">{phase.title}</AccordionTrigger>
+          <AccordionContent className="text-xs text-muted-foreground">{phase.body}</AccordionContent>
+        </AccordionItem>
+      ))}
+    </Accordion>
   )
 }
