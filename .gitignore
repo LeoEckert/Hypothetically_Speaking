@@ -6,3 +6,9 @@ backend/reports/*.json
 backend/reports/*.md
 backend/data/*.csv
 .DS_Store
+
+# frontend (Vite/React)
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local

@@ -82,11 +82,16 @@ evidence is no longer available to reason over.
 
 ## Open TODOs / confirm at the event
 
-- **Amass**: exact REST/MCP contract not yet confirmed against live docs.
-  `backend/tools/amass_tool.py` is written against a generic
-  `AMASS_API_URL` + bearer token shape with a clearly marked mock
-  fallback — update the request/response mapping once real docs or an
-  MCP endpoint are available.
+- **Amass**: contract confirmed 2026-09-12 against
+  `https://api.amass.tech/api/doc/openapi.json`. It's `GET
+  {AMASS_API_URL}/cores/{core}/records?query=...&limit=...` with
+  `Authorization: Bearer <AMASS_API_KEY>`, one endpoint per Core
+  (biomedcore/trialcore/drugcore/patentcore/genecore/regulatorycore).
+  `backend/tools/amass_tool.py` maps `biomedcore`, `trialcore`, and
+  `patentcore` records to citations from their confirmed schemas;
+  `drugcore`/`genecore`/`regulatorycore` fall back to a generic
+  name-like-field guess since their record schemas weren't in the fetched
+  OpenAPI spec — tighten that mapping if/when those fields are confirmed.
 - **Nebius**: base URL and model ID for the hosted NER subtask are
   env-configured (`NEBIUS_BASE_URL`, `NEBIUS_MODEL`) — confirm against the
   Token Factory credentials issued at the venue.

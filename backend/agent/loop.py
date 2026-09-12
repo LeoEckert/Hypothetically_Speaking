@@ -18,8 +18,10 @@ from backend.agent.prompts import (
     SYSTEM_PROMPT,
     final_report_prompt,
 )
+from backend.agent.costs import build_cost_summary
 from backend.agent.state import RunState
-from backend.tools.registry import get_specs, run_tool
+from backend.tools import amass_tool
+from backend.tools.registry import enabled_tool_names, get_specs, run_tool
 
 EventCallback = Optional[Callable[[dict], None]]
 
@@ -40,6 +42,18 @@ def _text_of(content_blocks) -> str:
     return "".join(b.text for b in content_blocks if getattr(b, "type", None) == "text")
 
 
+def _strip_empty_text_blocks(content_blocks):
+    """Claude sometimes returns a text block with empty/whitespace-only text
+    alongside a tool_use or thinking block in the same turn. Resending that
+    verbatim on the next request gets rejected with a 400 ("text content
+    blocks must be non-empty"), which otherwise aborts the whole run. Drop
+    only truly empty text blocks; everything else (tool_use, thinking,
+    non-empty text) passes through untouched."""
+    return [
+        b for b in content_blocks if not (getattr(b, "type", None) == "text" and not b.text.strip())
+    ]
+
+
 def run_agent(question: str, on_event: EventCallback = None, run_id: str | None = None) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
@@ -52,6 +66,7 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
     )
     if run_id:
         state.run_id = run_id
+    state.enabled_tools = set(enabled_tool_names())
     tools = get_specs()
     messages: list[dict] = [{"role": "user", "content": f"Research question: {question}"}]
 
@@ -66,9 +81,14 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
                 break
 
             response = client.messages.create(
-                model=model, max_tokens=4096, system=SYSTEM_PROMPT, tools=tools, messages=messages
+                model=model,
+                max_tokens=4096,
+                system=SYSTEM_PROMPT,
+                messages=messages,
+                **({"tools": tools} if tools else {}),
             )
-            messages.append({"role": "assistant", "content": response.content})
+            state.record_anthropic_usage(response)
+            messages.append({"role": "assistant", "content": _strip_empty_text_blocks(response.content)})
 
             text = _text_of(response.content)
             if text.strip():
@@ -99,13 +119,17 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
                     on_event,
                     {"type": "tool_call", "tool": block.name, "args": block.input, "step": state.tool_calls_made + 1},
                 )
-                result = run_tool(block.name, block.input)
+                if block.name == "amass" and state.amass_credits_before is None:
+                    state.amass_credits_before = amass_tool.get_credits()
+                result = run_tool(block.name, block.input, enabled_names=state.enabled_tools)
 
                 for item in result.get("items", []):
                     state.add_evidence(
                         item["id"], source=block.name, url=item.get("url", ""), summary=item["summary"], raw=item.get("raw", {})
                     )
-                state.record_tool_call(block.name, block.input, result.get("summary", ""), result.get("mock", False))
+                state.record_tool_call(
+                    block.name, block.input, result.get("summary", ""), result.get("mock", False), usage=result.get("usage")
+                )
 
                 _emit(
                     on_event,
@@ -116,6 +140,7 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
                         "mock": result.get("mock", False),
                         "error": result.get("error"),
                         "summary": result.get("summary", ""),
+                        "usage": result.get("usage"),
                     },
                 )
 
@@ -131,7 +156,8 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
         _emit(on_event, {"type": "phase", "phase": "revise"})
         messages.append({"role": "user", "content": REVISE_PROMPT})
         revise_resp = client.messages.create(model=model, max_tokens=2048, system=SYSTEM_PROMPT, messages=messages)
-        messages.append({"role": "assistant", "content": revise_resp.content})
+        state.record_anthropic_usage(revise_resp)
+        messages.append({"role": "assistant", "content": _strip_empty_text_blocks(revise_resp.content)})
         revise_text = _text_of(revise_resp.content)
         if revise_text.strip():
             _emit(on_event, {"type": "assistant_text", "text": revise_text})
@@ -143,6 +169,7 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
             report_instructions = PARTIAL_RUN_NOTICE + "\n\n" + report_instructions
         messages.append({"role": "user", "content": report_instructions})
         report_resp = client.messages.create(model=model, max_tokens=4096, system=SYSTEM_PROMPT, messages=messages)
+        state.record_anthropic_usage(report_resp)
         report_text = _text_of(report_resp.content)
 
     except Exception as exc:
@@ -154,13 +181,29 @@ def run_agent(question: str, on_event: EventCallback = None, run_id: str | None 
         )
         _emit(on_event, {"type": "error", "error": str(exc)})
 
+    if state.amass_credits_before is not None:
+        state.amass_credits_after = amass_tool.get_credits()
+    cost_summary = build_cost_summary(state, model)
+    evidence_dict = {k: vars(v) for k, v in state.evidence.items()}
+
     result = {
         "run_id": state.run_id,
         "question": question,
         "report": report_text,
         "partial": state.partial,
         "trace": [vars(t) for t in state.trace],
-        "evidence": {k: vars(v) for k, v in state.evidence.items()},
+        "evidence": evidence_dict,
+        "cost": cost_summary,
     }
-    _emit(on_event, {"type": "done", "report": report_text, "partial": state.partial, "run_id": state.run_id})
+    _emit(
+        on_event,
+        {
+            "type": "done",
+            "report": report_text,
+            "partial": state.partial,
+            "run_id": state.run_id,
+            "cost": cost_summary,
+            "evidence": evidence_dict,
+        },
+    )
     return result

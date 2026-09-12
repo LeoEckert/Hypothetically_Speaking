@@ -1,0 +1,19 @@
+# Replace api-<VM-IP-WITH-DASHES>.sslip.io with your actual reserved VM IP,
+# e.g. a VM at 203.0.113.10 becomes api-203-0-113-10.sslip.io — sslip.io
+# resolves that hostname to the embedded IP automatically, no DNS setup needed.
+#
+# While first verifying the setup end-to-end, uncomment the block below to
+# use Let's Encrypt's staging CA (avoids burning rate-limit attempts on a
+# misconfigured firewall/DNS). Remove it once a `curl -k` against the site
+# succeeds, then restart Caddy (`docker compose restart caddy`) to get a real
+# trusted certificate.
+#
+# {
+#     acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+# }
+
+api-<VM-IP-WITH-DASHES>.sslip.io {
+    reverse_proxy app:8000 {
+        flush_interval -1
+    }
+}

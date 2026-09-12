@@ -34,13 +34,18 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 Short version:
 
 ```
-frontend/          minimal single-page UI: ask a question, watch the trace, read the report
+frontend/          Vite + React + shadcn/ui SPA: ask a question, watch the trace, read the report, browse history
 backend/agent/      the plan -> retrieve -> compute -> revise -> report loop (Anthropic tool-use)
 backend/tools/       one wrapper per external tool, each independently toggleable + mockable
-backend/server/      FastAPI app: POST /run, SSE stream of trace events, serves the frontend
+backend/server/      FastAPI app: POST /api/run, SSE stream of trace events, tool toggle + cost/usage endpoints
 scripts/             run_demo.py (canonical run + saved transcript), validate_citations.py
-docs/                architecture notes, demo script, judge instructions
+docs/                architecture notes, deploy guide, demo script, judge instructions
 ```
+
+`frontend/` and `backend/` are deployed separately (see `docs/DEPLOY.md`) —
+the frontend is a static build (Vercel-friendly), the backend is a standalone
+API the frontend talks to cross-origin. Locally, run both at once (see Setup
+below).
 
 ## Tools wired into the loop
 
@@ -63,14 +68,22 @@ mock/offline fallback so the demo survives a dead key or rate limit.
 ## Setup
 
 ```bash
+# backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # fill in ANTHROPIC_API_KEY, TAVILY_API_KEY, AMASS_API_KEY, NEBIUS_API_KEY
 python scripts/fetch_datasets.py   # downloads GenAge/DrugAge CSVs once
-uvicorn backend.server.app:app --reload
+uvicorn backend.server.app:app --reload   # http://localhost:8000 (API only)
+
+# frontend (separate terminal)
+cd frontend
+npm install
+npm run dev   # http://localhost:5173 — talks to the backend above by default
 ```
 
-Open `http://localhost:8000`, type a longevity question, watch it run.
+Open `http://localhost:5173`, type a longevity question, watch it run. For
+deploying the frontend on Vercel and the backend on a Nebius VM, see
+`docs/DEPLOY.md`.
 
 ## Recorded fallback
 
@@ -82,5 +95,5 @@ during judging. See [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
 ## Status
 
 Early scaffold. See `docs/ARCHITECTURE.md` for open TODOs — notably
-confirming the exact Amass API/MCP contract and Nebius base URL/model IDs
-against the credentials issued at the event.
+confirming the exact Nebius base URL/model IDs against the credentials
+issued at the event (the Amass contract is confirmed).

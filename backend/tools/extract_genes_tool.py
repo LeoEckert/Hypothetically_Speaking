@@ -97,4 +97,8 @@ def run(args: dict) -> dict:
         "mock": False,
         "error": None,
         "genes": genes,
+        "usage": {
+            "prompt_tokens": resp.usage.prompt_tokens,
+            "completion_tokens": resp.usage.completion_tokens,
+        },
     }
