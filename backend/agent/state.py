@@ -81,7 +81,7 @@ class RunState:
         self.tool_calls_made += 1
         self.trace.append(
             ToolCallRecord(
-                step=self.tool_calls_made,
+                step=len(self.trace) + 1,
                 tool_name=tool_name,
                 args=args,
                 result_summary=result_summary,
@@ -93,6 +93,23 @@ class RunState:
             self.nebius_calls += 1
             self.nebius_prompt_tokens += usage.get("prompt_tokens", 0) or 0
             self.nebius_completion_tokens += usage.get("completion_tokens", 0) or 0
+
+    def record_external_call(self, tool_name: str, args: dict, result_summary: str, mock: bool = False) -> int:
+        """A call made outside the agent's tool budget (the grounding stage's
+        Amass and Claude calls): it appears in the trace and the cost summary
+        but does not count against max_tool_calls. Returns its step number."""
+        step = len(self.trace) + 1
+        self.trace.append(
+            ToolCallRecord(step=step, tool_name=tool_name, args=args, result_summary=result_summary, mock=mock, usage=None)
+        )
+        return step
+
+    def record_anthropic_tokens(self, usage: dict) -> None:
+        self.anthropic_calls += 1
+        self.anthropic_input_tokens += usage.get("input_tokens", 0) or 0
+        self.anthropic_output_tokens += usage.get("output_tokens", 0) or 0
+        self.anthropic_cache_creation_input_tokens += usage.get("cache_creation_input_tokens", 0) or 0
+        self.anthropic_cache_read_input_tokens += usage.get("cache_read_input_tokens", 0) or 0
 
     def record_anthropic_usage(self, response) -> None:
         """Accumulate token usage from an Anthropic Messages API response.

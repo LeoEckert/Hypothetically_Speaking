@@ -417,10 +417,10 @@ def test_premises_mixed_verdicts_and_unverified_gap_recorded():
     assert len(set(statuses.values())) > 1, "a uniform verdict set is a bug, not a result"
     gaps = {p.statement: p for p in grounding.unverified_premises}
     assert gaps["mitochondrial biogenesis extends human healthspan"].absence_checked == (
-        "amass biomedcore+trialcore, 0 records for the pair"
+        "amass biomedcore+trialcore, 0 records over 2 searches"
     )
     assert gaps["SIRT1 deacetylates PGC-1alpha"].absence_checked == (
-        "amass biomedcore+trialcore, 1 records for the pair, none verify the link"
+        "amass biomedcore+trialcore, 1 records over 2 searches, none verify the link"
     )
     assert all(gap.evidence == [] for gap in gaps.values()), "UNVERIFIED carries no evidence"
     assert "PMID:999" in grounding.knowledge_graph
@@ -468,7 +468,7 @@ def test_premises_are_persisted_with_their_verdict_history():
     assert "Q sirt1?" in view
     assert "activating SIRT1 improves mitochondrial biogenesis  [ESTABLISHED]" in view
     assert "PMID:999  knockout mouse" in view
-    assert "absence checked: amass biomedcore+trialcore, 0 records for the pair" in view
+    assert "absence checked: amass biomedcore+trialcore, 0 records over 2 searches" in view
     assert "premise=3" in view and "question=1" in view
 
 
@@ -534,7 +534,7 @@ def test_select_keeps_one_hypothesis_per_weak_link_with_its_evidence_context():
     # the gap's recorded absence is what it is missing.
     assert kept[0].supported_by == [premise_id(_SIRT1)]
     assert kept[0].conflicts_with == []
-    assert kept[0].missing == "amass biomedcore+trialcore, 0 records for the pair"
+    assert kept[0].missing == "amass biomedcore+trialcore, 0 records over 2 searches"
     assert [reason for _, reason in dropped] == [
         "second hypothesis for the same link",
         "compound claim",
@@ -584,3 +584,81 @@ def test_generator_target_reference_resolves_index_or_entity_names():
     assert resolve_target("Mitochondrial Biogenesis extends Human Healthspan [UNVERIFIED]", weak) is weak["P1"]
     assert resolve_target("P7", weak) is None
     assert resolve_target("SIRT1 -> PGC-1alpha", weak) is None
+
+
+# --- destination, measurability, second look, ledger, rejected audit ------------
+
+
+def test_destination_restricts_hypotheses_to_links_ending_at_the_outcome():
+    grounding = _ground(_Decomposition(
+        coherent=True, why="cause, mechanism, outcome", triples=[_SIRT1, _HEALTH], destination="human healthspan",
+    ))
+    assert grounding.destination == "human healthspan"
+    assert "Destination (the outcome asked about): human healthspan" in grounding.knowledge_graph
+    # weak links: SIRT1->PGC-1alpha (UNVERIFIED via stub) and biogenesis->healthspan; only the latter ends at the destination
+    assert [p.statement for p in grounding.weak_premises] == ["mitochondrial biogenesis extends human healthspan"]
+    aimed_at_pgc = _hypothesis("SIRT1 deacetylates PGC-1alpha in human hepatocytes", subject="SIRT1", obj="PGC-1alpha", targets=premise_id(_PGC))
+    assert _testable(aimed_at_pgc, grounding) == "does not end at the destination node (human healthspan)"
+    assert _testable(_hypothesis("exercise-driven mitochondrial biogenesis extends human healthspan at 12 months"), grounding) is None
+
+
+def test_vague_wording_is_not_measurable():
+    grounding = _ground()
+    assert _testable(_hypothesis("mitochondrial biogenesis extends human healthspan within weeks"), grounding) == "vague or unmeasurable wording"
+    assert _testable(_hypothesis("mitochondrial biogenesis may extend human healthspan"), grounding) == "vague or unmeasurable wording"
+    assert _testable(_hypothesis("mitochondrial biogenesis extends human healthspan at 12 months"), grounding) is None
+
+
+def test_second_look_widens_the_query_before_calling_a_link_unverified():
+    class _Repo:
+        def __init__(self):
+            self.queries = []
+
+        def find(self, query):
+            self.queries.append(query.text)
+            # only the verb-bearing query finds the paper
+            return [Paper(amass_id="AMBC_77", title="found on second look", pmid="777")] if "extends" in query.text else []
+
+        def count_direct(self, a, c):
+            return 0
+
+    class _Verifier:
+        def verify(self, link, papers):
+            return Verification(status=PremiseStatus.ESTABLISHED, why="second look", evidence=[Evidence(amass_id="AMBC_77", pmid="777", how="RCT")])
+
+    repo = _Repo()
+    status, evidence, absence, why, _ = premises.activate(_HEALTH, [repo], _Verifier())
+    assert repo.queries == [
+        "mitochondrial biogenesis human healthspan",
+        "mitochondrial biogenesis extends human healthspan",
+        "mitochondrial biogenesis human healthspan randomized trial",
+    ]
+    assert status is PremiseStatus.ESTABLISHED and evidence[0].pmid == "777" and absence is None
+
+
+def test_rejected_candidates_are_persisted_for_the_audit():
+    knowledge_base = SqliteKnowledgeBase(":memory:")
+    grounding = premises.extract(
+        "sirt1?",
+        triplifier=_StubTriplifier(_Decomposition(coherent=True, why="ok", triples=[_SIRT1, _HEALTH])),
+        prober=_StubProber(), sources=[_StubLinkRepo()], verifier=_StubVerifier(),
+        generator=_StubGenerator(), knowledge_base=knowledge_base, run_id="r-rej",
+    )
+    assert len(grounding.rejected) == 7 and all(h.dropped for h in grounding.rejected)
+    view = knowledge_base.describe()
+    assert "rejected hypothesis:" in view and "(compound claim)" in view
+    from backend.kgviz.graph import load_graph
+    graph = load_graph(knowledge_base.connection)
+    rejected_nodes = [n for n in graph["nodes"] if n["kind"] == "hypothesis" and n["dropped"]]
+    # One node per distinct rejected statement (four share the same sentence), each carrying its reason.
+    assert len(rejected_nodes) == 4 and all(n["dropped"] for n in rejected_nodes)
+    assert graph["nodes"][[n["kind"] for n in graph["nodes"]].index("question")]["destination"] == ""
+
+
+def test_ledger_streams_every_external_call():
+    from backend.grounding.adapters import Ledger
+
+    seen = []
+    ledger = Ledger(seen.append)
+    ledger.append({"tool": "amass", "args": {"core": "biomedcore", "query": "q"}, "summary": "3 records", "usage": None, "cached": False})
+    assert seen == list(ledger) and seen[0]["tool"] == "amass"

@@ -134,17 +134,18 @@ def replay() -> RunTrace:
 
 
 
-def ground(question: str) -> premises.Grounding:
-    """L0-L3 with live adapters; the knowledge base caches every Claude call."""
+def ground(question: str, ledger=None) -> premises.Grounding:
+    """L0-L4 with live adapters; the knowledge base caches every Claude call and
+    Amass query. `ledger` (adapters.Ledger) receives every external call."""
     knowledge_base = SqliteKnowledgeBase()
     return premises.extract(
         question,
-        triplifier=ClaudeTriplifier(knowledge_base),
-        prober=ClaudeProber(knowledge_base),
-        sources=[AmassPaperRepository(knowledge_base), AmassTrialRepository(knowledge_base)],
-        verifier=ClaudeVerifier(knowledge_base),
+        triplifier=ClaudeTriplifier(knowledge_base, ledger),
+        prober=ClaudeProber(knowledge_base, ledger),
+        sources=[AmassPaperRepository(knowledge_base, ledger), AmassTrialRepository(knowledge_base, ledger)],
+        verifier=ClaudeVerifier(knowledge_base, ledger),
         # The seam: swap in any object with generate(grounding) -> list[Hypothesis].
-        generator=ClaudeHypothesisGenerator(knowledge_base),
+        generator=ClaudeHypothesisGenerator(knowledge_base, ledger),
         knowledge_base=knowledge_base,
     )
 
@@ -173,6 +174,8 @@ def main(argv: list[str]) -> int:
         print(grounding.knowledge_graph, file=sys.stderr)
         for hypothesis in grounding.hypotheses:
             print(f"{hypothesis.id}: {hypothesis.statement}", file=sys.stderr)
+        for hypothesis in grounding.rejected:
+            print(f"rejected ({hypothesis.dropped}): {hypothesis.statement}", file=sys.stderr)
         json.dump(grounding.model_dump(mode="json"), sys.stdout, indent=2)
         print()
         return 0

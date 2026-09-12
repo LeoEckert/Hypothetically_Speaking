@@ -80,8 +80,23 @@ def _parse_fence(text: str, schema: type[BaseModel]) -> BaseModel:
         raise ValueError(f"unparseable model reply ({exc}): {text[:300]!r}") from exc
 
 
+class Ledger(list):
+    """Every external call the grounding makes, as it happens: {"tool", "args",
+    "summary", "usage", "cached"}. A list, so it is trivially thread-safe for
+    append, with an optional callback so the caller can stream it live."""
+
+    def __init__(self, on_append=None) -> None:
+        super().__init__()
+        self.on_append = on_append
+
+    def append(self, entry: dict) -> None:  # type: ignore[override]
+        super().append(entry)
+        if self.on_append is not None:
+            self.on_append(entry)
+
+
 def _claude(
-    prompt: str, schema: type[BaseModel], cache: LLMCache | None = None
+    prompt: str, schema: type[BaseModel], cache: LLMCache | None = None, ledger: Ledger | None = None, stage: str = ""
 ) -> tuple[BaseModel, str]:
     """The single LLM entry point. Reads ANTHROPIC_API_KEY from the environment.
 
@@ -103,6 +118,8 @@ def _claude(
     if cache is not None:
         stored = cache.cached_response(digest)
         if stored is not None:
+            if ledger is not None:
+                ledger.append({"tool": "grounding", "args": {"stage": stage, "model": MODEL}, "summary": "cache hit — identical prompt replayed", "usage": None, "cached": True})
             return schema.model_validate_json(stored), digest
 
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -116,18 +133,35 @@ def _claude(
 
     if cache is not None:
         cache.store_response(digest, MODEL, result.model_dump_json())
+    if ledger is not None:
+        usage = getattr(response, "usage", None)
+        ledger.append({
+            "tool": "grounding",
+            "args": {"stage": stage, "model": MODEL},
+            "summary": text[:200],
+            "usage": {
+                "input_tokens": getattr(usage, "input_tokens", 0) or 0,
+                "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+            },
+            "cached": False,
+        })
     return result, digest
 
 
 class _CachingAdapter:
     """Shared constructor: every Claude-backed adapter records its last prompt hash."""
 
-    def __init__(self, cache: LLMCache | None = None) -> None:
+    stage = ""
+
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None) -> None:
         self.cache = cache
+        self.ledger = ledger
         self.last_prompt_hash: str | None = None
 
     def _call(self, prompt: str, schema: type[BaseModel]) -> BaseModel:
-        result, self.last_prompt_hash = _claude(prompt, schema, self.cache)
+        result, self.last_prompt_hash = _claude(prompt, schema, self.cache, self.ledger, self.stage)
         return result
 
 
@@ -193,6 +227,8 @@ class _Proposals(BaseModel):
 class ClaudeTriplifier(_CachingAdapter):
     """L0. Coherence check, then `A -verb-> B` triples with nothing added."""
 
+    stage = "L0 split"
+
     def triplify(self, raw: str) -> Decomposition:
         return self._call(
             "You decompose a longevity research question into its stated premises.\n\n"
@@ -210,13 +246,18 @@ class ClaudeTriplifier(_CachingAdapter):
             "'mitochondrial biogenesis', 'human healthspan' — never 'activating SIRT1' "
             "or 'improved mitochondrial biogenesis'. Put the intervention or change into "
             "the verb instead: 'activation improves', 'increase extends'. Reuse the exact "
-            "same spelling for an entity every time it appears.",
+            "same spelling for an entity every time it appears.\n"
+            "`destination` is the outcome the question ultimately asks about — its "
+            "dependent variable (here that would be the entity whose change the asker "
+            "cares about, e.g. 'human healthspan'), copied exactly from one triple's object.",
             Decomposition,
         )
 
 
 class ClaudeProber(_CachingAdapter):
     """L1. Elaborates the chain from internal knowledge only — probes, not output."""
+
+    stage = "L1 probe"
 
     def probe(self, triples: list[Triple]) -> list[Triple]:
         chain = "\n".join(f"{t.subject} -{t.verb}-> {t.object}" for t in triples)
@@ -237,6 +278,8 @@ class ClaudeProber(_CachingAdapter):
 
 class ClaudeVerifier(_CachingAdapter):
     """L2. Reads the papers a link retrieved and says whether they verify it, and how."""
+
+    stage = "L2 verify"
 
     def verify(self, link: Triple, papers: list[Paper]) -> Verification:
         by_id = {paper.amass_id: paper for paper in papers}
@@ -260,6 +303,8 @@ class ClaudeVerifier(_CachingAdapter):
             "shows the link is being tested. Cite only IDs given.",
             _Verdict,
             self.cache,
+            self.ledger,
+            f"L2 verify: {link.subject} -> {link.object}",
         )
         return Verification(
             status=verdict.status,
@@ -282,6 +327,8 @@ class ClaudeVerifier(_CachingAdapter):
 class ClaudeHypothesisGenerator(_CachingAdapter):
     """Our HypothesisGenerator. One claim per hypothesis, in the graph's own terms."""
 
+    stage = "L4 hypothesize"
+
     def generate(self, grounding: Grounding) -> list[Hypothesis]:
         weak = grounding.weak_premises
         if not weak:
@@ -299,7 +346,9 @@ class ClaudeHypothesisGenerator(_CachingAdapter):
             "the link, restated as an interventional prediction.\n\n"
             f"Knowledge graph (ESTABLISHED links are settled; do not re-hypothesize them):\n"
             f"{grounding.knowledge_graph}\n\n"
-            f"Weak links, one hypothesis each:\n{listed}\n\n"
+            + (f"Destination — the outcome the question asks about: {grounding.destination}. "
+               "Every hypothesis must end there.\n\n" if grounding.destination else "")
+            + f"Weak links, one hypothesis each:\n{listed}\n\n"
             "For every P-index write exactly one hypothesis in this frame: intervening on "
             "the link's SUBJECT will produce the link's OBJECT in a named model system. "
             "Keep the subject and object exactly as written in the link; choose only the "
@@ -307,10 +356,13 @@ class ClaudeHypothesisGenerator(_CachingAdapter):
             "measure the object), the model system (which humans, animals or cells), and "
             "the falsification criterion (the observation that would reject it — a null "
             "readout, or the readout improving while a harm appears). `statement` is at "
-            "most 20 words, one claim, no 'and', 'but', 'even if' or semicolons. Prefer "
-            "the model system in which the readout is obtainable within two years; when "
-            "the link names humans, the model system must be human (cells, tissue or "
-            "trial participants), not mice or worms. "
+            "most 20 words, one claim, no 'and', 'but', 'even if' or semicolons, and it "
+            "must be measurable: name the readout or its validated proxy, never vague "
+            "timing like 'within weeks' or 'over time' — if time matters, state the "
+            "horizon exactly ('at 12 months'). Prefer the model system in which the "
+            "readout is obtainable within two years; when the link names humans, the "
+            "model system must be human (cells, tissue or trial participants), not mice "
+            "or worms. "
             "`targets` is the P-index exactly as listed, e.g. \"P2\".",
             _Proposals,
         )
@@ -417,13 +469,17 @@ class ClaudeEntityExtractor(_CachingAdapter):
         return result.entities
 
 
-def _amass_records(url: str, params: dict, cache: LLMCache | None) -> list[dict]:
+def _amass_records(url: str, params: dict, cache: LLMCache | None, ledger: Ledger | None = None) -> list[dict]:
     """GET one Amass core. With a cache, an identical query replays the recorded
     records, so a repeated question is verified against the same literature —
     the retrieval half of reproducibility, next to the LLM cache."""
+    core = url.rsplit("/cores/", 1)[-1].split("/", 1)[0]
     key = prompt_hash(f"{url}?{json.dumps(params, sort_keys=True)}", "amass")
     if cache is not None and (stored := cache.cached_response(key)) is not None:
-        return json.loads(stored)
+        records = json.loads(stored)
+        if ledger is not None:
+            ledger.append({"tool": "amass", "args": {"core": core, "query": params["query"]}, "summary": f"cache hit — {len(records)} records replayed", "usage": None, "cached": True})
+        return records
     # ponytail: one retry, no backoff. Amass allows 60 req/60s and one run
     # makes a handful; a single slow read must not fail the whole grounding.
     for attempt in (1, 2):
@@ -445,18 +501,21 @@ def _amass_records(url: str, params: dict, cache: LLMCache | None) -> list[dict]
     records = response.json().get("data", [])
     if cache is not None:
         cache.store_response(key, "amass", json.dumps(records))
+    if ledger is not None:
+        ledger.append({"tool": "amass", "args": {"core": core, "query": params["query"]}, "summary": f"{len(records)} records", "usage": None, "cached": False})
     return records
 
 
 class AmassTrialRepository:
     """L2, second source. Registered trials — the only place a human RCT shows up."""
 
-    def __init__(self, cache: LLMCache | None = None) -> None:
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None) -> None:
         self.cache = cache
+        self.ledger = ledger
 
     def find(self, query: LiteratureQuery) -> list[Paper]:
         records = _amass_records(
-            AMASS_TRIALS_URL, {"query": query.text, "limit": AMASS_LIMIT}, self.cache
+            AMASS_TRIALS_URL, {"query": query.text, "limit": AMASS_LIMIT}, self.cache, self.ledger
         )
         return [
             Paper(
@@ -483,8 +542,9 @@ class AmassTrialRepository:
 class AmassPaperRepository:
     """Stage 2 and 4, and L2. Amass BiomedCore, filtered server-side."""
 
-    def __init__(self, cache: LLMCache | None = None) -> None:
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None) -> None:
         self.cache = cache
+        self.ledger = ledger
 
     def find(self, query: LiteratureQuery) -> list[Paper]:
         records = _amass_records(
@@ -498,6 +558,7 @@ class AmassPaperRepository:
                 "isRetracted": "false",
             },
             self.cache,
+            self.ledger,
         )
         return [
             Paper(

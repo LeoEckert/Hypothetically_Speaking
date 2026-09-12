@@ -52,42 +52,46 @@ def _emit(on_event: EventCallback, event: dict) -> None:
 _GROUNDING_KEYS = ("ANTHROPIC_API_KEY", "AMASS_API_KEY")
 
 
-def _grounding_payload(question: str) -> dict:
-    """Run L0-L4 and return the same structured payload sent to the UI."""
+def _grounding_payload(question: str, state: RunState | None = None, on_event=None) -> dict:
+    """Run L0-L4 and return the same structured payload sent to the UI.
+
+    Every Amass and Claude call the grounding makes is streamed as a
+    tool_call/tool_result pair and recorded on the run state (trace, Anthropic
+    tokens, Amass credits) so the trace and cost panel show the whole run —
+    without counting against the agent's tool budget."""
     missing = [name for name in _GROUNDING_KEYS if not os.environ.get(name)]
+    empty = {"coherent": None, "triples": [], "destination": "", "premises": [], "knowledge_graph": "", "hypotheses": [], "rejected": []}
     if missing:
-        return {
-            "status": "skipped",
-            "coherent": None,
-            "why": f"Missing {', '.join(missing)}",
-            "triples": [],
-            "premises": [],
-            "knowledge_graph": "",
-            "hypotheses": [],
-        }
+        return {"status": "skipped", "why": f"Missing {', '.join(missing)}", **empty}
     try:
+        from backend.grounding.adapters import Ledger
         from scripts.run_grounding import ground
 
-        grounding = ground(question)
+        def record(entry: dict) -> None:
+            if state is None:
+                return
+            step = state.record_external_call(entry["tool"], entry["args"], entry["summary"])
+            if entry["tool"] == "grounding" and entry.get("usage"):
+                state.record_anthropic_tokens(entry["usage"])
+            _emit(on_event, {"type": "tool_call", "tool": entry["tool"], "args": entry["args"], "step": step})
+            _emit(on_event, {"type": "tool_result", "tool": entry["tool"], "step": step, "mock": False, "error": None, "summary": entry["summary"], "usage": None})
+
+        if state is not None and state.amass_credits_before is None:
+            state.amass_credits_before = amass_tool.get_credits()
+        grounding = ground(question, ledger=Ledger(record))
         return {
             "status": "complete",
             "coherent": grounding.coherent,
             "why": grounding.why,
             "triples": [triple.model_dump(mode="json") for triple in grounding.triples],
+            "destination": grounding.destination,
             "premises": [premise.model_dump(mode="json") for premise in grounding.premises],
             "knowledge_graph": grounding.knowledge_graph,
             "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in grounding.hypotheses],
+            "rejected": [hypothesis.model_dump(mode="json") for hypothesis in grounding.rejected],
         }
     except Exception as exc:
-        return {
-            "status": "failed",
-            "coherent": None,
-            "why": str(exc),
-            "triples": [],
-            "premises": [],
-            "knowledge_graph": "",
-            "hypotheses": [],
-        }
+        return {"status": "failed", "why": str(exc), **empty}
 
 
 def _grounding_text(payload: dict) -> str:
@@ -316,7 +320,7 @@ def run_agent(
     _emit(on_event, {"type": "start", "run_id": state.run_id, "question": question})
 
     _emit(on_event, {"type": "phase", "phase": "grounding"})
-    grounding = _grounding_payload(question)
+    grounding = _grounding_payload(question, state, on_event)
     grounding_text = _grounding_text(grounding)
     _emit(on_event, {"type": "grounding", **grounding})
 
@@ -391,7 +395,7 @@ def run_agent(
 
                 _emit(
                     on_event,
-                    {"type": "tool_call", "tool": block.name, "args": block.input, "step": state.tool_calls_made + 1},
+                    {"type": "tool_call", "tool": block.name, "args": block.input, "step": len(state.trace) + 1},
                 )
                 if block.name == "amass" and state.amass_credits_before is None:
                     state.amass_credits_before = amass_tool.get_credits()
@@ -415,7 +419,7 @@ def run_agent(
                     {
                         "type": "tool_result",
                         "tool": block.name,
-                        "step": state.tool_calls_made,
+                        "step": len(state.trace),
                         "mock": result.get("mock", False),
                         "error": result.get("error"),
                         "summary": result.get("summary", ""),

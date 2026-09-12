@@ -144,9 +144,11 @@ def test_grounding_payload_preserves_the_l0_trace(monkeypatch):
     monkeypatch.setenv("AMASS_API_KEY", "test-key")
     monkeypatch.setattr(
         "scripts.run_grounding.ground",
-        lambda _: SimpleNamespace(
+        lambda _question, ledger=None: SimpleNamespace(
             coherent=True,
             why="coherent",
+            destination="B",
+            rejected=[],
             triples=[Dumpable({"subject": "A", "verb": "causes", "object": "B"})],
             premises=[
                 Dumpable(
@@ -166,6 +168,7 @@ def test_grounding_payload_preserves_the_l0_trace(monkeypatch):
     payload = _grounding_payload("Does A cause B?")
     assert payload["status"] == "complete"
     assert payload["triples"] == [{"subject": "A", "verb": "causes", "object": "B"}]
+    assert payload["destination"] == "B" and payload["rejected"] == []
     assert "UNVERIFIED" in _grounding_text(payload)
 
 

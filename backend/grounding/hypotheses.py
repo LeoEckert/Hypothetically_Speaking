@@ -24,6 +24,8 @@ from backend.grounding.domain import Grounding, Hypothesis, Premise, PremiseStat
 MAX_WORDS = 20
 # A hypothesis with one of these is two claims wearing one sentence.
 COMPOUND = (" and ", " but ", " even if ", " whereas ", " although ", " unless ", " or ", ";")
+# Not measurable: a reader cannot tell when the prediction has failed.
+VAGUE = ("within weeks", "within days", "within months", "over time", "in the long run", "eventually", "soon", "quickly", "rapidly", "significantly", "may ", "might ", "could ")
 
 
 class HypothesisGenerator(Protocol):
@@ -38,11 +40,16 @@ def testable(hypothesis: Hypothesis, grounding: Grounding) -> str | None:
         return "targets no known premise"
     if target.status is PremiseStatus.ESTABLISHED:
         return "targets an established link"
+    if grounding.destination and any(grounding.ends_at_destination(p) for p in grounding.weak_premises) \
+            and not grounding.ends_at_destination(target):
+        return f"does not end at the destination node ({grounding.destination})"
     if len(hypothesis.statement.split()) > MAX_WORDS:
         return f"statement longer than {MAX_WORDS} words"
     padded = f" {hypothesis.statement.lower()} "
     if any(marker in padded for marker in COMPOUND):
         return "compound claim"
+    if any(marker in padded for marker in VAGUE):
+        return "vague or unmeasurable wording"
     if (hypothesis.subject.lower(), hypothesis.object.lower()) != (target.subject.lower(), target.object.lower()):
         return "does not keep the target link's subject and object"
     if not (hypothesis.intervention and hypothesis.readout and hypothesis.model_system):
@@ -76,7 +83,7 @@ def select(candidates: list[Hypothesis], grounding: Grounding) -> tuple[list[Hyp
         if reason is None and candidate.targets in covered:
             reason = "second hypothesis for the same link"
         if reason is not None:
-            dropped.append((candidate, reason))
+            dropped.append((candidate.model_copy(update={"dropped": reason}), reason))
             continue
         covered.add(candidate.targets)
         target = premises[candidate.targets]

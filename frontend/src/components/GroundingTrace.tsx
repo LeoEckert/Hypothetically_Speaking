@@ -191,6 +191,12 @@ export function GroundingTrace({
           {grounding.triples.map((triple, index) => (
             <TripleGraph key={`${triple.subject}-${triple.verb}-${triple.object}-${index}`} triple={triple} />
           ))}
+          {grounding.destination && (
+            <p className="text-[10px] text-muted-foreground">
+              Destination (the outcome asked about):{" "}
+              <span className="font-medium text-foreground/80">{grounding.destination}</span> — hypotheses must end here.
+            </p>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -218,6 +224,17 @@ export function GroundingTrace({
             </div>
             {grounding.hypotheses.map((hypothesis) => (
               <HypothesisRow key={hypothesis.id} hypothesis={hypothesis} />
+            ))}
+          </div>
+        )}
+
+        {grounding.rejected && grounding.rejected.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-xs font-semibold text-muted-foreground">Rejected candidates</p>
+            {grounding.rejected.map((hypothesis, index) => (
+              <p key={`${hypothesis.statement}-${index}`} className="text-[10px] text-muted-foreground">
+                <span className="line-through">{hypothesis.statement}</span> — {hypothesis.dropped}
+              </p>
             ))}
           </div>
         )}

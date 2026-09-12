@@ -97,6 +97,7 @@ export interface GroundingHypothesis extends GroundingTriple {
   supported_by?: string[]
   conflicts_with?: string[]
   missing?: string | null
+  dropped?: string | null
 }
 
 export interface GroundingEvent {
@@ -105,9 +106,11 @@ export interface GroundingEvent {
   coherent: boolean | null
   why: string
   triples: GroundingTriple[]
+  destination?: string
   premises: GroundingPremise[]
   knowledge_graph: string
   hypotheses: GroundingHypothesis[]
+  rejected?: GroundingHypothesis[]
 }
 
 export interface EvaluationFinding {
