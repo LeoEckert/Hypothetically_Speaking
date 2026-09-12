@@ -227,6 +227,32 @@ confirms every final hypothesis is a knowledge-base hypothesis node whose
 target premise lies on the question's walk, and reports how many statements
 all runs share.
 
+**Clean-room results (2026-09-12, four sequential runs, fresh base each).**
+The core of the chain is stable across cold starts — the same five links
+with the same verdict every time:
+
+| link | 4/4 verdict | hypothesis in |
+|---|---|---|
+| SIRT1 → mitochondrial biogenesis | CONTESTED | 4/4 |
+| mitochondrial biogenesis → human healthspan | UNVERIFIED | 4/4 |
+| SIRT1 → human healthspan | UNVERIFIED | 3/4 (one dropped as compound) |
+| SIRT1 → PGC-1alpha | ESTABLISHED | — |
+| PGC-1alpha → mitochondrial biogenesis | ESTABLISHED | — |
+
+What varies is the L1 elaboration downstream of biogenesis (respiratory
+capacity / ATP / mitochondrial function / energy metabolism → ROS or
+oxidative stress → damage or senescence): a different route each cold
+start, each verified on its own merits. Hypothesis *sentences* differ run to
+run; the unit that reproduces is (target link, human model system,
+falsification), which is what the knowledge base records and the trajectory
+check verifies. `check_trajectory` passed for all four reports: every final
+hypothesis PLAN ranked was a knowledge-base hypothesis aimed at a premise on
+the question's trajectory.
+
+Known gap: when the filter drops the only hypothesis for a weak link (seq_2,
+compound claim), that link goes to PLAN without a candidate. A retry for
+uncovered links is the next step.
+
 **Audit.** Every question, link, verdict, evidence record and hypothesis is a node in the
 knowledge base; `verify` steps append per run, never overwrite.
 `python -m scripts.run_grounding --kb` prints the whole thing readably. A
