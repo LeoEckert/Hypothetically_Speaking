@@ -146,6 +146,7 @@ class Hypothesis(Triple):
     conflicts_with: list[str] = Field(default_factory=list)  # CONTESTED premises adjacent in the chain
     missing: str | None = None  # the target's absence_checked, i.e. the gap itself
     dropped: str | None = None  # set on rejected candidates: the one reason, kept for the audit trail
+    story: str = ""  # from the question to this experiment, in plain sentences — computed, not generated
 
 
 class Grounding(BaseModel):

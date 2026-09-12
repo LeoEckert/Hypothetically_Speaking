@@ -71,6 +71,31 @@ def _adjacent(target: Premise, premises: list[Premise], status: PremiseStatus) -
     ]
 
 
+def story(hypothesis: Hypothesis, target: Premise, grounding: Grounding, premises: dict[str, Premise]) -> str:
+    """Why this experiment follows from the question. Deterministic prose over
+    the graph, so the same chain always tells the same story."""
+    asked = "; ".join(f"{t.subject} {t.verb} {t.object}" for t in grounding.triples)
+    lines = [f"Your question asserts: {asked}."]
+    settled = [premises[i].statement for i in hypothesis.supported_by if i in premises]
+    if settled:
+        lines.append("Checked and settled by the literature: " + "; ".join(settled) + ".")
+    contested = [premises[i].statement for i in hypothesis.conflicts_with if i in premises]
+    if contested:
+        lines.append("Still contested nearby: " + "; ".join(contested) + ".")
+    if target.status is PremiseStatus.UNVERIFIED:
+        lines.append(f"The load-bearing link — {target.statement} — has no direct verification ({target.absence_checked}).")
+    else:
+        lines.append(f"The load-bearing link — {target.statement} — is contested: the literature disagrees.")
+    lines.append(
+        f"This hypothesis tests that link directly: {hypothesis.intervention}, measuring {hypothesis.readout} "
+        f"in {hypothesis.model_system}. It is rejected if {hypothesis.falsification}"
+        + ("" if hypothesis.falsification.rstrip().endswith(".") else ".")
+    )
+    if grounding.destination:
+        lines.append(f"It ends at {grounding.destination}, the outcome your question asks about.")
+    return " ".join(lines)
+
+
 def select(candidates: list[Hypothesis], grounding: Grounding) -> tuple[list[Hypothesis], list[tuple[Hypothesis, str]]]:
     """Filter, one per weak link, number, attach evidence context.
     Same candidates in -> same hypotheses out."""
@@ -87,14 +112,13 @@ def select(candidates: list[Hypothesis], grounding: Grounding) -> tuple[list[Hyp
             continue
         covered.add(candidate.targets)
         target = premises[candidate.targets]
-        kept.append(
-            candidate.model_copy(
-                update={
-                    "id": f"H{len(kept) + 1}",
-                    "supported_by": _adjacent(target, grounding.premises, PremiseStatus.ESTABLISHED),
-                    "conflicts_with": _adjacent(target, grounding.premises, PremiseStatus.CONTESTED),
-                    "missing": target.absence_checked,
-                }
-            )
+        placed = candidate.model_copy(
+            update={
+                "id": f"H{len(kept) + 1}",
+                "supported_by": _adjacent(target, grounding.premises, PremiseStatus.ESTABLISHED),
+                "conflicts_with": _adjacent(target, grounding.premises, PremiseStatus.CONTESTED),
+                "missing": target.absence_checked,
+            }
         )
+        kept.append(placed.model_copy(update={"story": story(placed, target, grounding, premises)}))
     return kept, dropped

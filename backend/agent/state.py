@@ -55,6 +55,9 @@ class RunState:
     anthropic_output_tokens: int = 0
     anthropic_cache_creation_input_tokens: int = 0
     anthropic_cache_read_input_tokens: int = 0
+    # Per-model token counts: the grounding stage runs on Haiku while the loop
+    # runs on ANTHROPIC_MODEL, and each must be priced at its own rate.
+    anthropic_by_model: dict = field(default_factory=dict)
 
     # Nebius usage, accumulated from extract_genes tool calls this run.
     nebius_calls: int = 0
@@ -104,12 +107,19 @@ class RunState:
         )
         return step
 
-    def record_anthropic_tokens(self, usage: dict) -> None:
+    def record_anthropic_tokens(self, usage: dict, model: str = "") -> None:
         self.anthropic_calls += 1
         self.anthropic_input_tokens += usage.get("input_tokens", 0) or 0
         self.anthropic_output_tokens += usage.get("output_tokens", 0) or 0
         self.anthropic_cache_creation_input_tokens += usage.get("cache_creation_input_tokens", 0) or 0
         self.anthropic_cache_read_input_tokens += usage.get("cache_read_input_tokens", 0) or 0
+        bucket = self.anthropic_by_model.setdefault(
+            model or "unknown",
+            {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+        )
+        bucket["calls"] += 1
+        for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+            bucket[key] += usage.get(key, 0) or 0
 
     def record_anthropic_usage(self, response) -> None:
         """Accumulate token usage from an Anthropic Messages API response.
@@ -117,11 +127,13 @@ class RunState:
         usage = getattr(response, "usage", None)
         if usage is None:
             return
-        self.anthropic_calls += 1
-        self.anthropic_input_tokens += getattr(usage, "input_tokens", 0) or 0
-        self.anthropic_output_tokens += getattr(usage, "output_tokens", 0) or 0
-        self.anthropic_cache_creation_input_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
-        self.anthropic_cache_read_input_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
+        self.record_anthropic_tokens(
+            {
+                key: getattr(usage, key, 0) or 0
+                for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+            },
+            getattr(response, "model", "") or "",
+        )
 
     def budget_exceeded(self) -> bool:
         elapsed = time.time() - self.started_at

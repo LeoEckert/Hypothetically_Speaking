@@ -144,7 +144,7 @@ def test_grounding_payload_preserves_the_l0_trace(monkeypatch):
     monkeypatch.setenv("AMASS_API_KEY", "test-key")
     monkeypatch.setattr(
         "scripts.run_grounding.ground",
-        lambda _question, ledger=None: SimpleNamespace(
+        lambda _question, **_options: SimpleNamespace(
             coherent=True,
             why="coherent",
             destination="B",

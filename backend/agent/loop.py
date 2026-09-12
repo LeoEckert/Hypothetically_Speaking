@@ -52,7 +52,7 @@ def _emit(on_event: EventCallback, event: dict) -> None:
 _GROUNDING_KEYS = ("ANTHROPIC_API_KEY", "AMASS_API_KEY")
 
 
-def _grounding_payload(question: str, state: RunState | None = None, on_event=None) -> dict:
+def _grounding_payload(question: str, state: RunState | None = None, on_event=None, mode: str = "normal") -> dict:
     """Run L0-L4 and return the same structured payload sent to the UI.
 
     Every Amass and Claude call the grounding makes is streamed as a
@@ -72,15 +72,21 @@ def _grounding_payload(question: str, state: RunState | None = None, on_event=No
                 return
             step = state.record_external_call(entry["tool"], entry["args"], entry["summary"])
             if entry["tool"] == "grounding" and entry.get("usage"):
-                state.record_anthropic_tokens(entry["usage"])
+                state.record_anthropic_tokens(entry["usage"], entry["args"].get("model", ""))
             _emit(on_event, {"type": "tool_call", "tool": entry["tool"], "args": entry["args"], "step": step})
             _emit(on_event, {"type": "tool_result", "tool": entry["tool"], "step": step, "mock": False, "error": None, "summary": entry["summary"], "usage": None})
 
         if state is not None and state.amass_credits_before is None:
             state.amass_credits_before = amass_tool.get_credits()
-        grounding = ground(question, ledger=Ledger(record))
+        grounding = ground(
+            question,
+            ledger=Ledger(record),
+            fast=mode == "fast",
+            on_progress=lambda event: _emit(on_event, {"type": "grounding_step", **event}),
+        )
         return {
             "status": "complete",
+            "mode": mode,
             "coherent": grounding.coherent,
             "why": grounding.why,
             "triples": [triple.model_dump(mode="json") for triple in grounding.triples],
@@ -105,7 +111,7 @@ def _grounding_text(payload: dict) -> str:
     ]
     candidates = "\n".join(
         f"- {h['statement']}  (tests: {h['targets']}; do: {h['intervention']}; "
-        f"measure: {h['readout']}; in: {h['model_system']})"
+        f"measure: {h['readout']}; in: {h['model_system']})\n  why: {h.get('story', '')}"
         for h in payload.get("hypotheses", [])
     )
     return (
@@ -300,6 +306,7 @@ def run_agent(
     run_id: str | None = None,
     max_tool_calls: int | None = None,
     should_cancel: CancelCheck = None,
+    mode: str = "normal",
 ) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
@@ -320,7 +327,7 @@ def run_agent(
     _emit(on_event, {"type": "start", "run_id": state.run_id, "question": question})
 
     _emit(on_event, {"type": "phase", "phase": "grounding"})
-    grounding = _grounding_payload(question, state, on_event)
+    grounding = _grounding_payload(question, state, on_event, mode)
     grounding_text = _grounding_text(grounding)
     _emit(on_event, {"type": "grounding", **grounding})
 

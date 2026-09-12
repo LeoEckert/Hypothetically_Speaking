@@ -98,11 +98,31 @@ export interface GroundingHypothesis extends GroundingTriple {
   conflicts_with?: string[]
   missing?: string | null
   dropped?: string | null
+  story?: string
+}
+
+export type RunMode = "fast" | "normal"
+
+/** Fired as each grounding stage lands, before the full `grounding` event. */
+export interface GroundingStepEvent {
+  type: "grounding_step"
+  stage: "L0" | "L1" | "L2" | "L4"
+  coherent?: boolean
+  why?: string
+  triples?: GroundingTriple[]
+  destination?: string
+  links?: GroundingTriple[]
+  cut?: number
+  link?: GroundingTriple
+  status?: GroundingPremise["status"]
+  kept?: number
+  rejected?: number
 }
 
 export interface GroundingEvent {
   type: "grounding"
   status: "complete" | "skipped" | "failed"
+  mode?: RunMode
   coherent: boolean | null
   why: string
   triples: GroundingTriple[]
@@ -157,6 +177,7 @@ export interface EvaluationResult {
 export type SseEvent =
   | { type: "start"; run_id: string; question: string }
   | { type: "phase"; phase: string }
+  | GroundingStepEvent
   | GroundingEvent
   | { type: "assistant_text"; text: string }
   | { type: "tool_call"; tool: string; args: Record<string, unknown>; step: number }
@@ -196,5 +217,7 @@ export interface RunRecord {
   evidence?: Record<string, EvidenceItem>
   hypotheses?: RankedHypothesis[]
   grounding?: GroundingEvent
+  groundingSteps?: GroundingStepEvent[]
+  mode?: RunMode
   evaluations?: EvaluationResult[]
 }

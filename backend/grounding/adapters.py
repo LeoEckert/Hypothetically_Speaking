@@ -40,6 +40,18 @@ from backend.grounding.domain import (
 )
 
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+# Tried and rejected: Haiku for the L2 verdicts. On the same records it called
+# every link ESTABLISHED, including "mitochondrial biogenesis extends human
+# healthspan", which Sonnet consistently and correctly leaves UNVERIFIED — and
+# with no weak link there is nothing to hypothesize about. The verdict is the
+# trust-bearing judgement, so it stays on the main model. Haiku takes the L1
+# probe (a creative elaboration step where a miss costs little); fast mode
+# saves the rest by reading fewer, shorter records.
+FAST_MODEL = os.environ.get("GROUNDING_FAST_MODEL", "claude-haiku-4-5-20251001")
+PROBE_MODEL = os.environ.get("GROUNDING_PROBE_MODEL", FAST_MODEL)
+VERIFY_MODEL = os.environ.get("GROUNDING_VERIFY_MODEL", MODEL)
+ABSTRACT_CHARS_FAST = 1500
+TRIAL_LIMIT_FAST = 10
 MAX_TOKENS = 4096  # a verdict over 20 full abstracts needs the room
 TAVILY_URL = "https://api.tavily.com/search"
 AMASS_URL = "https://api.amass.tech/api/v1/cores/biomedcore/records"
@@ -96,7 +108,8 @@ class Ledger(list):
 
 
 def _claude(
-    prompt: str, schema: type[BaseModel], cache: LLMCache | None = None, ledger: Ledger | None = None, stage: str = ""
+    prompt: str, schema: type[BaseModel], cache: LLMCache | None = None, ledger: Ledger | None = None, stage: str = "",
+    model: str = MODEL,
 ) -> tuple[BaseModel, str]:
     """The single LLM entry point. Reads ANTHROPIC_API_KEY from the environment.
 
@@ -114,17 +127,17 @@ def _claude(
         f"before or after it, matching this JSON schema:\n"
         f"{json.dumps(schema.model_json_schema())}"
     )
-    digest = prompt_hash(instructed, MODEL)
+    digest = prompt_hash(instructed, model)
     if cache is not None:
         stored = cache.cached_response(digest)
         if stored is not None:
             if ledger is not None:
-                ledger.append({"tool": "grounding", "args": {"stage": stage, "model": MODEL}, "summary": "cache hit — identical prompt replayed", "usage": None, "cached": True})
+                ledger.append({"tool": "grounding", "args": {"stage": stage, "model": model}, "summary": "cache hit — identical prompt replayed", "usage": None, "cached": True})
             return schema.model_validate_json(stored), digest
 
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     response = client.messages.create(
-        model=MODEL,
+        model=model,
         max_tokens=MAX_TOKENS,
         messages=[{"role": "user", "content": instructed}],
     )
@@ -132,13 +145,15 @@ def _claude(
     result = _parse_fence(text, schema)
 
     if cache is not None:
-        cache.store_response(digest, MODEL, result.model_dump_json())
+        cache.store_response(digest, model, result.model_dump_json())
     if ledger is not None:
         usage = getattr(response, "usage", None)
         ledger.append({
             "tool": "grounding",
-            "args": {"stage": stage, "model": MODEL},
-            "summary": text[:200],
+            "args": {"stage": stage, "model": model},
+            # The parsed object, not the raw fenced reply: the trace should read
+            # like a result ({"status": "CONTESTED", ...}), not like a transcript.
+            "summary": result.model_dump_json()[:300],
             "usage": {
                 "input_tokens": getattr(usage, "input_tokens", 0) or 0,
                 "output_tokens": getattr(usage, "output_tokens", 0) or 0,
@@ -155,13 +170,14 @@ class _CachingAdapter:
 
     stage = ""
 
-    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None) -> None:
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, model: str | None = None) -> None:
         self.cache = cache
         self.ledger = ledger
+        self.model = model or MODEL
         self.last_prompt_hash: str | None = None
 
     def _call(self, prompt: str, schema: type[BaseModel]) -> BaseModel:
-        result, self.last_prompt_hash = _claude(prompt, schema, self.cache, self.ledger, self.stage)
+        result, self.last_prompt_hash = _claude(prompt, schema, self.cache, self.ledger, self.stage, self.model)
         return result
 
 
@@ -281,10 +297,15 @@ class ClaudeVerifier(_CachingAdapter):
 
     stage = "L2 verify"
 
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, model: str | None = None,
+                 abstract_chars: int = ABSTRACT_CHARS) -> None:
+        super().__init__(cache, ledger, model)
+        self.abstract_chars = abstract_chars
+
     def verify(self, link: Triple, papers: list[Paper]) -> Verification:
         by_id = {paper.amass_id: paper for paper in papers}
         candidates = "\n\n".join(
-            f"{paper.amass_id}\n{paper.title}\n{(paper.abstract or '')[:ABSTRACT_CHARS]}"
+            f"{paper.amass_id}\n{paper.title}\n{(paper.abstract or '')[:self.abstract_chars]}"
             for paper in papers
         )
         # _claude directly, not _call: verify() runs in a thread pool and the
@@ -305,6 +326,7 @@ class ClaudeVerifier(_CachingAdapter):
             self.cache,
             self.ledger,
             f"L2 verify: {link.subject} -> {link.object}",
+            self.model,
         )
         return Verification(
             status=verdict.status,
@@ -509,13 +531,14 @@ def _amass_records(url: str, params: dict, cache: LLMCache | None, ledger: Ledge
 class AmassTrialRepository:
     """L2, second source. Registered trials — the only place a human RCT shows up."""
 
-    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None) -> None:
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, limit: int = AMASS_LIMIT) -> None:
         self.cache = cache
         self.ledger = ledger
+        self.limit = limit
 
     def find(self, query: LiteratureQuery) -> list[Paper]:
         records = _amass_records(
-            AMASS_TRIALS_URL, {"query": query.text, "limit": AMASS_LIMIT}, self.cache, self.ledger
+            AMASS_TRIALS_URL, {"query": query.text, "limit": self.limit}, self.cache, self.ledger
         )
         return [
             Paper(

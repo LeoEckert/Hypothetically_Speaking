@@ -19,7 +19,7 @@ Add a port here if that changes.
 from __future__ import annotations
 
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backend.grounding.domain import (
     Grounding,
@@ -37,8 +37,10 @@ from backend.grounding.stages import new_run_id
 
 SOURCES = "amass biomedcore+trialcore"
 # Each link costs one query per source and one Claude verdict; the L0 triples
-# come first so they are never the ones cut.
+# come first so they are never the ones cut. Fast mode checks the L0 claims
+# plus one hop of elaboration and skips the second-look search.
 MAX_LINKS = 8
+FAST_LINKS = 4
 
 
 def _log(message: str) -> None:
@@ -85,13 +87,13 @@ def second_look_queries(link: Triple) -> list[str]:
     return queries
 
 
-def activate(link: Triple, sources: list, verifier) -> tuple[PremiseStatus, list, str | None, str, str | None]:
+def activate(link: Triple, sources: list, verifier, second_look: bool = True) -> tuple[PremiseStatus, list, str | None, str, str | None]:
     """L2 for one link. Returns (status, evidence, absence_checked, why, prompt_hash)."""
     seen: dict[str, Paper] = {}
     retrieve([f"{link.subject} {link.object}"], sources, seen)
     verification = verifier.verify(link, list(seen.values())) if seen else None
     rounds = 1
-    if verification is None or verification.status is PremiseStatus.UNVERIFIED:
+    if second_look and (verification is None or verification.status is PremiseStatus.UNVERIFIED):
         fresh = retrieve(second_look_queries(link), sources, seen)
         rounds = 2
         if fresh:
@@ -129,11 +131,18 @@ def render_graph(premises: list[Premise], destination: str = "") -> str:
 
 def extract(
     question: str, *, triplifier, prober, sources: list, verifier, generator=None,
-    knowledge_base=None, run_id: str | None = None,
+    knowledge_base=None, run_id: str | None = None, fast: bool = False, on_progress=None,
 ) -> Grounding:
-    """The integration entry point. `generator` is any HypothesisGenerator."""
+    """The integration entry point. `generator` is any HypothesisGenerator.
+    `on_progress(event)` fires as each stage lands, so a UI can draw the
+    chain while the verdicts are still coming in."""
     run_id = run_id or new_run_id()
     node = question_id(question)
+    max_links = FAST_LINKS if fast else MAX_LINKS
+
+    def progress(event: dict) -> None:
+        if on_progress is not None:
+            on_progress(event)
 
     def remember(stage: str, verdict: str, rationale: str, adapter=None) -> None:
         if knowledge_base is None:
@@ -153,6 +162,10 @@ def extract(
         "triplify", "coherent" if decomposition.coherent else "incoherent",
         decomposition.why + " | " + "; ".join(Premise.render(t) for t in decomposition.triples), triplifier,
     )
+    progress({
+        "stage": "L0", "coherent": decomposition.coherent, "why": decomposition.why,
+        "triples": [t.model_dump() for t in decomposition.triples], "destination": decomposition.destination,
+    })
     if not decomposition.coherent or not decomposition.triples:
         _log(f"L0: not a coherent question — {decomposition.why}")
         return Grounding(run_id=run_id, question=question, coherent=False, why=decomposition.why)
@@ -162,7 +175,8 @@ def extract(
 
     probes = prober.probe(decomposition.triples)
     candidates = _dedupe(decomposition.triples + probes)
-    links, cut = candidates[:MAX_LINKS], candidates[MAX_LINKS:]
+    links, cut = candidates[:max_links], candidates[max_links:]
+    progress({"stage": "L1", "links": [t.model_dump() for t in links], "cut": len(cut)})
     remember(
         "probe", f"{len(links)} links",
         "; ".join(Premise.render(t) for t in links)
@@ -171,10 +185,16 @@ def extract(
     )
     _log(f"L1: {len(links)} links to check" + (f", {len(cut)} cut" if cut else ""))
 
-    # Links are independent, so verify them side by side; map() keeps the
-    # order, so the output is the same as the sequential one.
+    # Links are independent, so verify them side by side. Each verdict is
+    # announced as it lands; the results are then assembled in link order, so
+    # the output is the same as the sequential one.
+    verdicts: list = [None] * len(links)
     with ThreadPoolExecutor(max_workers=MAX_LINKS) as pool:
-        verdicts = list(pool.map(lambda link: activate(link, sources, verifier), links))
+        futures = {pool.submit(activate, link, sources, verifier, not fast): i for i, link in enumerate(links)}
+        for future in as_completed(futures):
+            i = futures[future]
+            verdicts[i] = future.result()
+            progress({"stage": "L2", "link": links[i].model_dump(), "status": verdicts[i][0].value, "why": verdicts[i][3]})
 
     premises: list[Premise] = []
     for link, (status, evidence, absence, why, digest) in zip(links, verdicts):
@@ -206,6 +226,7 @@ def extract(
         if knowledge_base is not None:
             knowledge_base.upsert_hypothesis(hypothesis, run_id)
     grounding.rejected = [h for h, _ in dropped]
+    progress({"stage": "L4", "kept": len(kept), "rejected": len(dropped)})
     remember(
         "hypothesize", f"{len(kept)} kept, {len(dropped)} dropped",
         "; ".join(f"{h.id} {h.statement}" for h in kept)
