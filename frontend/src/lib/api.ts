@@ -1,13 +1,12 @@
+// Production fallback so a fresh deploy works without any Vercel dashboard
+// configuration — set VITE_API_BASE_URL as a project env var to override
+// this (e.g. after moving the backend to a new host), no code change needed
+// either way since the env var always takes precedence when set.
+const PROD_API_BASE_FALLBACK = "https://api-185-175-110-142.sslip.io"
+
 export const API_BASE =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
-  (import.meta.env.DEV ? "http://localhost:8000" : "")
-
-if (!API_BASE && !import.meta.env.DEV) {
-  // eslint-disable-next-line no-console
-  console.warn(
-    "VITE_API_BASE_URL is not set — API calls will fail. Set it in your Vercel project's environment variables."
-  )
-}
+  (import.meta.env.DEV ? "http://localhost:8000" : PROD_API_BASE_FALLBACK)
 
 export interface ConfigResponse {
   dev_mode: boolean

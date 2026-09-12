@@ -10,6 +10,63 @@
 5. A demo a judge can re-run from a clean checkout in under 30 minutes,
    plus a recorded fallback artifact.
 
+## System diagram
+
+Frontend and backend are deployed independently and never share a process —
+the frontend is a static build with no server-side code at all, and the
+backend is a plain JSON/SSE API with no knowledge of how it's being served.
+Locally, "Vercel" and "Nebius VM" below both collapse to `localhost` (see
+[`docs/DEPLOY.md`](DEPLOY.md) for the full split-deployment story).
+
+```mermaid
+flowchart TB
+    UI["Browser: React + shadcn/ui SPA<br/>localStorage-backed run history"]
+
+    subgraph Vercel["Vercel — static hosting only"]
+        FE["frontend/ Vite build"]
+    end
+
+    subgraph VM["Nebius VM"]
+        Caddy["Caddy: TLS via sslip.io"]
+        API["FastAPI backend, Docker<br/>backend/server/app.py"]
+        Caddy --> API
+    end
+
+    subgraph Loop["backend/agent/loop.py"]
+        Plan --> Act["Act: tool-use loop"]
+        Act --> Compute
+        Compute --> Revise
+        Revise --> Report
+    end
+
+    subgraph Ext["External APIs, backend/tools/"]
+        Anthropic["Anthropic Messages API"]
+        Tavily
+        Amass["Amass Cores API"]
+        OpenTargets["Open Targets"]
+        PubMed
+        CT["ClinicalTrials.gov"]
+        GenAge["GenAge/DrugAge, local CSV"]
+        GProfiler["g:Profiler"]
+        NebiusAI["Nebius AI Studio, NER"]
+    end
+
+    FE -.->|"page load"| UI
+    UI -->|"fetch + SSE, CORS"| Caddy
+    API --> Plan
+    Act --> Tavily
+    Act --> Amass
+    Act --> OpenTargets
+    Act --> PubMed
+    Act --> CT
+    Act --> GenAge
+    Compute --> NebiusAI
+    Compute --> GProfiler
+    Plan --> Anthropic
+    Revise --> Anthropic
+    Report --> Anthropic
+```
+
 ## Agent loop (`backend/agent/loop.py`)
 
 Implemented as a manual Anthropic Messages API tool-use loop (not the
@@ -80,6 +137,36 @@ are offered to Claude each run. This is the mechanism behind the judge
 the hypothesis ranking and citation mix visibly change because that
 evidence is no longer available to reason over.
 
+A second, runtime-only layer sits on top of `ENABLED_TOOLS`:
+`registry.set_tool_enabled(name, bool)`, exposed via `PUT
+/api/tools/{name}` and driven by the frontend's per-tool switches. It's an
+in-memory override (resets to the `ENABLED_TOOLS` env default on process
+restart) that `enabled_tool_names()` layers on top of the env-derived set.
+Toggling a tool from the UI is deliberately **snapshot-at-run-start**:
+`loop.py` captures `RunState.enabled_tools` once when a run begins and
+passes that explicit set into every `run_tool()` call for the run's
+lifetime, so flipping a switch mid-run never changes an in-flight run's
+behavior or cost accounting — only the *next* run sees it.
+
+## Cost & usage tracking (`backend/agent/costs.py`)
+
+Every run accumulates real usage as it goes (`backend/agent/state.py`):
+Anthropic token counts from each `messages.create()` response, Nebius
+token counts from `extract_genes`'s OpenAI-compatible response, Amass's
+account credit balance (sampled once before and once after the run's Amass
+calls via `amass_tool.get_credits()`, a real number from `GET
+/credits/api-credits`), and live/mock call counts per tool from the
+existing trace. `build_cost_summary()` turns that into a per-provider
+breakdown attached to the `done` SSE event and the saved report JSON.
+
+The rule that shapes this module: **never show a dollar figure that isn't
+backed by a real, configured rate.** Anthropic's price table is hardcoded
+(confirmed pricing, re-verify periodically — it drifts). Nebius/Amass/Tavily
+have no stable public per-unit price, so their `$` is `null` unless you set
+`NEBIUS_PRICE_PER_1M_INPUT`/`_OUTPUT`, `AMASS_PRICE_PER_CREDIT`, or
+`TAVILY_USD_PER_CALL` — otherwise the UI shows "rate not configured" next
+to the real token/call/credit counts, never a guessed number.
+
 ## Open TODOs / confirm at the event
 
 - **Amass**: contract confirmed 2026-09-12 against
@@ -92,30 +179,33 @@ evidence is no longer available to reason over.
   `drugcore`/`genecore`/`regulatorycore` fall back to a generic
   name-like-field guess since their record schemas weren't in the fetched
   OpenAPI spec — tighten that mapping if/when those fields are confirmed.
-- **Nebius**: base URL and model ID for the hosted NER subtask are
-  env-configured (`NEBIUS_BASE_URL`, `NEBIUS_MODEL`) — confirm against the
-  Token Factory credentials issued at the venue.
+- **Nebius**: `NEBIUS_API_KEY` has never been set (no key issued yet) — the
+  `extract_genes` tool runs on its regex heuristic fallback in every real
+  run so far, which is non-fatal but cruder than the real NER model. Set
+  `NEBIUS_API_KEY`/`NEBIUS_BASE_URL`/`NEBIUS_MODEL` once real Token Factory
+  credentials exist; no code change needed.
 - **GenAge/DrugAge**: HAGR does not expose a live query API; datasets are
   downloaded once via `scripts/fetch_datasets.py` from
-  https://genomics.senescence.info/download and queried locally.
+  https://genomics.senescence.info/download and queried locally. Confirmed
+  working both locally and inside the deployed Docker image (the `RUN
+  python scripts/fetch_datasets.py` build step succeeds there).
 
-## A note on this dev sandbox
+## A note on network access in dev sandboxes
 
-This scaffold was built inside a network-restricted Claude Code sandbox
-whose egress policy denies arbitrary outbound hosts (confirmed via
-`/root/.ccr/__agentproxy/status`: `eutils.ncbi.nlm.nih.gov`,
+Early in this project's life, this exact Claude Code sandbox appeared to
+block outbound calls to `eutils.ncbi.nlm.nih.gov`,
 `api.platform.opentargets.org`, `clinicaltrials.gov`, and `biit.cs.ut.ee`
-were all rejected with 403 at the CONNECT level — a policy denial, not a
-bug). Every keyless tool (PubMed, Open Targets, ClinicalTrials.gov,
-g:Profiler) was verified to degrade to its mock fallback correctly rather
-than crash when this happens — see `tests/test_tools.py`. On an
-unrestricted machine (a laptop, the hackathon venue's environment, or a
-sandbox with a broader allowlist) these calls should work live with no
-code changes. If you see the same 403 pattern elsewhere, check that
-sandbox's egress allowlist rather than assuming the tool code is broken.
+(403 at the CONNECT level). That turned out not to be a durable restriction
+— every one of those hosts, plus Tavily, Amass, and the Anthropic API, was
+called successfully many times over from this same sandbox later in
+development (see the many live runs recorded in `backend/reports/`). If a
+keyless tool call ever does get blocked in some environment, the mock
+fallback contract (`tests/test_tools.py`) means the agent degrades
+gracefully rather than crashing — but don't assume a given sandbox's
+egress policy is fixed without testing it.
 
 ## Stretch goals (explicitly out of MVP scope)
 
 - ElevenLabs voice briefing of the final report.
-- Lovable-built polished frontend (current frontend is a deliberately
-  minimal hand-built page so the core loop ships first).
+- (Done) A polished frontend — shipped as a Vite + React + shadcn/ui SPA,
+  see `frontend/` and the System diagram above.

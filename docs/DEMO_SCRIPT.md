@@ -4,26 +4,41 @@
 
 ```bash
 git clone <repo> && cd Hypothetically_Speaking
+
+# backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # fill in ANTHROPIC_API_KEY, TAVILY_API_KEY, AMASS_API_KEY, NEBIUS_API_KEY in .env
 python scripts/fetch_datasets.py      # one-time GenAge/DrugAge download
 uvicorn backend.server.app:app --reload
+
+# frontend (separate terminal)
+cd frontend && npm install && npm run dev
 ```
 
-Open `http://localhost:8000`. Type a longevity/ageing research question
+Open `http://localhost:5173`. Type a longevity/ageing research question
 (e.g. *"Does activating SIRT1 plausibly extend human healthspan via
 improved mitochondrial biogenesis?"*), click **Run**, and watch the trace
-panel: PLAN → tool calls (with mock/live tagging) → REVISE → the cited
-report. Target end-to-end runtime is under 20 minutes.
+panel: PLAN → tool calls (with mock/live tagging, and Nebius token usage
+where applicable) → REVISE → the cited report, plus a live cost/usage
+breakdown per provider. Target end-to-end runtime is under 20 minutes.
+Or skip local setup entirely and use the live deployment — see
+`docs/DEPLOY.md` for the current URLs.
 
 ## "Switch a tool off" test
 
-Edit `.env`, remove one tool from `ENABLED_TOOLS` (e.g. drop `open_targets`),
-restart the server, and re-run the same question. The evidence mix and the
-citation set in the final report should visibly change — that's the proof
-the tools are inside the reasoning loop, not decorative.
+Two ways to do this now:
+- **From the UI**: flip a tool's switch off in the "Available tools" panel
+  (calls `PUT /api/tools/{name}`), then click **+ New Request** and run a
+  fresh question. The toggle is snapshotted at run start, so it only
+  affects the *next* run, never one already in progress.
+- **Via env var**: edit `.env`, remove one tool from `ENABLED_TOOLS` (e.g.
+  drop `open_targets`), restart the server.
+
+Either way, the evidence mix and the citation set in the final report
+should visibly change — that's the proof the tools are inside the
+reasoning loop, not decorative.
 
 ## CLI / recorded fallback
 

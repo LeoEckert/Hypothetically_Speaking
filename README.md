@@ -25,6 +25,13 @@ Built for the "Build a Longevity AI Scientist" hackathon challenge.
    confidence, stated failure modes, and the next experiment to run, plus a
    full tool-call trace so every claim is traceable.
 
+The web UI (Vite + React + shadcn/ui) also shows, live: which tools were
+called and whether each call was live or mock, a running cost/usage
+breakdown per provider (Anthropic, Nebius, Amass, Tavily — real numbers
+only, never a guessed dollar figure), a `localStorage`-backed history of
+past runs you can revisit or fork into a new question, and per-tool
+enable/disable switches.
+
 Target runtime: **under 20 minutes end-to-end**, re-runnable from a clean
 checkout in under 30.
 
@@ -60,10 +67,12 @@ below).
 | g:Profiler | gene/pathway enrichment analysis (the in-silico experiment) | none | live, keyless |
 | Nebius-hosted model | gene/entity extraction from retrieved abstracts, feeds enrichment | API key | live |
 
-Every tool is individually toggleable via `ENABLED_TOOLS` in `.env` —
-disabling one should visibly change the report, proving the tools are
-inside the reasoning loop rather than decorative. Every tool also has a
-mock/offline fallback so the demo survives a dead key or rate limit.
+Every tool is individually toggleable — via `ENABLED_TOOLS` in `.env`, or
+live from the web UI's "Available tools" switches (applies starting with
+the *next* run, never an in-flight one). Disabling one should visibly
+change the report, proving the tools are inside the reasoning loop rather
+than decorative. Every tool also has a mock/offline fallback so the demo
+survives a dead key or rate limit.
 
 ## Setup
 
@@ -81,9 +90,13 @@ npm install
 npm run dev   # http://localhost:5173 — talks to the backend above by default
 ```
 
-Open `http://localhost:5173`, type a longevity question, watch it run. For
-deploying the frontend on Vercel and the backend on a Nebius VM, see
-`docs/DEPLOY.md`.
+Open `http://localhost:5173`, type a longevity question, watch it run.
+
+**This local setup is fully self-contained** — it never talks to Vercel or
+Nebius. The frontend's backend URL (`VITE_API_BASE_URL`) only matters for a
+deployed build; in `vite dev` it always falls back to
+`http://localhost:8000`. For deploying the frontend on Vercel and the
+backend on a Nebius VM instead, see `docs/DEPLOY.md`.
 
 ## Recorded fallback
 
@@ -94,6 +107,8 @@ during judging. See [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
 
 ## Status
 
-Early scaffold. See `docs/ARCHITECTURE.md` for open TODOs — notably
-confirming the exact Nebius base URL/model IDs against the credentials
-issued at the event (the Amass contract is confirmed).
+Deployed: frontend on Vercel, backend on a Nebius VM (see `docs/DEPLOY.md`
+for the current URLs and the full setup). See `docs/ARCHITECTURE.md` for
+open TODOs — notably that `NEBIUS_API_KEY` has never been set, so
+`extract_genes` still runs on its regex-heuristic fallback rather than the
+real Nebius-hosted NER model (the Amass contract is confirmed and live).
