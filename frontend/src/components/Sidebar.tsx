@@ -1,4 +1,4 @@
-import { HelpCircleIcon, SettingsIcon } from "lucide-react"
+import { HelpCircleIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -19,13 +19,27 @@ export function Sidebar({
   viewedRunId,
   onNewRequest,
   onSelectHistory,
+  collapsed,
+  onToggleCollapsed,
 }: {
   runs: RunRecord[]
   liveRunId: string | null
   viewedRunId: string | null
   onNewRequest: () => void
   onSelectHistory: (id: string) => void
+  collapsed: boolean
+  onToggleCollapsed: () => void
 }) {
+  if (collapsed) {
+    return (
+      <aside className="shrink-0">
+        <Button variant="outline" size="icon-lg" onClick={onToggleCollapsed} title="Expand menu">
+          <PanelLeftOpenIcon className="size-4" />
+        </Button>
+      </aside>
+    )
+  }
+
   return (
     <aside className="w-full md:w-[320px] shrink-0 space-y-4">
       <div className="flex gap-2">
@@ -62,6 +76,9 @@ export function Sidebar({
             <HowItWorksPanel />
           </DialogContent>
         </Dialog>
+        <Button variant="ghost" size="icon-lg" onClick={onToggleCollapsed} title="Collapse menu">
+          <PanelLeftCloseIcon className="size-4" />
+        </Button>
       </div>
 
       <div className="border rounded-lg p-3 bg-card shadow-sm">

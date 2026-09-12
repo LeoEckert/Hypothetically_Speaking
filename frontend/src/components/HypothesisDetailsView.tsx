@@ -47,7 +47,12 @@ export function HypothesisDetailsView({
 
       <Card>
         <CardContent>
-          <EvaluateBlock evidence={evidence} evaluations={evaluations ?? []} onEvaluate={onEvaluate} />
+          <EvaluateBlock
+            hypothesis={h}
+            evidence={evidence}
+            evaluations={evaluations ?? []}
+            onEvaluate={onEvaluate}
+          />
         </CardContent>
       </Card>
     </div>

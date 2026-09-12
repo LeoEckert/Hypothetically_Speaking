@@ -22,8 +22,23 @@ function App() {
   const [showDetails, setShowDetails] = useState(false)
   const [question, setQuestion] = useState("")
   const [maxToolCalls, setMaxToolCalls] = useState(30)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("hs_sidebar_collapsed") === "1"
+    } catch {
+      return false
+    }
+  })
   const prefilledRef = useRef(false)
   const budgetInitRef = useRef(false)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("hs_sidebar_collapsed", sidebarCollapsed ? "1" : "0")
+    } catch {
+      // ignore — private browsing / quota, not worth surfacing for a UI preference
+    }
+  }, [sidebarCollapsed])
 
   useEffect(() => {
     if (prefilledRef.current) return
@@ -139,6 +154,8 @@ function App() {
               viewedRunId={viewedRunId}
               onNewRequest={handleNewRequest}
               onSelectHistory={handleSelectHistory}
+              collapsed={sidebarCollapsed}
+              onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
             />
 
             <main className="flex-1 min-w-0">
