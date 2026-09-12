@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test"
 import { latestRun, startRun, waitForTerminal } from "./helpers"
 
-// Each test below encodes a bug confirmed by hand on 2026-09-12 against
-// main @ 8967e8a. They are expected to FAIL until the bug is fixed — that is
-// the point; they are the regression net, not a green baseline.
+// Each test below encodes a bug confirmed by hand against main @ 8967e8a
+// (2026-09-12) and re-confirmed against main @ c3a958e (2026-09-13). They are
+// expected to FAIL until the bug is fixed — that is the point; they are the
+// regression net, not a green baseline.
 
 test.describe("terminal run status is never shown to the user", () => {
   // LiveRunBar is the only consumer of App.tsx's statusText, and it returns

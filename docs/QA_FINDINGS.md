@@ -1,8 +1,13 @@
-# QA findings: browser-driven audit, 2026-09-12
+# QA findings: browser-driven audit
 
-Fourteen findings from driving the real agent loop through Chromium with
-Playwright. Audited `main` @ `8967e8a`; harness committed on branch
-`claude/qa-playwright` as [`qa/`](../qa/README.md).
+Findings from driving the real agent loop through Chromium with Playwright.
+Harness lives in [`qa/`](../qa/README.md).
+
+- **Audited** 2026-09-12 against `main` @ `8967e8a`.
+- **Re-verified** 2026-09-13 against `main` @ `c3a958e` (17 commits later).
+  Two findings have since been fixed, one is withdrawn as incorrect, one is
+  substantially improved, and two new ones were found during re-verification.
+  Every line reference below points at `c3a958e`.
 
 Nothing here is fixed. This file exists so the fixes get made deliberately,
 with the evidence attached. See [`docs/UX_SPEC.md`](UX_SPEC.md) for the
@@ -21,51 +26,54 @@ to fail until fixed — they are the regression net, not a green baseline.
 
 ## Does this apply to production?
 
-Testing ran against local `main`, while Vercel serves a different branch
-(HS-13), so this was checked rather than assumed. The deployed branch is an
-*ancestor* of `main` (5 behind, 0 ahead), so `main` cannot have introduced
-these bugs.
+**Yes — production now serves `main`.** At the time of the original audit it
+did not (HS-13), which is why this section previously argued from branch
+ancestry. That is no longer necessary: as of 2026-09-13 the live frontend
+bundle contains the grounding UI (37 `grounding`, 13 `premise`, 4
+`trajectory`, and the new `Thorough` mode label), and the live backend serves
+`/api/trajectory` and `/api/admin/*`.
+
+Re-checked directly against the current production bundle:
 
 | Check | Result |
 |---|---|
-| Source diff of the three files carrying HS-01..03 | `App.tsx`, `LiveRunBar.tsx`, `runStream.ts` byte-identical between deployed branch and `main` |
-| The two files that *do* differ | `runsStore.ts`, `app.py` — additive grounding/trajectory code only; never touch `markErrored`, the status transitions, or `get_result` |
-| Dead status strings in the live bundle | all four present (`"partial run"`, `"budget limit reached"`, `"cancelled by you"`, `"run failed"`) |
-| Watchdog in the live bundle | zero occurrences of `keepalive` / `watchdog` / `lastMessage` |
-| Recovery path in the live bundle | references `/cancel`, `/evaluate`, `/stream` — **never** `/result` |
+| Dead status strings (HS-01) | all four present — `"partial run"`, `"budget limit reached"`, `"cancelled by you"`, `"run failed"` |
+| Watchdog (HS-03) | zero occurrences of `keepalive` / `watchdog` / `lastMessage` |
+| Recovery path (HS-02) | zero occurrences of `/result` — no way to recover a finished run |
 
-**Net: 10 of 14 findings apply to production unchanged, including all three
-criticals.** The exception is the grounding work — HS-06 exercises code
-production does not ship yet.
+**All three criticals are live in production.**
 
-Caveat, stated plainly: the *behaviour* was reproduced on `main` and the
-prod *code* verified identical. The browser tests were not re-run against
-the live site. `HS_BASE_URL=https://<deploy>.vercel.app npm test` would
-settle it directly, at the cost of some Anthropic/Tavily credit per run.
+Caveat, stated plainly: behaviour was reproduced against a local backend and
+the production *bundle* verified to contain the same code. The browser tests
+were not re-run against the live site.
+`HS_BASE_URL=https://<deploy>.vercel.app npm test` would settle it directly,
+at the cost of some Anthropic/Tavily credit per run.
 
 ## Index
 
-| ID | Severity | Finding | In prod |
+| ID | Severity | Finding | Status @ `c3a958e` |
 |---|---|---|---|
-| HS-01 | Critical | Every terminal run state is computed and thrown away | yes |
-| HS-02 | Critical | Reloading mid-run abandons a healthy run and marks it failed | yes |
-| HS-03 | High | No client-side liveness watchdog — a dead backend reads as "still running" | yes |
-| HS-04 | Medium | Tool budget under ~10 silently skips the one mandatory computed step | yes |
-| HS-05 | Medium | Cancel takes ~90s behind an unexplained "cancelling…" | yes |
-| HS-06 | Low | Grounding pipeline no-ops without an Amass key | `main` only |
-| HS-07 | Low | `.env.example` is a 0-byte file | yes |
-| HS-08 | Low | Human-facing UI shows model-facing tool descriptions verbatim | yes |
-| HS-09 | Low | Empty search results become citable evidence | yes |
-| HS-10 | Low | Cost panel files Anthropic under "Tool activity" | yes |
-| HS-11 | Low | Partial-run caveat hides in a collapsed accordion | yes |
-| HS-12 | Low | Budget field resists editing | yes |
-| HS-13 | Note | The live deployment is a different app than `main` | n/a |
-| HS-14 | Note | Finished reports are on disk but unreachable after a restart | yes |
+| HS-01 | Critical | Every terminal run state is computed and thrown away | **open**, live in prod |
+| HS-02 | Critical | Reloading mid-run abandons a healthy run and marks it failed | **open**, live in prod |
+| HS-03 | High | No client-side liveness watchdog — a dead backend reads as "still running" | **open**, live in prod |
+| HS-15 | High | An unreachable backend makes Run a completely silent no-op | **open**, live in prod (new) |
+| HS-04 | Medium | Tool budget under ~10 silently skips the one mandatory computed step | **open** |
+| HS-05 | Medium | Cancel takes ~90s behind an unexplained "cancelling…" | **open** |
+| HS-16 | Medium | `*.sslip.io` backend host is DNS-blocked by at least one major ISP | **open** (new) |
+| HS-06 | Low | Grounding pipeline no-ops without an Amass key | **open** |
+| HS-08 | Low | Human-facing UI shows model-facing tool descriptions verbatim | **open** |
+| HS-10 | Low | Cost panel files Anthropic under "Tool activity" | **open** |
+| HS-11 | Low | Partial-run caveat is well written but easy to miss | **mostly fixed**, narrowed |
+| HS-12 | Low | Budget field resists editing | **open** |
+| HS-14 | Note | Finished reports are on disk but unreachable after a restart | **open** |
+| HS-07 | Low | `.env.example` is a 0-byte file | ✅ **fixed** |
+| HS-13 | Note | The live deployment is a different app than `main` | ✅ **fixed** |
+| HS-09 | Low | ~~Empty search results become citable evidence~~ | ❌ **withdrawn — incorrect** |
 
 ## HS-01 — Every terminal run state is computed and thrown away
 
-**Severity:** critical. **Files:** `frontend/src/App.tsx:122-131`,
-`frontend/src/components/LiveRunBar.tsx:19`.
+**Severity:** critical. **Files:** `frontend/src/App.tsx:123-131`,
+`frontend/src/components/LiveRunBar.tsx:63`.
 
 `App.tsx` builds exactly the right copy for every terminal state:
 
@@ -94,7 +102,8 @@ not the run.
 
 **Impact.** A truncated run, a cancelled run, and a **failed** run are
 visually identical to a clean success, hypotheses still carrying confidence
-badges. Only the history panel's amber border (`HistoryList.tsx:14`)
+badges. Only the history panel's amber border (`HistoryList.tsx:14`) and the cost
+panel's `partial estimate` badge (`CostPanel.tsx:85`)
 survives as a signal.
 
 **Fix direction.** Render terminal status in the results view, not the live
@@ -102,8 +111,8 @@ bar. One-line stopgap: drop the early return when `statusText` is non-empty.
 
 ## HS-02 — Reloading mid-run abandons a healthy run and marks it failed
 
-**Severity:** critical. **Files:** `frontend/src/App.tsx:88`,
-`frontend/src/lib/runStream.ts:46-48`, `frontend/src/store/runsStore.ts:162`.
+**Severity:** critical. **Files:** `frontend/src/App.tsx:89`,
+`frontend/src/lib/runStream.ts:46-49`, `frontend/src/store/runsStore.ts:170`.
 
 Two independent gaps:
 
@@ -122,7 +131,7 @@ called. The user paid for that report and never saw it.
 **Contradicts documented behaviour.** `CLAUDE.md` states the stream
 "replays everything so far … so a reload or a late 'view live run' attach
 never misses or double-delivers events." The backend honours that fully
-(`app.py:166-198`, per-connection read position). The frontend never asks.
+(`app.py:181-210`, per-connection read position). The frontend never asks.
 
 **Fix direction.** On mount, re-attach to any run still `running`; fall
 back to `GET /api/run/{run_id}/result`. Don't mark errored during
@@ -130,7 +139,7 @@ back to `GET /api/run/{run_id}/result`. Don't mark errored during
 
 ## HS-03 — No client-side liveness watchdog
 
-**Severity:** high. **File:** `frontend/src/lib/runStream.ts:46-48`.
+**Severity:** high. **File:** `frontend/src/lib/runStream.ts:46-49`.
 
 The client's only failure path is `es.onerror`. It never fires when the
 server process dies.
@@ -142,7 +151,7 @@ logged nothing to the console, and the UI sat on "Report — writing the final
 report…" with a live Cancel button.
 
 **Why.** The backend emits `: keepalive` every 15s precisely because
-multi-minute gaps between events are normal (`app.py:186-196`). Nothing on
+multi-minute gaps between events are normal (`app.py:208`). Nothing on
 the client checks that keepalives still arrive, so a slow agent and a dead
 backend are indistinguishable.
 
@@ -153,8 +162,8 @@ HS-02.
 
 ## HS-04 — Tool budget under ~10 silently skips the mandatory computed step
 
-**Severity:** medium. **Files:** `backend/agent/loop.py:335,374-379`,
-`frontend/src/components/ComposeDialog.tsx:57-71`.
+**Severity:** medium. **Files:** `backend/agent/loop.py:440,479-484`,
+`frontend/src/components/ComposeDialog.tsx:85-101`.
 
 Measured across four budgets:
 
@@ -172,7 +181,7 @@ the agent's own top recommendation became *"complete the in-silico pipeline
 that this run did not finish."*
 
 **Root cause.** `loop.py` never tells Claude how much budget remains. It
-only checks `state.budget_exceeded()` after the fact and injects
+only checks `state.budget_exceeded()` (`loop.py:440,479`) after the fact and injects
 `"Tool budget exceeded for this run; call skipped."` The model spends
 freely, then gets cut off.
 
@@ -183,7 +192,7 @@ is safe; this is a guardrail gap, not a broken happy path.
 
 ## HS-05 — Cancel takes ~90s behind an unexplained "cancelling…"
 
-**Severity:** medium. **File:** `backend/agent/loop.py` (`should_cancel`).
+**Severity:** medium. **File:** `backend/agent/loop.py:436,469` (`should_cancel`).
 
 Clicked Cancel at t+25s; status reached `cancelled` at t+115s. Ninety
 seconds of "cancelling…" with no indication that a wait is expected.
@@ -196,8 +205,7 @@ to ~90s".
 
 ## HS-06 — Grounding pipeline no-ops without an Amass key
 
-**Severity:** low (but see note). **`main` only.** **File:**
-`backend/agent/loop.py:52-67`.
+**Severity:** low (but see note). **File:** `backend/agent/loop.py:53,63-66`.
 
 Every data tool degrades to a mock when its key is missing — the documented
 tool contract. Grounding instead skips wholesale: `_grounding_payload`
@@ -213,16 +221,19 @@ invisible in the default local setup. It is also, consequently, the surface
 this audit could not exercise at all — worth a dedicated pass once a key is
 available and the deploy is reconciled.
 
-## HS-07 — `.env.example` is a 0-byte file
+## HS-07 — `.env.example` is a 0-byte file ✅ FIXED
 
-**Severity:** low. **File:** `.env.example`.
+**Severity:** low. **File:** `.env.example`. **Fixed as of `c3a958e`.**
 
-`CLAUDE.md` instructs `cp .env.example .env` then "fill in
-`ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `AMASS_API_KEY`, `NEBIUS_API_KEY`",
-but the file is empty — a new contributor gets no scaffold and no hint
-which keys are optional. (`frontend/.env.example` is well commented by
-contrast.) Worth recording that `ANTHROPIC_API_KEY` alone is sufficient for
-a working local run, since everything else mock-falls-back.
+Originally the file was 0 bytes, while `CLAUDE.md` instructed
+`cp .env.example .env` and "fill in" four keys. It is now 648 bytes, with
+the four provider keys, the optional pricing vars, the admin-dashboard vars
+and the CORS/tool config, each under an explanatory comment.
+
+One thing still worth adding: a note that **`ANTHROPIC_API_KEY` alone is
+enough for a working local run**, since every other tool degrades to a mock
+when its key is absent. That is the single most useful fact for a new
+contributor and is not obvious from the file.
 
 ## HS-08 — Human-facing UI shows model-facing tool descriptions verbatim
 
@@ -240,15 +251,23 @@ the same thing twice.
 **Fix direction.** A separate short `ui_description` on `SPEC`, or a
 display-name/blurb map in the frontend.
 
-## HS-09 — Empty search results become citable evidence
+## HS-09 — Empty search results become citable evidence ❌ WITHDRAWN
 
-**Severity:** low. **Files:** `backend/tools/pubmed_tool.py`,
-`backend/agent/state.py` (evidence registry).
+**This finding was wrong.** Recorded rather than deleted so it is not
+re-reported by the next person who sees the same screen.
 
-"No PubMed results for 'resveratrol SIRT1 AMPK off-target mechanism'." was
-registered as evidence item #3 with its own citation ID. A null result is a
-fact about the search, not evidence about biology, and it inflates the
-evidence count (35 items from 10 tool calls in one run).
+The claim was that an empty PubMed result is registered as citable evidence.
+It is not. `add_evidence` is only ever called from inside
+`for item in result.get("items", [])` (`backend/agent/loop.py:497-498`), and
+an empty search returns `{"summary": "No PubMed results for '…'", "items":
+[], …}` (`backend/tools/pubmed_tool.py:62`). With `items` empty the loop body
+never executes, so **zero** evidence entries are created and no citation id
+is minted.
+
+What was actually observed in the UI was the *tool-call trace* row rendering
+that tool call's `result_summary` — `record_tool_call`, not `add_evidence`.
+The trace correctly records that the search happened and found nothing. The
+evidence-count inflation claim goes with it.
 
 ## HS-10 — Cost panel files Anthropic under "Tool activity"
 
@@ -258,19 +277,31 @@ evidence count (35 items from 10 tool calls in one run).
 Anthropic is the agent, not a tool it called; listing them together makes
 the tool trace read as five more retrievals.
 
-## HS-11 — Partial-run caveat hides in a collapsed accordion
+## HS-11 — Partial-run caveat is well written but easy to miss ⚠️ MOSTLY FIXED
 
-**Severity:** low.
+**Severity:** low. **Substantially improved since the original audit.**
 
-On a truncated run, the "Confidence & Uncertainty" section contains the
-entire disclosure: *"This was a partial run."* Four words, collapsed by
-default, while a `medium confidence` badge sits prominently at the top.
-Compounds HS-01.
+Originally the entire disclosure was four words — *"This was a partial
+run."* The report prompt now produces a genuinely good one: a bolded
+*"**This was a partial run: the tool budget was exhausted before evidence
+gathering was complete.**"* followed by an itemised list of precisely what
+was skipped — Open Targets not retrieved, GenAge/DrugAge not consulted,
+ClinicalTrials.gov not queried, and *"the `extract_genes` →
+`run_enrichment` in-silico pipeline was never executed … This was intended
+to be the core 'experiment' of this run and is a significant gap."*
+
+That is exactly the right content. What remains is placement: it lives
+inside "Confidence & Uncertainty", below the fold and behind a collapser,
+while a `medium confidence` badge sits at the top of the page. Given HS-01
+means the results header says nothing either, a reader can still take a
+truncated run at face value.
+
+**Fix direction.** Surface a one-line banner at the top of a `partial`
+report; the prose underneath is already doing its job.
 
 ## HS-12 — Budget field resists editing
 
-**Severity:** low. **File:**
-`frontend/src/components/ComposeDialog.tsx:64-67`.
+**Severity:** low. **File:** `frontend/src/components/ComposeDialog.tsx:94`.
 
 Clearing the field to retype snaps back to the last clamped value: the
 `Number.isNaN` guard skips the state update on an empty string while the
@@ -290,27 +321,23 @@ Production **redeployed during this audit** — the bundle hash moved from
 grounding references, so it redeployed the same non-`main` branch. The
 branch is evidently still receiving deploys.
 
-**Why it is stale — both halves of the deploy are pinned to that branch:**
+**Fixed as of `c3a958e`.** Both halves now deploy from `main`:
+`deploy-backend.yml` and the new `deploy-frontend.yml` (Vercel CLI/token
+rather than git integration) each trigger on `push: branches: [main]`.
 
-- Frontend: Vercel's production branch is `claude/gracious-curie-lkjlq1`.
-- Backend: `.github/workflows/deploy-backend.yml` triggers on
-  `push: branches: [claude/gracious-curie-lkjlq1]`.
-- GitHub's own default branch for the repo is also
-  `claude/gracious-curie-lkjlq1`, so PRs opened without an explicit base
-  target it rather than `main`.
+Verified live on 2026-09-13: the production bundle now contains the
+grounding UI, and the production backend serves `/api/trajectory` and
+`/api/admin/*`. Production and `main` agree.
 
-So merging to `main` deploys nothing, to either half. Whatever the intended
-trunk is, those three settings and the branch everyone works on need to
-agree — otherwise this recurs silently.
-
-Reconciling this is a deploy change on a live URL, so it is left as a
-decision rather than a fix. Worth settling before any demo, or the
-grounding work is not in what people see.
+The one loose end is GitHub's **default branch**, which was still
+`claude/gracious-curie-lkjlq1` when this PR was opened — which is why this
+PR needed an explicit `--base main`. Worth switching so PRs target the
+trunk by default.
 
 ## HS-14 — Finished reports are on disk but unreachable after a restart
 
 **Severity:** note; pre-existing and already documented. **File:**
-`backend/server/app.py:199-201`.
+`backend/server/app.py:214-215`.
 
 `get_result` is `_results.get(run_id, {"status": "not_ready"})` — memory
 only, though the worker already wrote `backend/reports/{run_id}.json`.
@@ -321,6 +348,62 @@ half of an HS-02 fix.
 Related shape mismatch: the not-ready sentinel returns a `status` key, but a
 real result object has no `status` field at all (it carries `partial` and
 `cancelled` booleans instead).
+
+## HS-15 — An unreachable backend makes Run a completely silent no-op
+
+**Severity:** high. **Found during re-verification.** **File:**
+`frontend/src/App.tsx:78-90`.
+
+`handleRun` has no error handling around the network call:
+
+```js
+const { run_id } = await startRun(trimmed, maxToolCalls, mode)
+createRun(run_id, trimmed, forkedFrom)
+```
+
+If `POST /api/run` fails, `startRun` rejects and every line after it is
+skipped. There is no `try`/`catch` and no error state.
+
+**Observed.** With `POST /api/run` failing, clicking Run produced: page text
+completely unchanged, the compose dialog still open, zero runs written to
+the store, and an unhandled `PAGEERROR: Failed to fetch` in the console. The
+user gets no spinner, no error, no indication anything was attempted.
+
+This is distinct from HS-03, which covers a stream dying *after* a run
+starts. HS-15 is the run never starting at all — the more likely failure for
+a first-time visitor, and the one with the least feedback.
+
+**Fix direction.** Wrap the call, surface the failure in the dialog ("Could
+not reach the backend — check your connection and try again"), and keep the
+question text so the attempt is not lost.
+
+## HS-16 — The `*.sslip.io` backend host is DNS-blocked by at least one major ISP
+
+**Severity:** medium. **Found during re-verification.**
+
+The production frontend calls `https://api-185-175-110-142.sslip.io`. On a
+Telenor Sweden connection that hostname does not resolve to the VM at all —
+it resolves to `natskydd.telenor.se` (Telenor's "nätskydd" filtering
+service), and every request fails.
+
+The VM itself is healthy: ports 80 and 443 open, ping clean, and
+`curl --resolve api-185-175-110-142.sslip.io:443:185.175.110.142` returns a
+correct `200` from `/api/config`. Only DNS is affected.
+
+Wildcard-DNS services like `sslip.io` and `nip.io` are widely used for
+malware C2 and phishing, so ISP and corporate resolvers block them as a
+category. This is not specific to one network and should be expected to
+recur.
+
+**Impact.** An affected user sees a completely dead application, and because
+of HS-15 they see it *silently* — the app looks like it is doing nothing
+rather than reporting a connection failure. Note this also cost this audit
+real time: the block initially looked like a production outage.
+
+**Fix direction.** Move the backend to a real domain with a normal A record
+(`docs/DEPLOY.md` already describes this as the intended path) rather than
+relying on `sslip.io`, which was only ever a bootstrap convenience. Fixing
+HS-15 at least makes the failure legible in the meantime.
 
 ## Verified working
 
@@ -359,6 +442,8 @@ Recorded so they aren't re-investigated.
 4. **Report omits the "Tool Trace" section** `CLAUDE.md` specifies. True,
    but the UI provides a Tool-call trace panel instead, so this looks
    deliberate rather than a defect.
+5. **Empty search results become citable evidence** — reported as HS-09 and
+   since withdrawn; see that section for why it was wrong.
 
 ## Suggested order of work
 
@@ -372,5 +457,10 @@ Recorded so they aren't re-investigated.
    on the same re-attach path, so it lands cheaply once that exists.
 4. **Warn on low budgets; tell the model what's left** (HS-04) — prevents
    structurally incomplete runs being presented as confident ones.
-5. **Reconcile the Vercel deployment with `main`** (HS-13) — before any
-   demo, or the grounding work isn't in what people see.
+5. **Wrap `handleRun` in error handling** (HS-15) — small, self-contained,
+   and currently the least-feedback failure in the app; more urgent while
+   HS-16 keeps some users unable to reach the backend at all.
+6. **Move the backend off `sslip.io` to a real domain** (HS-16) — otherwise
+   a subset of users see a silently dead app no matter what else is fixed.
+
+HS-13 was #5 in the original list and is now done.
