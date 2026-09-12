@@ -100,7 +100,7 @@ def _grounding_text(payload: dict) -> str:
         premise for premise in payload["premises"] if premise["status"] == "UNVERIFIED"
     ]
     candidates = "\n".join(
-        f"- {h['id']}: {h['statement']}  (tests: {h['targets']}; do: {h['intervention']}; "
+        f"- {h['statement']}  (tests: {h['targets']}; do: {h['intervention']}; "
         f"measure: {h['readout']}; in: {h['model_system']})"
         for h in payload.get("hypotheses", [])
     )
@@ -222,7 +222,15 @@ def _normalize_hypotheses(
             normalized[0]["selected"] = True
         return normalized
 
-    candidates = [h for h in raw if isinstance(h, dict) and h.get("id") in known]
+    # Ids are matched case-insensitively: PLAN mints h1..hN, but the model
+    # sometimes echoes the H1..HN labels it saw in the grounding candidates.
+    candidates = []
+    for h in raw:
+        if not isinstance(h, dict):
+            continue
+        hid = str(h.get("id", "")).strip().lower()
+        if hid in known:
+            candidates.append({**h, "id": hid})
 
     def _rank_key(pair: tuple[int, dict]) -> tuple[float, int]:
         idx, h = pair

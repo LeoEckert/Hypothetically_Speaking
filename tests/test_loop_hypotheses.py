@@ -177,3 +177,14 @@ def test_normalize_recovers_when_known_roster_is_empty():
     assert len(normalized) == 1
     assert normalized[0]["id"] == "h1"
     assert normalized[0]["confidence"] == "high"
+
+
+def test_normalize_revise_matches_ids_case_insensitively():
+    # The model echoed the grounding labels (H1) instead of PLAN's ids (h1).
+    known = {"h1": {"statement": "A", "seed_question": "qa"}, "h2": {"statement": "B", "seed_question": "qb"}}
+    raw = [
+        {"id": "H1", "confidence": "high", "selected": True},
+        {"id": " H2 ", "confidence": "low", "selected": False},
+    ]
+    normalized = _normalize_hypotheses(raw, "revise", known, set())
+    assert [(h["id"], h["confidence"], h["selected"]) for h in normalized] == [("h1", "high", True), ("h2", "low", False)]
