@@ -151,7 +151,7 @@ same thing, don't keep retrying — use the dashboard instead:
 ## CI/CD
 
 **Frontend** — `.github/workflows/deploy-frontend.yml`: on every push to
-`claude/gracious-curie-lkjlq1` (or manually via `workflow_dispatch`), a
+`main` (or manually via `workflow_dispatch`), a
 GitHub Actions job runs `vercel deploy --prod` against the existing Vercel
 project (`frontend`), authenticated with a personal access token rather
 than Vercel's native git integration.
@@ -189,7 +189,7 @@ Actions where that dashboard-only env var wouldn't be visible).
 
 **Limitation:** since git deploys are fully disabled repo-wide, Preview
 deployments for PRs/other branches no longer happen automatically — only
-pushes to `claude/gracious-curie-lkjlq1` deploy anything now. A manual
+pushes to `main` deploy anything now. A manual
 `vercel deploy` (without `--prod`) can still produce an ad hoc preview if
 ever needed.
 
@@ -200,7 +200,7 @@ anything or recur, and Hobby still doesn't expose a way to dismiss it.
 Ignore it, or clean it up later if Vercel ever adds that ability.
 
 **Backend** — `.github/workflows/deploy-backend.yml`: on every push to
-`claude/gracious-curie-lkjlq1` (or manually via `workflow_dispatch`), a
+`main` (or manually via `workflow_dispatch`), a
 GitHub Actions job rsyncs the repo to the VM and runs `docker compose up -d
 --build app` over SSH — the same two commands as the manual first-time
 setup above, just automated. It deliberately only rebuilds the `app`

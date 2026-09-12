@@ -10,7 +10,7 @@ name: Deploy frontend to Vercel
 # subject to that restriction.
 on:
   push:
-    branches: [claude/gracious-curie-lkjlq1]
+    branches: [main]
   workflow_dispatch: {}
 
 jobs:
