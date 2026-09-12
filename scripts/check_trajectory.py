@@ -1,10 +1,11 @@
 """Do the final hypotheses rest on the knowledge trajectory that was actually used?
 
-    python -m scripts.check_trajectory backend/reports/demo_a.json [more reports...]
+    python -m scripts.check_trajectory backend/reports/demo_a.json[@runs/clean_1.db] [more...]
 
 For each report: every final hypothesis must match a hypothesis node in the
-knowledge base (GROUNDING_KB or runs/knowledge.db) whose `tests` edge leads to
-a premise the question's walk visited. With several reports, also prints how
+knowledge base (`@path` after the report, else GROUNDING_KB or
+runs/knowledge.db) whose `tests` edge leads to a premise the question's walk
+visited. With several reports, also prints how
 many hypothesis statements all runs share — the reproducibility number.
 """
 
@@ -15,6 +16,7 @@ import re
 import sys
 from pathlib import Path
 
+from backend.grounding.knowledge_base import DEFAULT_PATH
 from backend.kgviz.graph import load_graph, resolve_seed, walk
 
 
@@ -22,17 +24,18 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
 
 
-def check(report_path: str) -> tuple[bool, set[str]]:
+def check(argument: str) -> tuple[bool, set[str]]:
+    report_path, _, kb_path = argument.partition("@")
     report = json.load(open(report_path))
     question = report.get("question") or ""
-    graph = load_graph()
+    graph = load_graph(kb_path or DEFAULT_PATH)
     seed = resolve_seed(graph, question)
     visited = {item["id"] for item in walk(graph, seed, depth=3)["visited"]}
     by_id = {node["id"]: node for node in graph["nodes"]}
     kb_hypotheses = {_norm(node["name"]): node for node in graph["nodes"] if node["kind"] == "hypothesis"}
     ok = True
     statements: set[str] = set()
-    print(f"\n{Path(report_path).name}: {question[:80]}")
+    print(f"\n{Path(report_path).name} @ {kb_path or DEFAULT_PATH}: {question[:80]}")
     for hypothesis in report.get("hypotheses", []):
         statement = hypothesis["statement"].rstrip(".")
         statements.add(_norm(statement))

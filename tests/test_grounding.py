@@ -563,3 +563,16 @@ def test_generator_plugs_into_extract_and_is_audited():
     [step] = [s for s in knowledge_base.steps_for(question_id("sirt1?")) if s.stage == "hypothesize"]
     assert step.verdict == "1 kept, 7 dropped"
     assert "compound claim" in step.rationale
+
+
+def test_generator_target_reference_resolves_index_or_entity_names():
+    from backend.grounding.adapters import resolve_target
+
+    weak = {"P1": _ground().weak_premises[0]}  # mitochondrial biogenesis -> human healthspan
+    assert resolve_target("P1", weak) is weak["P1"]
+    assert resolve_target("p1", weak) is weak["P1"]
+    assert resolve_target("1", weak) is weak["P1"]
+    assert resolve_target("mitochondrial biogenesis -> human healthspan", weak) is weak["P1"]
+    assert resolve_target("Mitochondrial Biogenesis extends Human Healthspan [UNVERIFIED]", weak) is weak["P1"]
+    assert resolve_target("P7", weak) is None
+    assert resolve_target("SIRT1 -> PGC-1alpha", weak) is None

@@ -30,6 +30,7 @@ from backend.grounding.domain import (
     Paper,
     RankedPaper,
     RunTrace,
+    Premise,
     PremiseStatus,
     ScientificQuestion,
     Triple,
@@ -307,18 +308,38 @@ class ClaudeHypothesisGenerator(_CachingAdapter):
             "the falsification criterion (the observation that would reject it — a null "
             "readout, or the readout improving while a harm appears). `statement` is at "
             "most 20 words, one claim, no 'and', 'but', 'even if' or semicolons. Prefer "
-            "the model system in which the readout is obtainable within two years.",
+            "the model system in which the readout is obtainable within two years. "
+            "`targets` is the P-index exactly as listed, e.g. \"P2\".",
             _Proposals,
         )
-        return [
-            Hypothesis(
-                subject=target.subject, verb=p.verb, object=target.object, statement=p.statement,
-                targets=premise_id(target), intervention=p.intervention, readout=p.readout,
-                model_system=p.model_system, falsification=p.falsification, rationale=p.rationale,
+        hypotheses = []
+        for p in proposals.hypotheses:
+            target = resolve_target(p.targets, by_index)
+            hypotheses.append(
+                Hypothesis(
+                    # An unresolved target keeps the raw text so select() drops
+                    # it visibly ("targets no known premise") instead of silently.
+                    subject=target.subject if target else "?", verb=p.verb,
+                    object=target.object if target else "?", statement=p.statement,
+                    targets=premise_id(target) if target else p.targets,
+                    intervention=p.intervention, readout=p.readout, model_system=p.model_system,
+                    falsification=p.falsification, rationale=p.rationale,
+                )
             )
-            for p in proposals.hypotheses
-            if (target := by_index.get(p.targets)) is not None
-        ]
+        return hypotheses
+
+
+def resolve_target(reference: str, by_index: dict[str, "Premise"]) -> "Premise | None":
+    """Map the model's `targets` back to a weak link: "P2" first, else a string
+    naming both ends of the link ("mitochondrial biogenesis -> human healthspan")."""
+    match = re.search(r"\b[Pp]?(\d+)\b", reference)
+    if match and (premise := by_index.get(f"P{match.group(1)}")):
+        return premise
+    lowered = reference.lower()
+    for premise in by_index.values():
+        if premise.subject.lower() in lowered and premise.object.lower() in lowered:
+            return premise
+    return None
 
 
 def _paper_url(paper: Paper) -> str | None:
@@ -401,15 +422,21 @@ def _amass_records(url: str, params: dict, cache: LLMCache | None) -> list[dict]
     key = prompt_hash(f"{url}?{json.dumps(params, sort_keys=True)}", "amass")
     if cache is not None and (stored := cache.cached_response(key)) is not None:
         return json.loads(stored)
-    # ponytail: no 429 backoff. Amass allows 60 req/60s and one run makes a
-    # handful; read Retry-After once the query count grows.
-    response = httpx.get(
-        url,
-        headers={"Authorization": f"Bearer {os.environ['AMASS_API_KEY']}"},
-        params=params,
-        timeout=HTTP_TIMEOUT,
-    )
-    response.raise_for_status()
+    # ponytail: one retry, no backoff. Amass allows 60 req/60s and one run
+    # makes a handful; a single slow read must not fail the whole grounding.
+    for attempt in (1, 2):
+        try:
+            response = httpx.get(
+                url,
+                headers={"Authorization": f"Bearer {os.environ['AMASS_API_KEY']}"},
+                params=params,
+                timeout=HTTP_TIMEOUT,
+            )
+            response.raise_for_status()
+            break
+        except (httpx.TimeoutException, httpx.TransportError):
+            if attempt == 2:
+                raise
     # `data` is an array, not {"records": [...]}. The Amass product page
     # says otherwise but is stale; the OpenAPI spec and a live-verified
     # client agree on the array.
