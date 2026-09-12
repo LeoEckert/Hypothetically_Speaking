@@ -25,6 +25,7 @@ This file is appended to as more findings come in.
 | HQ-02 | High | Starting a second run silently orphans the first, which sticks at "running" forever | `main` @ `c3a958e` |
 | HQ-03 | Medium | Report sections render as bullets in one run and a prose wall in the next | `main` @ `c3a958e` |
 | HQ-04 | Medium | The original research question disappears from both the results and full-report views | `main` @ `c3a958e` |
+| HQ-05 | Medium | Collapsed section preview shows only the list marker ("1.") and no text | `main` @ `c3a958e` |
 
 ---
 
@@ -312,6 +313,88 @@ demonstrates.
    scoped to the run's *in-flight* state.
 
 Fixing `HS-01` and `HQ-04` together is natural — they are one refactor.
+
+---
+
+## HQ-05 — Collapsed section preview shows only the list marker, no text
+
+**Severity:** medium. **Reported:** screenshot of "Failure Modes" collapsed
+vs expanded.
+
+**What the tester saw.** *"Collapsed failure mode just shows the bullet (1
+in this case) and not any text."* The collapsed "Failure Modes" section
+renders a preview consisting entirely of `1.` — expanding it reveals four
+substantial, well-written failure modes.
+
+**Confirmed in code, and reproduced.** The preview comes from `teaser()` in
+`frontend/src/lib/reportSections.ts:41-45`, rendered at
+`ReportView.tsx:40`. Two bugs compound:
+
+1. **`stripMarkdown` handles unordered lists but not ordered ones**
+   (`reportSections.ts:28`):
+
+   ```js
+   .replace(/^[-*]\s+/, "")
+   ```
+
+   `-` and `*` markers are stripped; `1.` is not, so the marker survives
+   into the preview string.
+
+2. **The sentence-boundary regex then treats that marker's dot as the end of
+   the sentence** (`reportSections.ts:43`):
+
+   ```js
+   const sentenceMatch = firstLine.match(/^.*?[.!?](?=\s|$)/)
+   ```
+
+   It is non-greedy, so it stops at the *first* `.` followed by whitespace —
+   which is the `.` in `1. `. The teaser becomes exactly `"1."`.
+
+Running the shipped functions against the screenshot's content confirms it:
+
+| Section body starts with | `teaser()` returns |
+|---|---|
+| `1. **Species/model mismatch**: progeroid and dwarf-mouse models…` | `"1."` |
+| `- **High confidence** that shared CYP450 machinery…` | `"High confidence that shared CYP450 machinery is real."` |
+| `The best-supported hypothesis is H1: controlled FMT…` | `"The best-supported hypothesis is H1: controlled FMT can reduce inflammaging."` |
+| `1) First failure mode is species mismatch.` | `"1) First failure mode is species mismatch."` |
+| `Trials e.g. PEARL have not reported healthspan endpoints yet.` | `"Trials e.g."` |
+
+So unordered lists and plain prose work; `1.` ordered lists collapse to the
+marker. `1)` happens to survive only because it contains no dot.
+
+The last row is the same bug in a different disguise: **any** sentence whose
+first abbreviation contains a dot — `e.g.`, `i.e.`, `vs.`, `Fig.`, `no.` —
+truncates there. Common in this domain.
+
+**Interaction with HQ-03 — fix this one first.** HQ-03 proposes enforcing
+bullets in `Failure Modes`, `Confidence & Uncertainty` and both Evidence
+sections. If the model renders those as `1.` numbered lists — which is
+exactly what it did in this screenshot's Failure Modes — enforcing lists
+will make this bug appear in *more* sections, not fewer. Landing HQ-03
+without HQ-05 would visibly regress the collapsed view.
+
+**Suggested fix.** Strip ordered-list markers alongside unordered ones, in
+`stripMarkdown`:
+
+```js
+.replace(/^[-*]\s+/, "")
+.replace(/^\d+[.)]\s+/, "")   // 1. / 2) ordered-list markers
+```
+
+That alone resolves the reported bug: with the marker gone, the sentence
+match lands on the real first sentence.
+
+For the abbreviation case, require that the terminator not be part of a
+short lowercase abbreviation — e.g. reject a match whose final token before
+the dot is 1-2 characters — or fall back to the whole line when the match is
+suspiciously short (say under ~15 characters), which also guards against any
+future marker style. A cheap belt-and-braces rule: if the matched sentence
+is shorter than a threshold, use the full line instead.
+
+Worth adding a unit test for `teaser()` covering these five inputs — it is a
+pure function with no dependencies, so the test is trivial and this is
+plainly a class of bug that recurs.
 
 ---
 
