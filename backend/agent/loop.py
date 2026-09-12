@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Callable, Optional
 
 from anthropic import Anthropic
@@ -164,6 +165,55 @@ def _adopt_candidates(raw_plan: list, candidates: list[dict]) -> list[dict]:
         )
         adopted.append({"statement": candidate["statement"], "seed_question": seed})
     return adopted
+
+
+REPORT_SECTIONS = [
+    "Hypothesis",
+    "Evidence That Supports It",
+    "Evidence That Doesn't / Contradicts It",
+    "Confidence & Uncertainty",
+    "Failure Modes",
+    "Next Experiment To Run",
+    "Tool Trace",
+]
+_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.M)
+
+
+def _stream_message(client, on_event, phase: str, detail: dict, **kwargs):
+    """Stream one Messages call and emit a `progress` event about once a
+    second: characters written so far and, for the report, which of the fixed
+    sections is being written. PLAN, REVISE and REPORT are each a single long
+    call with nothing else to show, so this is what keeps the status bar
+    moving. Returns the same final Message that messages.create would."""
+    buffer: list[str] = []
+    last_emit = 0.0
+
+    def emit(force: bool = False) -> None:
+        nonlocal last_emit
+        now = time.time()
+        if not force and now - last_emit < 1.0:
+            return
+        last_emit = now
+        text = "".join(buffer)
+        headings = _HEADING_RE.findall(text)
+        _emit(
+            on_event,
+            {
+                "type": "progress",
+                "phase": phase,
+                "chars": len(text),
+                "section": headings[-1] if headings else None,
+                "sections_done": len(headings),
+                **detail,
+            },
+        )
+
+    with client.messages.stream(**kwargs) as stream:
+        for chunk in stream.text_stream:
+            buffer.append(chunk)
+            emit()
+        emit(force=True)
+        return stream.get_final_message()
 
 
 def _text_of(content_blocks) -> str:
@@ -364,9 +414,13 @@ def run_agent(
     no_tool_nudges = 0
     try:
         # --- PLAN ---
-        _emit(on_event, {"type": "phase", "phase": "plan"})
-        messages.append({"role": "user", "content": _plan_message(grounding_text, len(grounding.get("hypotheses") or []))})
-        plan_resp = client.messages.create(model=model, max_tokens=1536, system=SYSTEM_PROMPT, messages=messages)
+        candidate_count = len(grounding.get("hypotheses") or [])
+        _emit(on_event, {"type": "phase", "phase": "plan", "detail": {"candidates": candidate_count}})
+        messages.append({"role": "user", "content": _plan_message(grounding_text, candidate_count)})
+        plan_resp = _stream_message(
+            client, on_event, "plan", {"candidates": candidate_count},
+            model=model, max_tokens=1536, system=SYSTEM_PROMPT, messages=messages,
+        )
         state.record_anthropic_usage(plan_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})
         raw_plan_hyps = _parse_hypotheses(_text_of(plan_resp.content))
@@ -475,9 +529,13 @@ def run_agent(
             messages.append({"role": "user", "content": tool_results})
 
         # --- REVISE ---
-        _emit(on_event, {"type": "phase", "phase": "revise"})
+        revise_detail = {"hypotheses": len(state.hypotheses), "evidence": len(state.evidence), "tool_calls": state.tool_calls_made}
+        _emit(on_event, {"type": "phase", "phase": "revise", "detail": revise_detail})
         messages.append({"role": "user", "content": REVISE_PROMPT})
-        revise_resp = client.messages.create(model=model, max_tokens=2048, system=SYSTEM_PROMPT, messages=messages)
+        revise_resp = _stream_message(
+            client, on_event, "revise", revise_detail,
+            model=model, max_tokens=2048, system=SYSTEM_PROMPT, messages=messages,
+        )
         state.record_anthropic_usage(revise_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(revise_resp.content)})
         revise_text, raw_revise_hyps = _extract_hypotheses(_text_of(revise_resp.content))
@@ -491,14 +549,18 @@ def run_agent(
         _emit(on_event, {"type": "hypotheses", "stage": "revise", "hypotheses": state.hypotheses})
 
         # --- REPORT ---
-        _emit(on_event, {"type": "phase", "phase": "report"})
+        report_detail = {"sections_total": len(REPORT_SECTIONS), "evidence": len(state.evidence), "hypotheses": len(state.hypotheses)}
+        _emit(on_event, {"type": "phase", "phase": "report", "detail": report_detail})
         report_instructions = final_report_prompt(state.citation_index())
         if state.cancelled:
             report_instructions = CANCELLED_RUN_NOTICE + "\n\n" + report_instructions
         elif state.partial:
             report_instructions = PARTIAL_RUN_NOTICE + "\n\n" + report_instructions
         messages.append({"role": "user", "content": report_instructions})
-        report_resp = client.messages.create(model=model, max_tokens=8192, system=SYSTEM_PROMPT, messages=messages)
+        report_resp = _stream_message(
+            client, on_event, "report", report_detail,
+            model=model, max_tokens=8192, system=SYSTEM_PROMPT, messages=messages,
+        )
         state.record_anthropic_usage(report_resp)
         report_text, raw_final_hyps = _extract_hypotheses(_text_of(report_resp.content))
         normalized_final = _normalize_hypotheses(

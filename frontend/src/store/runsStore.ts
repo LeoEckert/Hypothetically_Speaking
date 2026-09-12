@@ -118,6 +118,12 @@ export function appendEvent(runId: string, event: SseEvent) {
     // revise stages; the `done` branch above overwrites this again with
     // the final stage's list, which is emitted right before `done` anyway.
     updated.hypotheses = event.hypotheses
+  } else if (event.type === "phase") {
+    updated.phase = event.phase
+    updated.phaseStartedAt = Date.now()
+    updated.progress = undefined
+  } else if (event.type === "progress") {
+    updated.progress = event
   } else if (event.type === "grounding_step") {
     updated.groundingSteps = [...(run.groundingSteps ?? []), event]
   } else if (event.type === "grounding") {
