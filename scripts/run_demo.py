@@ -45,6 +45,9 @@ def main() -> None:
             print(f"  <- RESULT {event['tool']}{mock}: {event['summary'][:200]}")
         elif t == "assistant_text":
             print(f"  [reasoning] {event['text'][:300]}")
+        elif t == "hypotheses":
+            ids = [h["id"] for h in event["hypotheses"]]
+            print(f"  [hypotheses stage={event['stage']}] {ids}")
         elif t == "error":
             print(f"  !! ERROR: {event['error']}")
         elif t == "done":
