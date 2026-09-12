@@ -32,7 +32,7 @@ export function HistoryList({
   }
 
   return (
-    <ScrollArea className="h-[45vh] pr-2">
+    <ScrollArea className="h-full pr-2">
       <div className="space-y-2">
         {sorted.map((run) => {
           const status: RunStatus = run.status

@@ -144,18 +144,14 @@ export function HypothesisList({
   hypotheses,
   evidence,
   onIterate,
-  autoExpandSelected = false,
   onOpenDetails,
 }: {
   hypotheses: RankedHypothesis[]
   evidence: Record<string, EvidenceItem>
   onIterate?: (seedQuestion: string) => void
-  autoExpandSelected?: boolean
   onOpenDetails?: () => void
 }) {
-  const [expandedId, setExpandedId] = useState<string | null>(() =>
-    autoExpandSelected ? hypotheses.find((h) => h.selected)?.id ?? hypotheses[0]?.id ?? null : null
-  )
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const sorted = [...hypotheses].sort((a, b) => a.rank - b.rank)
 

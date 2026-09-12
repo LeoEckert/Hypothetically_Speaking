@@ -1,4 +1,5 @@
-import { HelpCircleIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon } from "lucide-react"
+import { HelpCircleIcon, HistoryIcon, SettingsIcon } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -8,44 +9,40 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { HistoryList } from "@/components/HistoryList"
 import { HowItWorksPanel } from "@/components/HowItWorksPanel"
 import { ToolsPanel } from "@/components/ToolsPanel"
-import type { RunRecord } from "@/types"
 
-export function Sidebar({
-  runs,
+export function AppHeader({
+  runsCount,
   liveRunId,
-  viewedRunId,
+  onOpenHistory,
   onNewRequest,
-  onSelectHistory,
-  collapsed,
-  onToggleCollapsed,
 }: {
-  runs: RunRecord[]
+  runsCount: number
   liveRunId: string | null
-  viewedRunId: string | null
+  onOpenHistory: () => void
   onNewRequest: () => void
-  onSelectHistory: (id: string) => void
-  collapsed: boolean
-  onToggleCollapsed: () => void
 }) {
-  if (collapsed) {
-    return (
-      <aside className="shrink-0">
-        <Button variant="outline" size="icon-lg" onClick={onToggleCollapsed} title="Expand menu">
-          <PanelLeftOpenIcon className="size-4" />
-        </Button>
-      </aside>
-    )
-  }
-
   return (
-    <aside className="w-full md:w-[320px] shrink-0 space-y-4">
-      <div className="flex gap-2">
-        <Button className="flex-1 font-semibold" size="lg" onClick={onNewRequest}>
-          + New Hypothesis
+    <div className="mb-6 pb-4 border-b flex items-start justify-between gap-4 flex-wrap">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Hypothetically Speaking</h1>
+        <p className="text-muted-foreground mt-1">
+          A Longevity AI Scientist — ask an ageing/longevity research question, watch it plan, retrieve,
+          compute, and cite.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2 shrink-0">
+        <Button variant="outline" size="icon-lg" onClick={onOpenHistory} title="History" className="relative">
+          <HistoryIcon className="size-4" />
+          {runsCount > 0 && (
+            <Badge variant="default" className="absolute -top-1.5 -right-1.5 h-4 min-w-4 px-1 text-[10px]">
+              {runsCount}
+            </Badge>
+          )}
         </Button>
+
         <Dialog>
           <DialogTrigger asChild>
             <Button variant="outline" size="icon-lg" title="Settings — available tools">
@@ -62,6 +59,7 @@ export function Sidebar({
             <ToolsPanel isRunLive={liveRunId !== null} />
           </DialogContent>
         </Dialog>
+
         <Dialog>
           <DialogTrigger asChild>
             <Button variant="outline" size="icon-lg" title="How it works">
@@ -76,15 +74,11 @@ export function Sidebar({
             <HowItWorksPanel />
           </DialogContent>
         </Dialog>
-        <Button variant="ghost" size="icon-lg" onClick={onToggleCollapsed} title="Collapse menu">
-          <PanelLeftCloseIcon className="size-4" />
+
+        <Button className="font-semibold" size="lg" onClick={onNewRequest}>
+          + New Hypothesis
         </Button>
       </div>
-
-      <div className="border rounded-lg p-3 bg-card shadow-sm">
-        <p className="text-sm font-semibold mb-2">History</p>
-        <HistoryList runs={runs} viewedRunId={viewedRunId} onSelect={onSelectHistory} />
-      </div>
-    </aside>
+    </div>
   )
 }

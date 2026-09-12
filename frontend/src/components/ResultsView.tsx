@@ -34,7 +34,6 @@ export function ResultsView({
             hypotheses={hypotheses}
             evidence={evidence}
             onIterate={onIterate}
-            autoExpandSelected
             onOpenDetails={onOpenDetails}
           />
         </div>
