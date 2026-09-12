@@ -27,6 +27,7 @@ This file is appended to as more findings come in.
 | HQ-04 | Medium | The original research question disappears from both the results and full-report views | `main` @ `c3a958e` |
 | HQ-05 | Medium | Collapsed section preview shows only the list marker ("1.") and no text | `main` @ `c3a958e` |
 | HQ-06 | Low | "partial estimate" collides with the `partial` run status and is unexplained at the point of use | `main` @ `c3a958e` |
+| HQ-07 | Low (not prioritised) | Amass/Tavily/Nebius usage is tracked but unpriced, so the cost total is incomplete | `main` @ `c3a958e` |
 
 ---
 
@@ -443,22 +444,95 @@ four provider rows away from the badge it explains — and the badge itself
 carries no tooltip (the tooltips at `CostPanel.tsx:36,43,50,60` are on the
 provider bars).
 
-**Suggested fix.** Cheapest first:
+**Suggested fix — agreed approach.** Keep the "partial estimate" wording and
+add a small info (ⓘ) affordance next to it that explains, on hover, why the
+figure is an estimate. This is deliberately the cheap option; the underlying
+config gap is `HQ-07` and is not a priority.
 
-1. **Rename the badge** to something that cannot be confused with run state:
-   `excludes unpriced providers`, or `Anthropic only`, or simply
-   `incomplete pricing`. Avoid the word "partial" in the cost panel entirely
-   while `RunStatus.partial` exists.
-2. **Attach the explanation to the badge** as a tooltip, so the answer is
-   where the question is asked. The string already exists at
-   `CostPanel.tsx:103-105` and can be reused verbatim.
-3. Optionally show which providers are covered inline, e.g.
-   `$0.2702 · Anthropic only`, which answers the question without needing
-   any interaction at all.
+The pieces already exist, so this is a few lines in `CostPanel.tsx` with no
+new dependency:
 
-Note this is a distinct fix from `HS-01`. Renaming the cost badge does not
-give a truncated run its missing status message — it only stops the cost
-badge from being mistaken for one.
+- `frontend/src/components/ui/tooltip.tsx` is present.
+- `TooltipProvider` is already mounted app-wide (`App.tsx:142`).
+- `UsageBar` — rendered by this very panel — already uses the
+  `Tooltip` / `TooltipTrigger` / `TooltipContent` pattern
+  (`UsageBar.tsx:1`), so copy that.
+
+The tooltip copy can reuse the string that already exists at
+`CostPanel.tsx:103-105`, phrased for a reader rather than an operator, e.g.
+*"Covers Anthropic only. Nebius, Amass and Tavily usage is tracked but has
+no configured price, so it is excluded from this total."*
+
+Two implementation notes:
+
+- Make the ⓘ a real focusable `<button>` rather than a bare icon, so the
+  explanation is reachable by keyboard and screen reader — hover-only
+  content is invisible on touch devices.
+- Keep the existing "Not priced: …" line as well. It serves the operator
+  (it names the env vars to set); the tooltip serves the reader.
+
+**Deferred, not dropped — the naming collision.** The tooltip resolves "what
+does this mean", but `partial` still denotes two unrelated things in the same
+view. That stays harmless only while `HS-01` keeps a truncated run's status
+invisible. The moment `HS-01` is fixed, a budget-truncated run will render
+"done (partial run — budget limit reached)" on the *same page* as "partial
+estimate", meaning two different "partial"s side by side. Worth revisiting
+the wording then — not before.
+
+---
+
+## HQ-07 — Amass/Tavily/Nebius usage is tracked but unpriced
+
+**Severity:** low. **Explicitly not a priority** — logged for visibility, with
+the cheap mitigation handled under `HQ-06`. Raised as: *"it's strange that we
+don't show the cost for Amass, Tavily and Nebius, given that we're using
+their services — don't we get that data?"*
+
+**We do get the usage data. What is missing is the price per unit.**
+
+| Provider | Usage already captured | How |
+|---|---|---|
+| Amass | real credits consumed | `GET /credits/api-credits` sampled before and after the run and diffed (`backend/tools/amass_tool.py:80-96`) |
+| Tavily | live call count | counted directly, excluding mock fallbacks (`backend/agent/costs.py:91`) |
+| Nebius | prompt + completion tokens | returned in the tool's `usage` key |
+
+All three pricing functions (`costs.py:63-83`) do the same thing: read a rate
+from an env var and, if it is absent, return `(None, False)` — unpriced.
+
+**Why the rate cannot simply be fetched.** None of these APIs expose *your*
+price, because it is not a property of the API — it is a property of your
+contract. Tavily has a free tier and several paid tiers, Amass sells credit
+packages, Nebius prices per model. The provider knows what you consumed; only
+you know what you pay per unit.
+
+Anthropic is priced only because `costs.py` carries a **hardcoded price
+table**, which `CLAUDE.md` already flags as drifting and needing periodic
+re-verification. Same problem, solved by hardcoding rather than configuration.
+
+**This is working as designed.** `costs.py:1-4` states the rule: every figure
+is "either computed from a real, confirmed rate or explicitly marked
+unpriced … never silently invented." Showing `$0.00` for Amass would be
+worse than showing "not priced" — a wrong number with a confident face.
+
+**If it is ever worth completing**, it is configuration rather than code —
+four values in the VM's `.env` (the deploy workflow rsyncs with
+`--exclude='.env'`, so it survives deploys):
+
+```
+AMASS_PRICE_PER_CREDIT=
+TAVILY_USD_PER_CALL=
+NEBIUS_PRICE_PER_1M_INPUT=
+NEBIUS_PRICE_PER_1M_OUTPUT=
+```
+
+All three would light up with no code change, and the "partial estimate"
+badge would disappear on its own.
+
+**Check Nebius first, though.** Per `CLAUDE.md`, `NEBIUS_API_KEY` has never
+been set, so `extract_genes` runs its regex fallback and records zero tokens.
+If that is still true in production, Nebius would show `$0.0000` even with a
+rate configured — its "not priced" state is doubly moot, and configuring its
+rates would achieve nothing until the key exists.
 
 ---
 
