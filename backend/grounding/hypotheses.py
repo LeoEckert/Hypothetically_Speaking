@@ -49,6 +49,8 @@ def testable(hypothesis: Hypothesis, grounding: Grounding) -> str | None:
         return "missing intervention, readout or model system"
     if not hypothesis.falsification:
         return "missing falsification criterion"
+    if "human" in target.object.lower() and "human" not in f"{hypothesis.statement} {hypothesis.model_system}".lower():
+        return "link is about humans but the model system is not"
     return None
 
 

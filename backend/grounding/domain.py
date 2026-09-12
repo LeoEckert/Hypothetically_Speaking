@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # --- tunables --------------------------------------------------------------
 
@@ -71,6 +71,12 @@ class Triple(BaseModel):
     subject: str
     verb: str
     object: str
+
+    @field_validator("subject", "verb", "object")
+    @classmethod
+    def _plain(cls, value: str) -> str:
+        # The model sometimes echoes the arrow syntax it was shown; a verb is words.
+        return value.strip().strip("-<>→ ").strip()
 
 
 class Decomposition(BaseModel):

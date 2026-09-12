@@ -46,9 +46,12 @@ def _log(message: str) -> None:
 
 
 def _dedupe(triples: list[Triple]) -> list[Triple]:
-    seen: dict[tuple[str, str, str], Triple] = {}
+    """One link per (subject, object). Retrieval queries the two ends, not the
+    verb, so two verbs for the same pair would be the same evidence twice;
+    the first spelling (L0's, if any) wins."""
+    seen: dict[tuple[str, str], Triple] = {}
     for triple in triples:
-        seen.setdefault((triple.subject.lower(), triple.verb.lower(), triple.object.lower()), triple)
+        seen.setdefault((triple.subject.lower(), triple.object.lower()), triple)
     return list(seen.values())
 
 

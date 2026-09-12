@@ -365,7 +365,9 @@ class _StubTriplifier:
 
 class _StubProber:
     def probe(self, triples):
-        return [_PGC, _PGC]  # a duplicate, to be collapsed
+        # A duplicate and a re-verbed copy of an L0 link with arrow syntax in the
+        # verb — both must collapse onto the links already present.
+        return [_PGC, _PGC, Triple(subject="activating SIRT1", verb="-activation raises->", object="mitochondrial biogenesis")]
 
 
 class _StubLinkRepo:
@@ -515,6 +517,12 @@ def test_testability_filter_names_the_one_reason():
     assert _testable(_hypothesis("x", targets=premise_id(_SIRT1)), grounding) == "targets an established link"
     assert "missing intervention" in _testable(_hypothesis("x", readout=""), grounding)
     assert "falsification" in _testable(_hypothesis("x", falsification=""), grounding)
+    assert "humans" in _testable(_hypothesis("biogenesis extends healthspan in aged mice", model_system="aged mice"), grounding)
+
+
+def test_triple_strips_arrow_syntax_from_fields():
+    triple = Triple(subject=" SIRT1", verb="-activation improves->", object="mitochondrial biogenesis ")
+    assert (triple.subject, triple.verb, triple.object) == ("SIRT1", "activation improves", "mitochondrial biogenesis")
 
 
 def test_select_keeps_one_hypothesis_per_weak_link_with_its_evidence_context():

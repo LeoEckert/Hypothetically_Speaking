@@ -308,7 +308,9 @@ class ClaudeHypothesisGenerator(_CachingAdapter):
             "the falsification criterion (the observation that would reject it — a null "
             "readout, or the readout improving while a harm appears). `statement` is at "
             "most 20 words, one claim, no 'and', 'but', 'even if' or semicolons. Prefer "
-            "the model system in which the readout is obtainable within two years. "
+            "the model system in which the readout is obtainable within two years; when "
+            "the link names humans, the model system must be human (cells, tissue or "
+            "trial participants), not mice or worms. "
             "`targets` is the P-index exactly as listed, e.g. \"P2\".",
             _Proposals,
         )
