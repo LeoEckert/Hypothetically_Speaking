@@ -178,6 +178,7 @@ function App() {
               isRunning={isRunning}
               question={viewedRun?.question ?? ""}
               statusText={statusText}
+              run={isViewingLive ? viewedRun : undefined}
               onCancel={handleCancel}
               showLiveBanner={showLiveBanner}
               onViewLive={handleViewLive}

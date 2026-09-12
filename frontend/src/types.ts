@@ -144,6 +144,20 @@ export interface GroundingHypothesis extends GroundingTriple {
 
 export type RunMode = "fast" | "normal"
 
+/** About once a second while PLAN / REVISE / REPORT stream their single long reply. */
+export interface ProgressEvent {
+  type: "progress"
+  phase: string
+  chars: number
+  section?: string | null
+  sections_done?: number
+  sections_total?: number
+  hypotheses?: number
+  evidence?: number
+  candidates?: number
+  tool_calls?: number
+}
+
 /** Fired as each grounding stage lands, before the full `grounding` event. */
 export interface GroundingStepEvent {
   type: "grounding_step"
@@ -217,7 +231,8 @@ export interface EvaluationResult {
 
 export type SseEvent =
   | { type: "start"; run_id: string; question: string }
-  | { type: "phase"; phase: string }
+  | { type: "phase"; phase: string; detail?: Record<string, number | string> }
+  | ProgressEvent
   | GroundingStepEvent
   | GroundingEvent
   | { type: "assistant_text"; text: string }
@@ -259,6 +274,9 @@ export interface RunRecord {
   hypotheses?: RankedHypothesis[]
   grounding?: GroundingEvent
   groundingSteps?: GroundingStepEvent[]
+  phase?: string
+  phaseStartedAt?: number
+  progress?: ProgressEvent
   mode?: RunMode
   evaluations?: EvaluationResult[]
 }
