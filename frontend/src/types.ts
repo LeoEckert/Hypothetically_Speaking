@@ -8,6 +8,7 @@ export interface EvidenceItem {
   id: string
   source: string
   url: string
+  title: string
   summary: string
   raw: Record<string, unknown>
 }
@@ -45,14 +46,24 @@ export interface CostSummary {
 
 export type HypothesisConfidence = "high" | "medium" | "low"
 
+// `id` is assigned once at PLAN and never renumbered at REVISE/REPORT —
+// keep components keyed on it, not on `rank`, which changes every stage.
+// At the PLAN stage, confidence/rationale/selected/evidence_ids/
+// contradicting_ids are always present but "empty" (null/""/false/[]) —
+// nothing has been evidenced yet. Never fabricate a rating for them.
 export interface RankedHypothesis {
+  id: string
   rank: number
   statement: string
-  confidence: HypothesisConfidence | null // null if the model emitted something unparseable — never fabricate a rating
+  confidence: HypothesisConfidence | null
   rationale: string
   selected: boolean
+  evidence_ids: string[]
+  contradicting_ids: string[]
   seed_question: string
 }
+
+export type HypothesisStage = "plan" | "revise" | "final"
 
 export type SseEvent =
   | { type: "start"; run_id: string; question: string }
@@ -68,6 +79,7 @@ export type SseEvent =
       summary: string
       usage: { prompt_tokens: number; completion_tokens: number } | null
     }
+  | { type: "hypotheses"; stage: HypothesisStage; hypotheses: RankedHypothesis[] }
   | { type: "error"; error: string }
   | {
       type: "done"

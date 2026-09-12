@@ -51,7 +51,8 @@ def test_normalize_plan_assigns_stable_ids():
     normalized = _normalize_hypotheses(raw, "plan", {}, set())
     assert [h["id"] for h in normalized] == ["h1", "h2"]
     assert all(h["confidence"] is None for h in normalized)
-    assert any(h["selected"] for h in normalized)  # falls back to first
+    # Nothing has been evaluated yet at PLAN — never force a selection.
+    assert not any(h["selected"] for h in normalized)
 
 
 def test_normalize_plan_skips_entries_without_statement():

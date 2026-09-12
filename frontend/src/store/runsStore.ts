@@ -1,15 +1,39 @@
 import type { RunRecord, SseEvent } from "@/types"
 
-const STORAGE_KEY = "hs_history_v2"
+const STORAGE_KEY = "hs_history_v3"
+const PREV_STORAGE_KEY = "hs_history_v2"
 const MAX_HISTORY = 25
 
 let runs: RunRecord[] = load()
 const listeners = new Set<() => void>()
 
+// v2 -> v3: hypotheses gained `id`/`evidence_ids`/`contradicting_ids`. Old
+// records predate all three — backfill so nothing crashes on render; the
+// v2 key is left in place (no delete) as a rollback safety net.
+function migrateHypothesis(h: Record<string, unknown>, index: number): Record<string, unknown> {
+  return {
+    id: h.id ?? `h${index + 1}`,
+    evidence_ids: h.evidence_ids ?? [],
+    contradicting_ids: h.contradicting_ids ?? [],
+    ...h,
+  }
+}
+
+function migrateRun(run: RunRecord): RunRecord {
+  if (!run.hypotheses?.length) return run
+  return { ...run, hypotheses: run.hypotheses.map((h, i) => migrateHypothesis(h as unknown as Record<string, unknown>, i) as never) }
+}
+
 function load(): RunRecord[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as RunRecord[]) : []
+    if (raw) return JSON.parse(raw) as RunRecord[]
+
+    const prevRaw = localStorage.getItem(PREV_STORAGE_KEY)
+    if (!prevRaw) return []
+    const migrated = (JSON.parse(prevRaw) as RunRecord[]).map(migrateRun)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated))
+    return migrated
   } catch {
     return []
   }
@@ -75,6 +99,11 @@ export function appendEvent(runId: string, event: SseEvent) {
     updated.status = event.cancelled ? "cancelled" : event.partial ? "partial" : "done"
     updated.cost = event.cost
     updated.evidence = event.evidence
+    updated.hypotheses = event.hypotheses
+  } else if (event.type === "hypotheses") {
+    // Live-updates the run's hypotheses as they form/re-rank at plan and
+    // revise stages; the `done` branch above overwrites this again with
+    // the final stage's list, which is emitted right before `done` anyway.
     updated.hypotheses = event.hypotheses
   } else if (event.type === "error") {
     // An "error" event means the run is failing, but a `done` event still

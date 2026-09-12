@@ -1,12 +1,8 @@
 import { useEffect, useRef, useState } from "react"
-import { ChevronRightIcon } from "lucide-react"
-import { ComposeBox } from "@/components/ComposeBox"
-import { CostPanel } from "@/components/CostPanel"
-import { HypothesesTable } from "@/components/HypothesesTable"
-import { ReportView } from "@/components/ReportView"
+import { ComposeBox, type ComposeVariant } from "@/components/ComposeBox"
+import { ProgressView } from "@/components/ProgressView"
+import { ResultsView } from "@/components/ResultsView"
 import { Sidebar } from "@/components/Sidebar"
-import { TraceTimeline } from "@/components/TraceTimeline"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useConfig } from "@/hooks/useConfig"
 import { useRunsStore } from "@/hooks/useRunsStore"
@@ -110,6 +106,8 @@ function App() {
       ? "Viewing a past run — edit the question above and hit Run to create a new hypothesis based on it."
       : null
 
+  const composeVariant: ComposeVariant = isRunning ? "running" : doneEvent ? "results" : "prominent"
+
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-muted/20">
@@ -146,33 +144,20 @@ function App() {
                 maxToolCalls={maxToolCalls}
                 onMaxToolCallsChange={setMaxToolCalls}
                 maxToolCallsCeiling={config?.max_tool_calls_ceiling ?? 40}
+                variant={composeVariant}
               />
 
-              {doneEvent ? (
-                <>
-                  {doneEvent.hypotheses && doneEvent.hypotheses.length >= 2 && (
-                    <HypothesesTable
-                      hypotheses={doneEvent.hypotheses}
-                      evidence={doneEvent.evidence}
-                      onIterate={handleIterate}
-                    />
-                  )}
-                  <ReportView report={doneEvent.report} evidence={doneEvent.evidence} />
-                  {viewedRun && viewedRun.events.length > 0 && (
-                    <Collapsible className="mt-4">
-                      <CollapsibleTrigger className="group flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground cursor-pointer">
-                        <ChevronRightIcon className="size-3.5 transition-transform group-data-[state=open]:rotate-90" />
-                        Tool-call trace (details)
-                      </CollapsibleTrigger>
-                      <CollapsibleContent>
-                        <TraceTimeline events={viewedRun.events} />
-                      </CollapsibleContent>
-                    </Collapsible>
-                  )}
-                  {viewedRun?.cost && <CostPanel cost={viewedRun.cost} />}
-                </>
+              {doneEvent && viewedRun ? (
+                <ResultsView
+                  run={viewedRun}
+                  report={doneEvent.report}
+                  evidence={doneEvent.evidence}
+                  hypotheses={doneEvent.hypotheses ?? []}
+                  cost={doneEvent.cost}
+                  onIterate={handleIterate}
+                />
               ) : (
-                viewedRun && <TraceTimeline events={viewedRun.events} />
+                viewedRun && <ProgressView run={viewedRun} />
               )}
             </main>
           </div>

@@ -16,6 +16,7 @@ export function deriveLiveStatus(events: SseEvent[]): string {
     const tools = [...new Set(pending.values())].map(toolLabel)
     return `${label} — calling ${tools.join(", ")}…`
   }
+  if (phase === "plan") return `${label} — proposing hypotheses…`
   if (phase === "revise") return `${label} — weighing the evidence…`
   if (phase === "report") return `${label} — writing the final report…`
   return `${label}…`

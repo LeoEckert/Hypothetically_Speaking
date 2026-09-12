@@ -105,6 +105,11 @@ def _normalize_hypotheses(
         return []
 
     if stage == "plan" or not known:
+        # At the real PLAN stage nothing has been evaluated yet, so never
+        # force a "selected" hypothesis — only revise/final (including the
+        # bootstrap-recovery case where PLAN produced nothing) represent an
+        # actual evaluation and must guarantee exactly one selected.
+        force_selection = stage != "plan"
         normalized: list[dict] = []
         seen_selected = False
         for h in raw:
@@ -136,7 +141,7 @@ def _normalize_hypotheses(
                     "seed_question": str(h.get("seed_question", "")).strip(),
                 }
             )
-        if normalized and not seen_selected:
+        if normalized and force_selection and not seen_selected:
             normalized[0]["selected"] = True
         return normalized
 

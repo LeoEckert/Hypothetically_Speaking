@@ -1,5 +1,8 @@
 # Architecture
 
+See [`docs/UX_SPEC.md`](UX_SPEC.md) for the hypothesis lifecycle, the
+two-stage progress/results UX, and the full SSE event inventory.
+
 ## Goals this design is optimized for
 
 1. Agent plans, retrieves, calls tools, and revises without hand-holding.
@@ -76,10 +79,12 @@ the whole loop is ~200 lines we fully control for the judge's "switch a
 tool off and watch it change" test.
 
 ```
-1. PLAN     Claude reads the question, states its interpretation/assumptions
-            explicitly (never blocks waiting for clarification), proposes
-            2-4 candidate hypotheses, and picks which tools to check each
-            against.
+1. PLAN     A dedicated, tool-less Anthropic call (mirrors REVISE below):
+            Claude proposes 2-4 candidate hypotheses as a structured
+            ```json fence (see UX_SPEC.md), each assigned a stable id
+            (h1..hN) that is reused verbatim for the rest of the run —
+            never renumbered at REVISE or REPORT. Emitted live as a
+            `hypotheses` SSE event (stage "plan") before any tool call.
 2. ACT      Standard tool-use loop: Claude calls tools, we execute them via
             the registry, append tool_result blocks, repeat. Every tool
             result is stored in the evidence registry with a stable
@@ -94,13 +99,24 @@ tool off and watch it change" test.
 4. REVISE   A dedicated turn: "given all evidence and the enrichment
             result, revise your hypothesis ranking; name the best-
             supported hypothesis, name contradicting evidence, and specify
-            the next experiment." This is where the agent is forced to
-            weigh evidence rather than just concatenate it.
+            the next experiment." Also re-emits the same PLAN-issued ids
+            with confidence, rationale, and evidence_ids/contradicting_ids
+            now filled in (`hypotheses` SSE event, stage "revise") — this
+            is where the agent is forced to weigh evidence rather than
+            just concatenate it.
 5. REPORT   Final markdown: Hypothesis / Evidence For / Evidence Against /
-            Confidence & Uncertainty / Failure Modes / Next Experiment /
-            Tool Trace. Every factual sentence must carry an inline
-            citation ID resolvable in the evidence registry.
+            Confidence & Uncertainty / Failure Modes / Next Experiment.
+            Every factual sentence must carry an inline citation ID
+            resolvable in the evidence registry. A trailing `hypotheses`
+            SSE event (stage "final") carries the same stable ids with
+            their final rank/confidence/evidence links.
 ```
+
+Each stage's hypotheses list only ever overwrites `RunState.hypotheses` if
+parsing produced a non-empty result (`backend/agent/loop.py`'s
+`_normalize_hypotheses`) — a malformed fence at REVISE or REPORT never
+erases an earlier good stage, so the frontend always has something to
+show even on a partial/error run.
 
 Budget enforcement: `MAX_TOOL_CALLS` (default 30) and a wall-clock
 timeout (default 18 min) in `state.py`. On timeout the loop still forces a
@@ -112,8 +128,13 @@ never silently truncates without saying so.
 Every tool result is appended to `RunState.evidence` as:
 
 ```python
-{"id": "PMID:12345678", "source": "pubmed", "url": "...", "summary": "...", "raw": {...}}
+{"id": "PMID:12345678", "source": "pubmed", "url": "...", "title": "...", "summary": "...", "raw": {...}}
 ```
+
+`title` is a human-readable label (paper/trial title, or a synthesized
+one for association-style sources like Open Targets) — populated per-tool
+so the frontend can render a titled link instead of a bare citation id or
+a truncated summary string.
 
 The report-writing prompt requires every claim to end in `[id]` matching a
 registry entry. `scripts/validate_citations.py` parses a finished report,
