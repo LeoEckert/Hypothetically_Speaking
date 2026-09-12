@@ -24,6 +24,7 @@ This file is appended to as more findings come in.
 | HQ-01 | High | Cancel is not bound to a run — it always cancels the newest one | `main` @ `c3a958e` |
 | HQ-02 | High | Starting a second run silently orphans the first, which sticks at "running" forever | `main` @ `c3a958e` |
 | HQ-03 | Medium | Report sections render as bullets in one run and a prose wall in the next | `main` @ `c3a958e` |
+| HQ-04 | Medium | The original research question disappears from both the results and full-report views | `main` @ `c3a958e` |
 
 ---
 
@@ -215,6 +216,12 @@ product produce visibly different-looking documents, which undercuts the
      paragraph each.
 ```
 
+**This is a presentation change only.** The right-hand prose version is not
+worse *reasoning* — it is arguably richer, carrying per-hypothesis
+confidence and an explicit argument for why h4 is weak. The goal is to pin
+how that content is laid out, not to shorten or simplify it. A fix that
+produces tidy bullets by dropping the reasoning would be a regression.
+
 Two judgement calls worth making deliberately rather than inheriting:
 
 1. **Not every section wants bullets.** `## Hypothesis` is a single claim and
@@ -227,6 +234,84 @@ Two judgement calls worth making deliberately rather than inheriting:
    wording is adopted, re-run that validator afterwards — a format change to
    the prompt is exactly the kind of edit that can quietly drop citation
    markers.
+
+---
+
+## HQ-04 — The original research question disappears once the run finishes
+
+**Severity:** medium. **Reported:** two screenshots — the ranked-hypotheses
+overview, and the full report view.
+
+**What the tester saw.** *"Original research question missing once candidate
+hypotheses are listed"* and *"The original question is missing from full
+report view as well."*
+
+Both are correct, and they have different causes.
+
+**Cause 1 — the results overview.** The question is rendered in
+`LiveRunBar.tsx:81`:
+
+```jsx
+<p className="text-sm truncate">{question}</p>
+```
+
+but that sits inside `{isRunning && (…)}`, behind the same early return that
+hides terminal status (`LiveRunBar.tsx:63`, see `HS-01`). So the question is
+visible for exactly as long as the run is in flight, and vanishes at the
+moment the results appear — precisely when the reader needs it to judge
+whether the hypotheses answer what was asked.
+
+It does survive in two places, neither of them adequate:
+
+- `HistoryList.tsx:51` — but that is the history panel, a slide-out that is
+  closed by default.
+- `GroundingTrace.tsx:214` — as an 11px muted blockquote (`text-xs
+  text-muted-foreground`), nested inside the "Premise grounding trace"
+  accordion in `ResultsView.tsx:49-56`, which is **collapsed by default**.
+
+That second one has a further catch: it renders only when `run.grounding`
+exists. Grounding silently no-ops without an `AMASS_API_KEY` (see `HS-06`),
+so on a run without it the question is **nowhere in the results view at
+all**.
+
+**Cause 2 — the full report view.** This one is structural, not a styling
+accident. `HypothesisDetailsView` is passed `hypothesis`, `report`,
+`evidence`, `evaluations`, `onIterate`, `onEvaluate`, `onBack`
+(`HypothesisDetailsView.tsx:9-26`) — there is **no `question` prop at all**.
+The component could not display the question even if asked to.
+
+The only `question` reference inside it is `h.seed_question`
+(`HypothesisDetailsView.tsx:42-43`), which is the follow-up question used by
+"Iterate on this hypothesis" — a *different* string from the run's original
+question.
+
+**Why this matters more than it looks.** The report opens with
+"## Hypothesis", stating a refined claim ("The best-supported hypothesis is
+H1: controlled, donor-screened FMT — not raw fecal ingestion — …"). Without
+the original question on screen, a reader cannot tell whether that refined
+claim still answers what was asked, or has drifted. For a tool whose pitch
+is a *defensible, cited* report, the question under examination is arguably
+the single most important piece of context, and it is the one piece that is
+not displayed.
+
+It also makes shared screenshots ambiguous — as this very screenshot
+demonstrates.
+
+**Suggested fix.**
+
+1. Render the question as a persistent header in `ResultsView`, above
+   "Candidate hypotheses (ranked)", independent of `isRunning` and of
+   whether grounding ran. This is the main fix; it needs no new plumbing,
+   since `ResultsView` already receives `run`.
+2. Pass `question={run.question}` into `HypothesisDetailsView` and show it
+   above the `#1 …` hypothesis line, so the report view is self-contained.
+3. Treat the question as run-level chrome rather than live-run chrome —
+   `LiveRunBar` is the wrong owner for it, exactly as it is the wrong owner
+   for terminal status in `HS-01`. Both are the same underlying mistake:
+   information that belongs to the run is being rendered by a component
+   scoped to the run's *in-flight* state.
+
+Fixing `HS-01` and `HQ-04` together is natural — they are one refactor.
 
 ---
 
