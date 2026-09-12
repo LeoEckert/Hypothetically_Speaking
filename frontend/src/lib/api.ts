@@ -38,12 +38,13 @@ export async function setToolEnabled(name: string, enabled: boolean) {
 
 export async function startRun(
   question: string,
-  maxToolCalls?: number
+  maxToolCalls?: number,
+  mode: "fast" | "normal" = "normal"
 ): Promise<{ run_id: string; max_tool_calls: number }> {
   const res = await fetch(`${API_BASE}/api/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, max_tool_calls: maxToolCalls }),
+    body: JSON.stringify({ question, max_tool_calls: maxToolCalls, mode }),
   })
   return res.json()
 }

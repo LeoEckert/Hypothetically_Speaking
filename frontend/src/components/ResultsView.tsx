@@ -37,6 +37,7 @@ export function ResultsView({
             evidence={evidence}
             onIterate={onIterate}
             onOpenDetails={onOpenDetails}
+            grounding={run.grounding}
           />
         </div>
       )}

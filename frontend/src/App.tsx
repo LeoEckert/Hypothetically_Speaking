@@ -13,7 +13,7 @@ import { cancelRun, evaluateHypothesis, startRun } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
 import { currentLiveRunId, ensureStream, onStreamFinished } from "@/lib/runStream"
 import { appendEvaluation, createRun, deleteRun, getRun, markCancelling } from "@/store/runsStore"
-import type { SseEvent } from "@/types"
+import type { SseEvent, RunMode } from "@/types"
 
 function App() {
   const runs = useRunsStore()
@@ -26,6 +26,7 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [question, setQuestion] = useState("")
   const [maxToolCalls, setMaxToolCalls] = useState(30)
+  const [mode, setMode] = useState<RunMode>("fast")
   const prefilledRef = useRef(false)
   const budgetInitRef = useRef(false)
 
@@ -79,7 +80,7 @@ function App() {
     if (!trimmed || liveRunId) return
 
     const forkedFrom = viewedRunId && viewedRunId !== liveRunId ? viewedRunId : null
-    const { run_id } = await startRun(trimmed, maxToolCalls)
+    const { run_id } = await startRun(trimmed, maxToolCalls, mode)
     createRun(run_id, trimmed, forkedFrom)
     setLiveRunId(run_id)
     setViewedRunId(run_id)
@@ -165,6 +166,8 @@ function App() {
             runDisabled={liveRunId !== null}
             isRunLive={liveRunId !== null}
             forkNote={forkNote}
+            mode={mode}
+            onModeChange={setMode}
             maxToolCalls={maxToolCalls}
             onMaxToolCallsChange={setMaxToolCalls}
             maxToolCallsCeiling={config?.max_tool_calls_ceiling ?? 40}

@@ -16,6 +16,10 @@ WALKS = ("bfs", "dfs")
 
 
 def _open(path: Path | str) -> sqlite3.Connection:
+    if not Path(path).exists():
+        # A fresh deployment has no knowledge base until the first run grounds a
+        # question; that is "nothing yet", not a server error.
+        raise ValueError(f"no knowledge base at {path} yet — run a question first")
     uri = f"file:{Path(path).resolve().as_posix()}?mode=ro"
     connection = sqlite3.connect(uri, uri=True)
     connection.row_factory = sqlite3.Row
@@ -55,6 +59,8 @@ def load_graph(path: Path | str | sqlite3.Connection = DEFAULT_PATH) -> dict:
             "falsification": payload.get("falsification"),
             "supported_by": payload.get("supported_by") or [],
             "conflicts_with": payload.get("conflicts_with") or [],
+            "dropped": payload.get("dropped"),
+            "destination": payload.get("destination"),
             "run_id": row["run_id"],
             "first_seen": row["first_seen"],
         }

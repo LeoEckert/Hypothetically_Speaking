@@ -28,6 +28,7 @@ jobs:
             --exclude='.git' --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
             --exclude='frontend/node_modules' --exclude='frontend/dist' \
             --exclude='backend/reports/*.json' --exclude='backend/reports/*.md' \
+            --exclude='runs/' \
             --exclude='.env' --exclude='.pytest_cache' --exclude='admin_overrides.env' \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
             ./ ubuntu@${{ secrets.NEBIUS_VM_HOST }}:/opt/app/repo/

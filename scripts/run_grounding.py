@@ -4,7 +4,7 @@
     python -m scripts.run_grounding "<question>" --capture   live run, records the fixture
     python -m scripts.run_grounding --fixtures               replay the recording, no network
     python -m scripts.run_grounding "<question>" --triples   L0 only: coherence + A -verb-> B
-    python -m scripts.run_grounding "<question>" --premises  L0-L3: premises + knowledge graph
+    python -m scripts.run_grounding "<question>" --premises [--fast]   L0-L4: premises + graph + hypotheses
     python -m scripts.run_grounding --kb                     audit view of everything the knowledge base holds
 
 Live runs need TAVILY_API_KEY, AMASS_API_KEY and ANTHROPIC_API_KEY in the
@@ -24,8 +24,14 @@ from pathlib import Path
 
 from backend.grounding import premises, stages
 from backend.grounding.adapters import (
+    ABSTRACT_CHARS,
+    ABSTRACT_CHARS_FAST,
+    AMASS_LIMIT,
     FIXTURE_PATH,
     MODEL,
+    PROBE_MODEL,
+    TRIAL_LIMIT_FAST,
+    VERIFY_MODEL,
     AmassPaperRepository,
     AmassTrialRepository,
     ClaudeEntityExtractor,
@@ -134,18 +140,30 @@ def replay() -> RunTrace:
 
 
 
-def ground(question: str) -> premises.Grounding:
-    """L0-L3 with live adapters; the knowledge base caches every Claude call."""
+def ground(question: str, ledger=None, fast: bool = False, on_progress=None) -> premises.Grounding:
+    """L0-L4 with live adapters; the knowledge base caches every Claude call and
+    Amass query. `ledger` (adapters.Ledger) receives every external call.
+
+    L0, L2 verdicts and L4 stay on the main model in both modes (see the note
+    on Haiku verdicts in adapters.py); L1 probing runs on PROBE_MODEL (Haiku).
+    normal: 8 links, whole abstracts, 20 trials per query, a second-look search
+            before a link is called unverified.
+    fast:   4 links, 1500-char abstracts, 10 trials per query, no second look."""
     knowledge_base = SqliteKnowledgeBase()
     return premises.extract(
         question,
-        triplifier=ClaudeTriplifier(knowledge_base),
-        prober=ClaudeProber(knowledge_base),
-        sources=[AmassPaperRepository(knowledge_base), AmassTrialRepository(knowledge_base)],
-        verifier=ClaudeVerifier(knowledge_base),
+        triplifier=ClaudeTriplifier(knowledge_base, ledger, MODEL),
+        prober=ClaudeProber(knowledge_base, ledger, PROBE_MODEL),
+        sources=[
+            AmassPaperRepository(knowledge_base, ledger),
+            AmassTrialRepository(knowledge_base, ledger, TRIAL_LIMIT_FAST if fast else AMASS_LIMIT),
+        ],
+        verifier=ClaudeVerifier(knowledge_base, ledger, VERIFY_MODEL, ABSTRACT_CHARS_FAST if fast else ABSTRACT_CHARS),
         # The seam: swap in any object with generate(grounding) -> list[Hypothesis].
-        generator=ClaudeHypothesisGenerator(knowledge_base),
+        generator=ClaudeHypothesisGenerator(knowledge_base, ledger, MODEL),
         knowledge_base=knowledge_base,
+        fast=fast,
+        on_progress=on_progress,
     )
 
 
@@ -169,10 +187,12 @@ def main(argv: list[str]) -> int:
         print(SqliteKnowledgeBase().describe())
         return 0
     if "--premises" in flags and len(positional) == 1:
-        grounding = ground(positional[0])
+        grounding = ground(positional[0], fast="--fast" in flags)
         print(grounding.knowledge_graph, file=sys.stderr)
         for hypothesis in grounding.hypotheses:
             print(f"{hypothesis.id}: {hypothesis.statement}", file=sys.stderr)
+        for hypothesis in grounding.rejected:
+            print(f"rejected ({hypothesis.dropped}): {hypothesis.statement}", file=sys.stderr)
         json.dump(grounding.model_dump(mode="json"), sys.stdout, indent=2)
         print()
         return 0

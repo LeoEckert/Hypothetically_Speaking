@@ -80,6 +80,7 @@ _cancel_events: dict[str, threading.Event] = {}
 class RunRequest(BaseModel):
     question: str
     max_tool_calls: int | None = None
+    mode: str = "normal"  # "fast" — Haiku everywhere, 4 links, no second look — or "normal"
 
 
 class ToolToggleRequest(BaseModel):
@@ -155,6 +156,7 @@ def start_run(req: RunRequest):
             run_id=run_id,
             max_tool_calls=effective_max_tool_calls,
             should_cancel=cancel_event.is_set,
+            mode="fast" if req.mode == "fast" else "normal",
         )
         _results[run_id] = result
         (REPORTS_DIR / f"{run_id}.json").write_text(json.dumps(result, indent=2, default=str))

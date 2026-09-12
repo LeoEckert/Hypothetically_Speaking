@@ -18,6 +18,7 @@ from backend.agent.loop import (  # noqa: E402
     _normalize_hypotheses,
     _parse_hypotheses,
     _plan_message,
+    _adopt_candidates,
 )
 from backend.agent.prompts import plan_prompt  # noqa: E402
 
@@ -144,9 +145,11 @@ def test_grounding_payload_preserves_the_l0_trace(monkeypatch):
     monkeypatch.setenv("AMASS_API_KEY", "test-key")
     monkeypatch.setattr(
         "scripts.run_grounding.ground",
-        lambda _: SimpleNamespace(
+        lambda _question, **_options: SimpleNamespace(
             coherent=True,
             why="coherent",
+            destination="B",
+            rejected=[],
             triples=[Dumpable({"subject": "A", "verb": "causes", "object": "B"})],
             premises=[
                 Dumpable(
@@ -166,6 +169,7 @@ def test_grounding_payload_preserves_the_l0_trace(monkeypatch):
     payload = _grounding_payload("Does A cause B?")
     assert payload["status"] == "complete"
     assert payload["triples"] == [{"subject": "A", "verb": "causes", "object": "B"}]
+    assert payload["destination"] == "B" and payload["rejected"] == []
     assert "UNVERIFIED" in _grounding_text(payload)
 
 
@@ -177,3 +181,39 @@ def test_normalize_recovers_when_known_roster_is_empty():
     assert len(normalized) == 1
     assert normalized[0]["id"] == "h1"
     assert normalized[0]["confidence"] == "high"
+
+
+def test_normalize_revise_matches_ids_case_insensitively():
+    # The model echoed the grounding labels (H1) instead of PLAN's ids (h1).
+    known = {"h1": {"statement": "A", "seed_question": "qa"}, "h2": {"statement": "B", "seed_question": "qb"}}
+    raw = [
+        {"id": "H1", "confidence": "high", "selected": True},
+        {"id": " H2 ", "confidence": "low", "selected": False},
+    ]
+    normalized = _normalize_hypotheses(raw, "revise", known, set())
+    assert [(h["id"], h["confidence"], h["selected"]) for h in normalized] == [("h1", "high", True), ("h2", "low", False)]
+
+
+def test_plan_message_asks_for_exactly_the_grounded_candidates():
+    text = _plan_message("Candidate hypotheses ...", 2)
+    assert "propose exactly 2 hypotheses: the grounded candidates listed above" in text
+    assert "propose 2-4" not in text
+    one = _plan_message("...", 1)
+    assert "propose exactly 1 hypothesis: the grounded candidate listed above" in one
+    assert "2-4 concrete" in _plan_message("no candidates", 0)
+
+
+def test_plan_roster_is_exactly_the_grounded_candidates():
+    candidates = [
+        {"statement": "Raising biogenesis improves gait speed at 12 months.", "intervention": "12 months of aerobic training",
+         "readout": "gait speed", "model_system": "adults aged 65-80"},
+    ]
+    raw_plan = [
+        {"statement": "Raising biogenesis improves gait speed at 12 months", "seed_question": "Does training raise gait speed?"},
+        {"statement": "The SIRT1 axis is contested and unlikely to matter, even if activated", "seed_question": "x"},
+    ]
+    adopted = _adopt_candidates(raw_plan, candidates)
+    assert adopted == [{"statement": "Raising biogenesis improves gait speed at 12 months.", "seed_question": "Does training raise gait speed?"}]
+    # No matching PLAN entry: a seed question is derived from the experiment itself.
+    derived = _adopt_candidates([], candidates)
+    assert derived[0]["seed_question"] == "Does 12 months of aerobic training change gait speed in adults aged 65-80?"

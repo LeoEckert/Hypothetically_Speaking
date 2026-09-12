@@ -52,42 +52,52 @@ def _emit(on_event: EventCallback, event: dict) -> None:
 _GROUNDING_KEYS = ("ANTHROPIC_API_KEY", "AMASS_API_KEY")
 
 
-def _grounding_payload(question: str) -> dict:
-    """Run L0-L4 and return the same structured payload sent to the UI."""
+def _grounding_payload(question: str, state: RunState | None = None, on_event=None, mode: str = "normal") -> dict:
+    """Run L0-L4 and return the same structured payload sent to the UI.
+
+    Every Amass and Claude call the grounding makes is streamed as a
+    tool_call/tool_result pair and recorded on the run state (trace, Anthropic
+    tokens, Amass credits) so the trace and cost panel show the whole run —
+    without counting against the agent's tool budget."""
     missing = [name for name in _GROUNDING_KEYS if not os.environ.get(name)]
+    empty = {"coherent": None, "triples": [], "destination": "", "premises": [], "knowledge_graph": "", "hypotheses": [], "rejected": []}
     if missing:
-        return {
-            "status": "skipped",
-            "coherent": None,
-            "why": f"Missing {', '.join(missing)}",
-            "triples": [],
-            "premises": [],
-            "knowledge_graph": "",
-            "hypotheses": [],
-        }
+        return {"status": "skipped", "why": f"Missing {', '.join(missing)}", **empty}
     try:
+        from backend.grounding.adapters import Ledger
         from scripts.run_grounding import ground
 
-        grounding = ground(question)
+        def record(entry: dict) -> None:
+            if state is None:
+                return
+            step = state.record_external_call(entry["tool"], entry["args"], entry["summary"])
+            if entry["tool"] == "grounding" and entry.get("usage"):
+                state.record_anthropic_tokens(entry["usage"], entry["args"].get("model", ""))
+            _emit(on_event, {"type": "tool_call", "tool": entry["tool"], "args": entry["args"], "step": step})
+            _emit(on_event, {"type": "tool_result", "tool": entry["tool"], "step": step, "mock": False, "error": None, "summary": entry["summary"], "usage": None})
+
+        if state is not None and state.amass_credits_before is None:
+            state.amass_credits_before = amass_tool.get_credits()
+        grounding = ground(
+            question,
+            ledger=Ledger(record),
+            fast=mode == "fast",
+            on_progress=lambda event: _emit(on_event, {"type": "grounding_step", **event}),
+        )
         return {
             "status": "complete",
+            "mode": mode,
             "coherent": grounding.coherent,
             "why": grounding.why,
             "triples": [triple.model_dump(mode="json") for triple in grounding.triples],
+            "destination": grounding.destination,
             "premises": [premise.model_dump(mode="json") for premise in grounding.premises],
             "knowledge_graph": grounding.knowledge_graph,
             "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in grounding.hypotheses],
+            "rejected": [hypothesis.model_dump(mode="json") for hypothesis in grounding.rejected],
         }
     except Exception as exc:
-        return {
-            "status": "failed",
-            "coherent": None,
-            "why": str(exc),
-            "triples": [],
-            "premises": [],
-            "knowledge_graph": "",
-            "hypotheses": [],
-        }
+        return {"status": "failed", "why": str(exc), **empty}
 
 
 def _grounding_text(payload: dict) -> str:
@@ -100,8 +110,8 @@ def _grounding_text(payload: dict) -> str:
         premise for premise in payload["premises"] if premise["status"] == "UNVERIFIED"
     ]
     candidates = "\n".join(
-        f"- {h['id']}: {h['statement']}  (tests: {h['targets']}; do: {h['intervention']}; "
-        f"measure: {h['readout']}; in: {h['model_system']})"
+        f"- {h['statement']}  (tests: {h['targets']}; do: {h['intervention']}; "
+        f"measure: {h['readout']}; in: {h['model_system']})\n  why: {h.get('story', '')}"
         for h in payload.get("hypotheses", [])
     )
     return (
@@ -117,13 +127,43 @@ def _grounding_text(payload: dict) -> str:
     )
 
 
-def _plan_message(grounding_text: str) -> str:
+def _plan_message(grounding_text: str, n_candidates: int = 0) -> str:
+    """PLAN's prompt asks for 2-4 hypotheses; when the grounding already
+    produced candidates, PLAN's job is to adopt exactly those — padding the
+    list with its own would reintroduce ungrounded, compound hypotheses."""
+    prompt = plan_prompt()
+    if n_candidates:
+        prompt = prompt.replace(
+            "propose 2-4 concrete, testable hypotheses\nthat could answer the research question, each grounded in a plausible\nageing-biology mechanism.",
+            f"propose exactly {n_candidates} hypothes{'is' if n_candidates == 1 else 'es'}: the grounded "
+            f"candidate{'' if n_candidates == 1 else 's'} listed above, statement{'' if n_candidates == 1 else 's'} "
+            "kept as written. Do not add hypotheses of your own; this overrides the 2-4 range in the system instructions.",
+        )
     return (
         "Grounding context from a prior extraction step. Use this when "
         "proposing hypotheses; do not treat it as already-verified evidence.\n\n"
         f"{grounding_text}\n\n"
-        + plan_prompt()
+        + prompt
     )
+
+
+def _adopt_candidates(raw_plan: list, candidates: list[dict]) -> list[dict]:
+    """When the grounding produced candidates, the PLAN roster is exactly those,
+    in order. PLAN's own additions are dropped (its system prompt still says
+    "2-4", and the model pads the list with compound, ungrounded hypotheses);
+    only its seed_question is kept where it wrote about the same statement."""
+    def norm(text: str) -> str:
+        return re.sub(r"[^a-z0-9 ]", "", str(text).lower()).strip()
+
+    by_statement = {norm(h.get("statement", "")): h for h in raw_plan if isinstance(h, dict)}
+    adopted = []
+    for candidate in candidates:
+        planned = by_statement.get(norm(candidate["statement"]), {})
+        seed = str(planned.get("seed_question") or "").strip() or (
+            f"Does {candidate['intervention']} change {candidate['readout']} in {candidate['model_system']}?"
+        )
+        adopted.append({"statement": candidate["statement"], "seed_question": seed})
+    return adopted
 
 
 def _text_of(content_blocks) -> str:
@@ -222,7 +262,15 @@ def _normalize_hypotheses(
             normalized[0]["selected"] = True
         return normalized
 
-    candidates = [h for h in raw if isinstance(h, dict) and h.get("id") in known]
+    # Ids are matched case-insensitively: PLAN mints h1..hN, but the model
+    # sometimes echoes the H1..HN labels it saw in the grounding candidates.
+    candidates = []
+    for h in raw:
+        if not isinstance(h, dict):
+            continue
+        hid = str(h.get("id", "")).strip().lower()
+        if hid in known:
+            candidates.append({**h, "id": hid})
 
     def _rank_key(pair: tuple[int, dict]) -> tuple[float, int]:
         idx, h = pair
@@ -288,6 +336,7 @@ def run_agent(
     run_id: str | None = None,
     max_tool_calls: int | None = None,
     should_cancel: CancelCheck = None,
+    mode: str = "normal",
 ) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
@@ -308,7 +357,7 @@ def run_agent(
     _emit(on_event, {"type": "start", "run_id": state.run_id, "question": question})
 
     _emit(on_event, {"type": "phase", "phase": "grounding"})
-    grounding = _grounding_payload(question)
+    grounding = _grounding_payload(question, state, on_event, mode)
     grounding_text = _grounding_text(grounding)
     _emit(on_event, {"type": "grounding", **grounding})
 
@@ -316,11 +365,13 @@ def run_agent(
     try:
         # --- PLAN ---
         _emit(on_event, {"type": "phase", "phase": "plan"})
-        messages.append({"role": "user", "content": _plan_message(grounding_text)})
+        messages.append({"role": "user", "content": _plan_message(grounding_text, len(grounding.get("hypotheses") or []))})
         plan_resp = client.messages.create(model=model, max_tokens=1536, system=SYSTEM_PROMPT, messages=messages)
         state.record_anthropic_usage(plan_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})
         raw_plan_hyps = _parse_hypotheses(_text_of(plan_resp.content))
+        if grounding.get("hypotheses"):
+            raw_plan_hyps = _adopt_candidates(raw_plan_hyps, grounding["hypotheses"])
         state.hypotheses = _normalize_hypotheses(raw_plan_hyps, "plan", {}, set(state.evidence))
         _emit(on_event, {"type": "hypotheses", "stage": "plan", "hypotheses": state.hypotheses})
         messages.append({"role": "user", "content": _PLAN_TO_ACT_NUDGE})
@@ -383,7 +434,7 @@ def run_agent(
 
                 _emit(
                     on_event,
-                    {"type": "tool_call", "tool": block.name, "args": block.input, "step": state.tool_calls_made + 1},
+                    {"type": "tool_call", "tool": block.name, "args": block.input, "step": len(state.trace) + 1},
                 )
                 if block.name == "amass" and state.amass_credits_before is None:
                     state.amass_credits_before = amass_tool.get_credits()
@@ -407,7 +458,7 @@ def run_agent(
                     {
                         "type": "tool_result",
                         "tool": block.name,
-                        "step": state.tool_calls_made,
+                        "step": len(state.trace),
                         "mock": result.get("mock", False),
                         "error": result.get("error"),
                         "summary": result.get("summary", ""),

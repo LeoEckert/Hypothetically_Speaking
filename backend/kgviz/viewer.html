@@ -45,6 +45,15 @@
     .why { color: var(--muted); font-size: 12px; margin-top: 3px; line-height: 1.35; }
     .hint { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
     .dot.focus { stroke-width: 4; }
+    .dot.rejected { stroke-dasharray: 3 2; fill: var(--bg); }
+    .dot.destination { stroke-width: 4; filter: drop-shadow(0 0 3px var(--active)); }
+    .verb { font-size: 9px; fill: var(--muted); }
+    .verb.inactive { opacity: 0.3; }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); padding: 6px 18px; border-bottom: 1px solid var(--line); background: var(--card); }
+    .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor; margin-right: 5px; vertical-align: -1px; }
+    .legend .rej::before { border-style: dashed; }
+    .legend .dest::before { border-width: 3px; }
+    .step.rejected .name { text-decoration: line-through; color: var(--muted); }
     .step .name { font-weight: 550; }
     .step .meta { color: var(--muted); font-size: 11px; }
     .badge { display: inline-block; font-size: 10px; font-weight: 650; letter-spacing: 0.03em; text-transform: uppercase; }
@@ -86,9 +95,27 @@
           <option value="1">show</option>
         </select>
       </label>
+      <label>Scope
+        <select id="scope">
+          <option value="latest">latest run of this question</option>
+          <option value="question">this question, all runs</option>
+          <option value="all">whole knowledge base</option>
+        </select>
+      </label>
       <button type="button" id="reload">Reload KB</button>
     </div>
   </header>
+  <div class="legend">
+    <span style="color: var(--question)">question</span>
+    <span style="color: var(--concept)">entity</span>
+    <span style="color: var(--concept)" class="dest">destination (outcome asked about)</span>
+    <span style="color: var(--established)">established link</span>
+    <span style="color: var(--contested)">contested link</span>
+    <span style="color: var(--unverified)">unverified link</span>
+    <span style="color: var(--hypothesis)">hypothesis kept</span>
+    <span style="color: var(--hypothesis)" class="rej">hypothesis rejected</span>
+    <span style="color: var(--dim)">outside this question's walk</span>
+  </div>
   <main>
     <svg id="graph" xmlns="http://www.w3.org/2000/svg"></svg>
     <aside>
@@ -214,32 +241,50 @@
       const activation = walk(seed, mode, depth, includeRecords);
       const active = new Set(activation.visited.map((item) => item.id));
       const treeKey = new Set(activation.tree.map((edge) => `${edge.src}\t${edge.dst}\t${edge.kind}`));
-      const visible = graph.nodes.filter((node) => includeRecords || !EVIDENCE.has(node.kind));
+      const scope = document.getElementById("scope").value;
+      const current = currentHypotheses(seed);
+      const visible = graph.nodes.filter((node) => {
+        if (!includeRecords && EVIDENCE.has(node.kind)) return false;
+        if (scope === "all") return true;
+        if (!active.has(node.id)) return false;
+        if (scope === "latest" && node.kind === "hypothesis" && current && !current.has(node.name)) return false;
+        return true;
+      });
       const visibleIds = visible.map((node) => node.id);
       const { positions, width, height } = layout(visibleIds);
       const svg = document.getElementById("graph");
       svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const byIdAll = Object.fromEntries(graph.nodes.map((node) => [node.id, node]));
+      const destination = ((byIdAll[seed] || {}).destination || "").toLowerCase();
       const edges = graph.edges.filter((edge) => visibleIds.includes(edge.src) && visibleIds.includes(edge.dst));
       const edgeMarkup = edges.map((edge) => {
         const a = positions[edge.src], b = positions[edge.dst];
         if (!a || !b) return "";
         const midX = (a.x + b.x) / 2;
+        const on = active.has(edge.src) && active.has(edge.dst);
         const cls = [
           "edge",
           treeKey.has(`${edge.src}\t${edge.dst}\t${edge.kind}`) ? "tree" : "",
-          active.has(edge.src) && active.has(edge.dst) ? "" : "inactive",
+          on ? "" : "inactive",
         ].filter(Boolean).join(" ");
-        return `<path class="${cls}" d="M ${a.x} ${a.y} C ${midX} ${a.y}, ${midX} ${b.y}, ${b.x} ${b.y}" />`;
+        // The premise node stands for the link; its verb rides the edge to the object.
+        const src = byIdAll[edge.src];
+        const verb = edge.kind === "object" && src && src.verb
+          ? `<text class="verb ${on ? "" : "inactive"}" x="${midX}" y="${(a.y + b.y) / 2 - 4}" text-anchor="middle">${escapeXml(src.verb)}</text>` : "";
+        return `<path class="${cls}" d="M ${a.x} ${a.y} C ${midX} ${a.y}, ${midX} ${b.y}, ${b.x} ${b.y}" />${verb}`;
       }).join("");
       const nodeMarkup = visible.map((node) => {
         const p = positions[node.id];
         if (!p) return "";
         const on = active.has(node.id);
-        const r = node.kind === "question" ? 9 : EVIDENCE.has(node.kind) ? 4 : 7;
-        const raw = node.kind === "hypothesis" ? (node.label || node.name) : node.name;
+        const rejected = node.kind === "hypothesis" && node.dropped;
+        const isDestination = node.kind === "concept" && destination && node.name.toLowerCase() === destination;
+        const r = node.kind === "question" ? 9 : EVIDENCE.has(node.kind) ? 4 : isDestination ? 9 : 7;
+        const raw = node.kind === "hypothesis" ? (rejected ? "✕ " + node.name : (node.label || node.name)) : node.name;
         const label = raw.length > 42 ? raw.slice(0, 41) + "…" : raw;
+        const cls = ["dot", on ? "" : "inactive", rejected ? "rejected" : "", isDestination ? "destination" : ""].filter(Boolean).join(" ");
         return `<g data-id="${escapeXml(node.id)}">
-          <circle class="dot ${on ? "" : "inactive"}" cx="${p.x}" cy="${p.y}" r="${r}" stroke="${color(node)}" />
+          <circle class="${cls}" cx="${p.x}" cy="${p.y}" r="${r}" stroke="${color(node)}" />
           <text class="label ${on ? "" : "inactive"}" x="${p.x + 12}" y="${p.y + 4}">${escapeXml(label)}</text>
         </g>`;
       }).join("");
@@ -250,6 +295,18 @@
         el.addEventListener("mouseenter", () => focusNode(el.dataset.node, true));
         el.addEventListener("mouseleave", () => focusNode(el.dataset.node, false));
       });
+    }
+
+    // Hypotheses accumulate across runs of the same question; the latest
+    // `hypothesize` step names the ones (kept and rejected) of the last run.
+    function currentHypotheses(seed) {
+      const step = [...(graph.steps || [])].reverse().find((s) => s.node_id === seed && s.stage === "hypothesize");
+      if (!step) return null;
+      const names = new Set();
+      for (const node of graph.nodes) {
+        if (node.kind === "hypothesis" && step.rationale.includes(node.name)) names.add(node.name);
+      }
+      return names;
     }
 
     function focusNode(id, on) {
@@ -275,7 +332,7 @@
         </div>`;
       const out = [];
       const question = byId[seed];
-      out.push(`<div class="stage">Question</div>`, row(seed, question.name, "seed", ""));
+      out.push(`<div class="stage">Question</div>`, row(seed, question.name, question.destination ? `destination: ${escapeHtml(question.destination)}` : "seed", ""));
       const split = latest(seed, "triplify");
       if (split) out.push(`<div class="stage">L0 · split into claims</div>`, row(seed, split.verdict, "coherence", clip(split.rationale, 260)));
       const probe = latest(seed, "probe");
@@ -291,9 +348,11 @@
         const evidence = p.evidence_count ? ` · ${p.evidence_count} records` : p.absence_checked ? ` · ${escapeHtml(p.absence_checked)}` : "";
         out.push(row(p.id, p.name, `${status}${evidence}${active.has(p.id) ? "" : " · outside walk"}`, clip(verdict && verdict.rationale, 260)));
       });
-      const hypotheses = graph.nodes.filter((node) => node.kind === "hypothesis" && premises.some((p) => p.id === node.targets));
-      if (hypotheses.length) out.push(`<div class="stage">L4 · hypotheses aimed at the gaps</div>`);
-      hypotheses.forEach((h) => {
+      const current = document.getElementById("scope").value === "latest" ? currentHypotheses(seed) : null;
+      const hypotheses = graph.nodes.filter((node) => node.kind === "hypothesis" && premises.some((p) => p.id === node.targets) && (!current || current.has(node.name)));
+      const kept = hypotheses.filter((h) => !h.dropped), rejected = hypotheses.filter((h) => h.dropped);
+      if (kept.length) out.push(`<div class="stage">L4 · hypotheses aimed at the gaps</div>`);
+      kept.forEach((h) => {
         const target = byId[h.targets];
         const why = [
           h.intervention ? `do: ${h.intervention}` : "",
@@ -302,6 +361,11 @@
           h.falsification ? `rejected if: ${h.falsification}` : "",
         ].filter(Boolean).join(" · ");
         out.push(row(h.id, h.name, `${escapeHtml(h.label || "")} → tests: ${escapeHtml(target ? target.name : h.targets)}`, why));
+      });
+      if (rejected.length) out.push(`<div class="stage">L4 · candidates rejected by the testability filter</div>`);
+      rejected.forEach((h) => {
+        const target = byId[h.targets];
+        out.push(row(h.id, h.name, `tests: ${escapeHtml(target ? target.name : h.targets)}`, `rejected: ${h.dropped}`).replace('class="step"', 'class="step rejected"'));
       });
       return out.join("");
     }
@@ -331,7 +395,7 @@
       render();
     }
 
-    ["question", "walk", "depth", "records"].forEach((id) => {
+    ["question", "walk", "depth", "records", "scope"].forEach((id) => {
       document.getElementById(id).addEventListener("change", render);
       document.getElementById(id).addEventListener("input", render);
     });

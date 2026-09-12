@@ -3,7 +3,18 @@ import { ChevronRightIcon, FileTextIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { withCitations } from "@/lib/citations"
-import type { EvidenceItem, RankedHypothesis } from "@/types"
+import type { EvidenceItem, GroundingEvent, GroundingHypothesis, RankedHypothesis } from "@/types"
+
+function normalize(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim()
+}
+
+/** The grounding candidate this ranked hypothesis came from, if PLAN kept its wording. */
+export function groundingFor(h: RankedHypothesis, grounding?: GroundingEvent): GroundingHypothesis | undefined {
+  if (!grounding) return undefined
+  const wanted = normalize(h.statement)
+  return grounding.hypotheses.find((candidate) => normalize(candidate.statement) === wanted)
+}
 
 const CONFIDENCE_STYLES: Record<string, string> = {
   high: "border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/40 dark:text-green-300",
@@ -65,6 +76,7 @@ function HypothesisCard({
   onToggle,
   onIterate,
   onOpenDetails,
+  origin,
 }: {
   hypothesis: RankedHypothesis
   evidence: Record<string, EvidenceItem>
@@ -72,6 +84,7 @@ function HypothesisCard({
   onToggle: () => void
   onIterate?: (seedQuestion: string) => void
   onOpenDetails?: () => void
+  origin?: GroundingHypothesis
 }) {
   const h = hypothesis
   return (
@@ -110,6 +123,17 @@ function HypothesisCard({
 
       {expanded && (
         <div className="px-3 pb-3 pl-9 space-y-3">
+          {origin?.story && (
+            <div className="rounded-md border border-primary/20 bg-primary/[0.03] p-3">
+              <p className="mb-1 text-xs font-semibold">From your question to this experiment</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">{origin.story}</p>
+              <div className="mt-2 grid gap-1 text-[10px] text-muted-foreground sm:grid-cols-3">
+                <span><span className="font-medium text-foreground/70">Do:</span> {origin.intervention}</span>
+                <span><span className="font-medium text-foreground/70">Measure:</span> {origin.readout}</span>
+                <span><span className="font-medium text-foreground/70">In:</span> {origin.model_system}</span>
+              </div>
+            </div>
+          )}
           {h.rationale && (
             <p className="text-sm text-muted-foreground leading-relaxed">
               {withCitations(h.rationale, evidence, `hyp-${h.id}-rationale`)}
@@ -145,11 +169,13 @@ export function HypothesisList({
   evidence,
   onIterate,
   onOpenDetails,
+  grounding,
 }: {
   hypotheses: RankedHypothesis[]
   evidence: Record<string, EvidenceItem>
   onIterate?: (seedQuestion: string) => void
   onOpenDetails?: () => void
+  grounding?: GroundingEvent
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
@@ -166,6 +192,7 @@ export function HypothesisList({
           onToggle={() => setExpandedId((cur) => (cur === h.id ? null : h.id))}
           onIterate={onIterate}
           onOpenDetails={h.selected ? onOpenDetails : undefined}
+          origin={groundingFor(h, grounding)}
         />
       ))}
     </div>

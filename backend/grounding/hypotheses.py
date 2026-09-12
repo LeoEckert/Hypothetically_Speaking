@@ -24,6 +24,8 @@ from backend.grounding.domain import Grounding, Hypothesis, Premise, PremiseStat
 MAX_WORDS = 20
 # A hypothesis with one of these is two claims wearing one sentence.
 COMPOUND = (" and ", " but ", " even if ", " whereas ", " although ", " unless ", " or ", ";")
+# Not measurable: a reader cannot tell when the prediction has failed.
+VAGUE = ("within weeks", "within days", "within months", "over time", "in the long run", "eventually", "soon", "quickly", "rapidly", "significantly", "may ", "might ", "could ")
 
 
 class HypothesisGenerator(Protocol):
@@ -38,11 +40,16 @@ def testable(hypothesis: Hypothesis, grounding: Grounding) -> str | None:
         return "targets no known premise"
     if target.status is PremiseStatus.ESTABLISHED:
         return "targets an established link"
+    if grounding.destination and any(grounding.ends_at_destination(p) for p in grounding.weak_premises) \
+            and not grounding.ends_at_destination(target):
+        return f"does not end at the destination node ({grounding.destination})"
     if len(hypothesis.statement.split()) > MAX_WORDS:
         return f"statement longer than {MAX_WORDS} words"
     padded = f" {hypothesis.statement.lower()} "
     if any(marker in padded for marker in COMPOUND):
         return "compound claim"
+    if any(marker in padded for marker in VAGUE):
+        return "vague or unmeasurable wording"
     if (hypothesis.subject.lower(), hypothesis.object.lower()) != (target.subject.lower(), target.object.lower()):
         return "does not keep the target link's subject and object"
     if not (hypothesis.intervention and hypothesis.readout and hypothesis.model_system):
@@ -64,6 +71,31 @@ def _adjacent(target: Premise, premises: list[Premise], status: PremiseStatus) -
     ]
 
 
+def story(hypothesis: Hypothesis, target: Premise, grounding: Grounding, premises: dict[str, Premise]) -> str:
+    """Why this experiment follows from the question. Deterministic prose over
+    the graph, so the same chain always tells the same story."""
+    asked = "; ".join(f"{t.subject} {t.verb} {t.object}" for t in grounding.triples)
+    lines = [f"Your question asserts: {asked}."]
+    settled = [premises[i].statement for i in hypothesis.supported_by if i in premises]
+    if settled:
+        lines.append("Checked and settled by the literature: " + "; ".join(settled) + ".")
+    contested = [premises[i].statement for i in hypothesis.conflicts_with if i in premises]
+    if contested:
+        lines.append("Still contested nearby: " + "; ".join(contested) + ".")
+    if target.status is PremiseStatus.UNVERIFIED:
+        lines.append(f"The load-bearing link — {target.statement} — has no direct verification ({target.absence_checked}).")
+    else:
+        lines.append(f"The load-bearing link — {target.statement} — is contested: the literature disagrees.")
+    lines.append(
+        f"This hypothesis tests that link directly: {hypothesis.intervention}, measuring {hypothesis.readout} "
+        f"in {hypothesis.model_system}. It is rejected if {hypothesis.falsification}"
+        + ("" if hypothesis.falsification.rstrip().endswith(".") else ".")
+    )
+    if grounding.destination:
+        lines.append(f"It ends at {grounding.destination}, the outcome your question asks about.")
+    return " ".join(lines)
+
+
 def select(candidates: list[Hypothesis], grounding: Grounding) -> tuple[list[Hypothesis], list[tuple[Hypothesis, str]]]:
     """Filter, one per weak link, number, attach evidence context.
     Same candidates in -> same hypotheses out."""
@@ -76,18 +108,17 @@ def select(candidates: list[Hypothesis], grounding: Grounding) -> tuple[list[Hyp
         if reason is None and candidate.targets in covered:
             reason = "second hypothesis for the same link"
         if reason is not None:
-            dropped.append((candidate, reason))
+            dropped.append((candidate.model_copy(update={"dropped": reason}), reason))
             continue
         covered.add(candidate.targets)
         target = premises[candidate.targets]
-        kept.append(
-            candidate.model_copy(
-                update={
-                    "id": f"H{len(kept) + 1}",
-                    "supported_by": _adjacent(target, grounding.premises, PremiseStatus.ESTABLISHED),
-                    "conflicts_with": _adjacent(target, grounding.premises, PremiseStatus.CONTESTED),
-                    "missing": target.absence_checked,
-                }
-            )
+        placed = candidate.model_copy(
+            update={
+                "id": f"H{len(kept) + 1}",
+                "supported_by": _adjacent(target, grounding.premises, PremiseStatus.ESTABLISHED),
+                "conflicts_with": _adjacent(target, grounding.premises, PremiseStatus.CONTESTED),
+                "missing": target.absence_checked,
+            }
         )
+        kept.append(placed.model_copy(update={"story": story(placed, target, grounding, premises)}))
     return kept, dropped

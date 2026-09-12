@@ -80,11 +80,16 @@ class Triple(BaseModel):
 
 
 class Decomposition(BaseModel):
-    """L0 output. An incoherent question carries `why` and no triples."""
+    """L0 output. An incoherent question carries `why` and no triples.
+
+    `destination` is the outcome the question ultimately asks about — its
+    dependent variable, copied from a triple's object. Hypotheses must end there.
+    """
 
     coherent: bool
     why: str
     triples: list[Triple] = Field(default_factory=list)
+    destination: str = ""
 
 
 class PremiseStatus(str, Enum):
@@ -140,6 +145,8 @@ class Hypothesis(Triple):
     supported_by: list[str] = Field(default_factory=list)  # ESTABLISHED premises adjacent in the chain
     conflicts_with: list[str] = Field(default_factory=list)  # CONTESTED premises adjacent in the chain
     missing: str | None = None  # the target's absence_checked, i.e. the gap itself
+    dropped: str | None = None  # set on rejected candidates: the one reason, kept for the audit trail
+    story: str = ""  # from the question to this experiment, in plain sentences — computed, not generated
 
 
 class Grounding(BaseModel):
@@ -151,15 +158,25 @@ class Grounding(BaseModel):
     coherent: bool
     why: str
     triples: list[Triple] = Field(default_factory=list)
+    destination: str = ""
     premises: list[Premise] = Field(default_factory=list)
     knowledge_graph: str = ""
     hypotheses: list[Hypothesis] = Field(default_factory=list)
+    rejected: list[Hypothesis] = Field(default_factory=list)
+
+    def ends_at_destination(self, premise: Premise) -> bool:
+        return bool(self.destination) and premise.object.lower() == self.destination.lower()
 
     @property
     def weak_premises(self) -> list[Premise]:
-        """What hypotheses should aim at: UNVERIFIED first, then CONTESTED."""
+        """What hypotheses should aim at: the weak links that end at the
+        destination (the question's dependent variable), UNVERIFIED before
+        CONTESTED. Only if no weak link reaches the destination do the other
+        weak links qualify."""
         order = {PremiseStatus.UNVERIFIED: 0, PremiseStatus.CONTESTED: 1}
-        return sorted((p for p in self.premises if p.status in order), key=lambda p: order[p.status])
+        weak = sorted((p for p in self.premises if p.status in order), key=lambda p: order[p.status])
+        into_destination = [p for p in weak if self.ends_at_destination(p)]
+        return into_destination or weak
 
     @property
     def unverified_premises(self) -> list[Premise]:

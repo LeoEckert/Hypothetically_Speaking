@@ -208,6 +208,19 @@ intervention + readout + model system, one hypothesis per triple. Survivors
 reach PLAN as "use these, never merge or extend"; drops are logged with the
 one reason, on the question node.
 
+**Modes and models.** `mode=fast|normal` on `POST /api/run` (toggle in the
+compose dialog, default fast) and `--fast` on the scripts. Fast: 4 links,
+1500-char abstracts, 10 trials per query, no second-look search — about half
+the time and cost. Both modes keep L0, the L2 verdicts and L4 on the main
+model; only the L1 probe runs on Haiku. Haiku verdicts were tried and
+rejected: on identical records it called every link ESTABLISHED, including
+biogenesis → human healthspan, so nothing was left to hypothesize about.
+
+**Live progress.** `grounding_step` SSE events fire as each stage lands
+(L0 triples + destination, L1 links, one per L2 verdict, L4 counts); the
+progress view draws the stage rail, the claims, and every link turning
+colour as its verdict arrives, from the first seconds of a run.
+
 **Speed.** L2 verifies links in a thread pool (`MAX_LINKS` workers), so a
 cold run is ~1 min instead of ~4.5; a warm run is under a second. The
 remaining cost is the agent loop itself (PLAN → tools → REVISE → REPORT,

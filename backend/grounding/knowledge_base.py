@@ -143,6 +143,12 @@ class SqliteKnowledgeBase:
         self.connection.commit()
         return node_id
 
+    def set_payload(self, node_id: str, payload: dict) -> None:
+        """Nodes are insert-or-ignore; the question node's payload (its
+        destination) must reflect the latest split, so it is updated in place."""
+        self.connection.execute("UPDATE nodes SET payload = ? WHERE id = ?", (json.dumps(payload), node_id))
+        self.connection.commit()
+
     def upsert_concept(self, entity: BiologicalEntity, run_id: str) -> str:
         return self._upsert_node(
             concept_id(entity.name), "concept", entity.name, {"kind": entity.kind}, run_id
@@ -244,9 +250,14 @@ class SqliteKnowledgeBase:
         return node
 
     def upsert_hypothesis(self, hypothesis: Hypothesis, run_id: str) -> str:
-        node = hypothesis_id(hypothesis)
+        """Kept and rejected alike: a rejected candidate is a node with `dropped`
+        set, so the audit shows what was considered and why it lost."""
+        # One node per distinct sentence: two runs may aim different experiments at
+        # the same link, and both must be visible (insert-or-ignore would keep only the first).
+        node = ("X:" if hypothesis.dropped else "") + hypothesis_id(hypothesis) + f"|{hypothesis.statement.lower()}"
         self._upsert_node(node, "hypothesis", hypothesis.statement, hypothesis.model_dump(mode="json"), run_id)
-        self._edge(node, hypothesis.targets, "tests", run_id)
+        if hypothesis.targets.startswith("E:"):
+            self._edge(node, hypothesis.targets, "tests", run_id)
         return node
 
     def _edge(self, src: str, dst: str, kind: str, run_id: str) -> None:
@@ -288,6 +299,9 @@ class SqliteKnowledgeBase:
                 ).fetchall()
                 for row in hypotheses:
                     h = json.loads(row["payload"])
+                    if h.get("dropped"):
+                        lines.append(f"        rejected hypothesis: {h['statement']}  ({h['dropped']})")
+                        continue
                     lines.append(f"        hypothesis: {h['statement']}")
                     lines.append(f"            do: {h['intervention']} | measure: {h['readout']} | in: {h['model_system']}")
                     if h.get("falsification"):
