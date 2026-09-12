@@ -228,19 +228,23 @@ function UsageSection({ token }: { token: string }) {
   )
 }
 
+type HistoryRange = "24h" | "7d" | "30d"
+
 function UsageHistorySection({ token }: { token: string }) {
-  const [days, setDays] = useState<7 | 30>(30)
+  const [range, setRange] = useState<HistoryRange>("24h")
   const [history, setHistory] = useState<AdminUsageHistory | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
     try {
-      setHistory(await fetchAdminUsageHistory(token, days))
+      const opts =
+        range === "24h" ? { granularity: "hour" as const, hours: 24 } : { granularity: "day" as const, days: range === "7d" ? 7 : 30 }
+      setHistory(await fetchAdminUsageHistory(token, opts))
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : "failed to load usage history")
     }
-  }, [token, days])
+  }, [token, range])
 
   useEffect(() => {
     reload()
@@ -252,18 +256,17 @@ function UsageHistorySection({ token }: { token: string }) {
         <CardTitle className="text-sm flex items-center gap-2">
           Usage over time
           <div className="flex gap-1">
-            <Button variant={days === 7 ? "secondary" : "ghost"} size="sm" onClick={() => setDays(7)}>
-              7d
-            </Button>
-            <Button variant={days === 30 ? "secondary" : "ghost"} size="sm" onClick={() => setDays(30)}>
-              30d
-            </Button>
+            {(["24h", "7d", "30d"] as const).map((r) => (
+              <Button key={r} variant={range === r ? "secondary" : "ghost"} size="sm" onClick={() => setRange(r)}>
+                {r}
+              </Button>
+            ))}
           </div>
         </CardTitle>
       </CardHeader>
       <CardContent>
         {error && <p className="text-xs text-destructive">{error}</p>}
-        {history && <UsageHistoryChart series={history.series} />}
+        {history && <UsageHistoryChart series={history.series} granularity={history.granularity} />}
       </CardContent>
     </Card>
   )

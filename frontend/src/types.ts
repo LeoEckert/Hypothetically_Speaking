@@ -18,17 +18,21 @@ export interface AdminUsageSnapshot {
   runs_counted: number
 }
 
+export type AdminUsageSource = "local_reports" | "anthropic_usage_api"
+
 export interface AdminUsageDayPoint {
   date: string
   runs: number
-  anthropic: { usd: number | null; rate_configured: boolean }
-  nebius: { usd: number | null; rate_configured: boolean }
-  tavily: { usd: number | null; rate_configured: boolean }
+  anthropic: { usd: number | null; rate_configured: boolean; source: AdminUsageSource }
+  nebius: { usd: number | null; rate_configured: boolean; source: AdminUsageSource }
+  tavily: { usd: number | null; rate_configured: boolean; source: AdminUsageSource }
   amass: { credits_used: number }
 }
 
 export interface AdminUsageHistory {
-  days: number
+  granularity: "day" | "hour"
+  days: number | null
+  hours: number | null
   start_date: string
   end_date: string
   series: AdminUsageDayPoint[]

@@ -263,8 +263,10 @@ def get_admin_usage():
 
 
 @app.get("/api/admin/usage/history", dependencies=[Depends(admin.check_admin_token)])
-def get_admin_usage_history(days: int = 30):
-    return admin.get_usage_history(days=days)
+def get_admin_usage_history(granularity: str = "day", days: int = 30, hours: int = 24):
+    if granularity not in ("day", "hour"):
+        raise HTTPException(status_code=400, detail="granularity must be 'day' or 'hour'")
+    return admin.get_usage_history(granularity=granularity, days=days, hours=hours)
 
 
 @app.get("/api/admin/keys", dependencies=[Depends(admin.check_admin_token)])

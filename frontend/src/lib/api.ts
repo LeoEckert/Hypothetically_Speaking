@@ -87,8 +87,13 @@ export async function fetchAdminUsage(token: string): Promise<AdminUsageSnapshot
   return adminJson<AdminUsageSnapshot>("/api/admin/usage", token)
 }
 
-export async function fetchAdminUsageHistory(token: string, days = 30): Promise<AdminUsageHistory> {
-  return adminJson<AdminUsageHistory>(`/api/admin/usage/history?days=${days}`, token)
+export async function fetchAdminUsageHistory(
+  token: string,
+  opts: { granularity?: "day" | "hour"; days?: number; hours?: number } = {}
+): Promise<AdminUsageHistory> {
+  const { granularity = "day", days = 30, hours = 24 } = opts
+  const query = granularity === "hour" ? `granularity=hour&hours=${hours}` : `granularity=day&days=${days}`
+  return adminJson<AdminUsageHistory>(`/api/admin/usage/history?${query}`, token)
 }
 
 export async function fetchAdminKeys(token: string): Promise<AdminKeyInfo[]> {

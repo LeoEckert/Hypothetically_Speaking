@@ -30,7 +30,15 @@ const PAD_R = 8
 const PAD_TOP = 10
 const PAD_BOTTOM = 4
 
-export function UsageHistoryChart({ series }: { series: AdminUsageDayPoint[] }) {
+function formatBucketLabel(date: string, granularity: "day" | "hour"): string {
+  if (granularity === "hour") {
+    const hourPart = date.split("T")[1]
+    return hourPart ?? date
+  }
+  return date
+}
+
+export function UsageHistoryChart({ series, granularity }: { series: AdminUsageDayPoint[]; granularity: "day" | "hour" }) {
   const [hover, setHover] = useState<number | null>(null)
 
   const n = series.length
@@ -74,12 +82,14 @@ export function UsageHistoryChart({ series }: { series: AdminUsageDayPoint[] }) 
   }
 
   const anyUnconfigured = (provider: Provider) => series.some((p) => !p[provider].rate_configured)
+  const bucketWord = granularity === "hour" ? "hour" : "day"
+  const anthropicIsLive = series.some((p) => p.anthropic.source === "anthropic_usage_api")
 
   const hovered = hover !== null ? series[hover] : null
 
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img" aria-label="Cost per day by provider">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img" aria-label={`Cost per ${bucketWord} by provider`}>
         {/* gridlines */}
         {[0, 0.5, 1].map((f) => (
           <line
@@ -135,19 +145,23 @@ export function UsageHistoryChart({ series }: { series: AdminUsageDayPoint[] }) 
 
       <p className="pt-1 text-xs text-muted-foreground" aria-live="polite">
         {hovered
-          ? `${hovered.date} · ${PROVIDERS.map((p) => (hovered[p].rate_configured ? `${LABEL[p]} ${usd(hovered[p].usd ?? 0)}` : `${LABEL[p]} not configured`)).join(" · ")} · ${hovered.runs} run${hovered.runs === 1 ? "" : "s"}`
-          : "Hover the chart for a day's breakdown."}
+          ? `${formatBucketLabel(hovered.date, granularity)} · ${PROVIDERS.map((p) => (hovered[p].rate_configured ? `${LABEL[p]} ${usd(hovered[p].usd ?? 0)}` : `${LABEL[p]} not configured`)).join(" · ")} · ${hovered.runs} run${hovered.runs === 1 ? "" : "s"}`
+          : `Hover the chart for a ${bucketWord}'s breakdown.`}
       </p>
+
+      {anthropicIsLive && (
+        <p className="text-xs text-muted-foreground">Anthropic: live from Anthropic's Usage API.</p>
+      )}
 
       {PROVIDERS.filter(anyUnconfigured).map((provider) => (
         <p key={provider} className="text-xs text-muted-foreground">
-          {LABEL[provider]}: rate not configured for some days — {UNCONFIGURED_HINT[provider]}.
+          {LABEL[provider]}: rate not configured for some {bucketWord}s — {UNCONFIGURED_HINT[provider]}.
         </p>
       ))}
 
       <div className="pt-3">
         <p className="pb-1 text-xs font-medium">Amass credits used</p>
-        <svg viewBox={`0 0 ${W} 40`} width="100%" height={40} role="img" aria-label="Amass credits used per day">
+        <svg viewBox={`0 0 ${W} 40`} width="100%" height={40} role="img" aria-label={`Amass credits used per ${bucketWord}`}>
           {series.map((point, i) => {
             const barW = Math.max(1, (W - PAD_L - PAD_R) / n - 2)
             const barH = point.amass.credits_used > 0 ? (point.amass.credits_used / maxCredits) * 32 : 0

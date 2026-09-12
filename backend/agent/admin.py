@@ -22,11 +22,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from hmac import compare_digest
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Literal
 
 import httpx
 from fastapi import Header, HTTPException, Request
 
+from backend.agent import costs
 from backend.tools import amass_tool
 
 ROTATABLE_KEYS = {"ANTHROPIC_API_KEY", "TAVILY_API_KEY", "AMASS_API_KEY", "NEBIUS_API_KEY"}
@@ -214,14 +215,74 @@ def _local_report_aggregate(reports_dir: Path = REPORTS_DIR) -> dict:
     return totals
 
 
-def _report_date(path: Path, report: dict) -> str:
-    """UTC YYYY-MM-DD bucket for a report: earliest trace timestamp, falling
-    back to file mtime if trace is empty. Always UTC so buckets don't shift
-    depending on the machine's local timezone (dev laptop vs VM)."""
+def _report_bucket(path: Path, report: dict, granularity: Literal["day", "hour"]) -> str:
+    """UTC bucket key for a report: earliest trace timestamp, falling back to
+    file mtime if trace is empty. Always UTC so buckets don't shift depending
+    on the machine's local timezone (dev laptop vs VM)."""
     trace = report.get("trace") or []
     timestamps = [t["timestamp"] for t in trace if "timestamp" in t]
     ts = min(timestamps) if timestamps else path.stat().st_mtime
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    fmt = "%Y-%m-%dT%H:00" if granularity == "hour" else "%Y-%m-%d"
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(fmt)
+
+
+def _anthropic_usage_api_hourly(hours: int) -> list[dict] | None:
+    """Real per-hour Anthropic $, sourced from Anthropic's own Usage API
+    (token counts, priced with our confirmed rate table) rather than our
+    locally-computed per-run costs. Anthropic's Cost API is daily-only and
+    can't do this; the Usage API supports hourly buckets. Returns None (never
+    raises) if ANTHROPIC_ADMIN_KEY is unset or the call fails — same
+    graceful-degrade pattern as _anthropic_usage(), so callers fall back to
+    the local aggregation."""
+    admin_key = os.environ.get("ANTHROPIC_ADMIN_KEY")
+    if not admin_key:
+        return None
+
+    ending = datetime.now(timezone.utc)
+    starting = ending - timedelta(hours=hours)
+    headers = {"anthropic-version": "2023-06-01", "x-api-key": admin_key}
+    params = {
+        "starting_at": starting.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ending_at": ending.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "bucket_width": "1h",
+        "group_by[]": "model",
+        "limit": hours,
+    }
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.get(
+                "https://api.anthropic.com/v1/organizations/usage_report/messages",
+                headers=headers,
+                params=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:  # noqa: BLE001 — this is a monitoring panel, never let it 500 the endpoint
+        return None
+
+    out = []
+    for bucket in data.get("data", []):
+        bucket_key = datetime.fromisoformat(bucket["starting_at"].replace("Z", "+00:00")).strftime("%Y-%m-%dT%H:00")
+        usd_sum = 0.0
+        all_priced = True
+        for row in bucket.get("results", []):
+            cache_creation = row.get("cache_creation") or {}
+            cache_write = cache_creation.get("ephemeral_5m_input_tokens", 0) + cache_creation.get(
+                "ephemeral_1h_input_tokens", 0
+            )
+            usd, priced = costs.anthropic_cost_usd(
+                row.get("model"),
+                row.get("uncached_input_tokens", 0),
+                row.get("output_tokens", 0),
+                cache_write,
+                row.get("cache_read_input_tokens", 0),
+            )
+            if priced:
+                usd_sum += usd
+            else:
+                all_priced = False
+        out.append({"bucket": bucket_key, "usd": usd_sum if all_priced else None, "rate_configured": all_priced})
+    return out
 
 
 def _empty_history_bucket() -> dict:
@@ -234,26 +295,40 @@ def _empty_history_bucket() -> dict:
     }
 
 
-def get_usage_history(days: int = 30, reports_dir: Path = REPORTS_DIR) -> dict:
-    """Daily-bucketed usage/cost series built entirely from locally saved run
-    reports (no live network calls, unlike get_usage_snapshot() — kept as a
-    separate endpoint so its latency/failure profile stays independent).
+def get_usage_history(
+    granularity: Literal["day", "hour"] = "day",
+    days: int = 30,
+    hours: int = 24,
+    reports_dir: Path = REPORTS_DIR,
+) -> dict:
+    """Bucketed usage/cost series, day- or hour-granular. Built from locally
+    saved run reports for nebius/tavily/amass (no live API exists for any of
+    them) and, at hour granularity, from Anthropic's own Usage API for
+    anthropic when ANTHROPIC_ADMIN_KEY is configured — falling back to the
+    same local aggregation otherwise. No live network calls at day
+    granularity (kept a separate endpoint from get_usage_snapshot() so its
+    latency/failure profile stays independent).
 
     Every dollar figure follows the same never-show-$-without-a-configured-
-    rate rule as _local_report_aggregate()/costs.py: a day with zero runs is
-    genuinely $0 (rate_configured=True), a day where every run was priced
-    sums to a real number, and a day where any run was unpriced reports
-    usd=None/rate_configured=False for that whole day rather than a
-    misleading partial sum.
+    rate rule as _local_report_aggregate()/costs.py: a bucket with zero runs
+    is genuinely $0 (rate_configured=True), a bucket where every run was
+    priced sums to a real number, and a bucket where any run was unpriced
+    reports usd=None/rate_configured=False for that whole bucket rather than
+    a misleading partial sum.
     """
-    days = max(1, min(days, 365))
-    today = datetime.now(timezone.utc).date()
-    dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+    if granularity == "hour":
+        hours = max(1, min(hours, 168))
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        keys = [(now - timedelta(hours=i)).strftime("%Y-%m-%dT%H:00") for i in range(hours - 1, -1, -1)]
+    else:
+        days = max(1, min(days, 365))
+        today = datetime.now(timezone.utc).date()
+        keys = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
 
-    buckets = {d: _empty_history_bucket() for d in dates}
+    buckets = {k: _empty_history_bucket() for k in keys}
     for path, report in _iter_reports(reports_dir):
-        date = _report_date(path, report)
-        bucket = buckets.get(date)
+        key = _report_bucket(path, report, granularity)
+        bucket = buckets.get(key)
         if bucket is None:
             continue  # outside the requested window
         cost = report.get("cost") or {}
@@ -271,6 +346,9 @@ def get_usage_history(days: int = 30, reports_dir: Path = REPORTS_DIR) -> dict:
             bucket["amass"]["credits_sum"] += credits_used
             bucket["amass"]["any_data"] = True
 
+    anthropic_live = _anthropic_usage_api_hourly(hours) if granularity == "hour" else None
+    anthropic_live_by_key = {row["bucket"]: row for row in anthropic_live} if anthropic_live else None
+
     series = []
     totals = {
         "anthropic_usd": 0.0, "anthropic_priced": True,
@@ -279,19 +357,32 @@ def get_usage_history(days: int = 30, reports_dir: Path = REPORTS_DIR) -> dict:
         "amass_credits_used": 0.0,
         "runs": 0,
     }
-    for d in dates:
-        b = buckets[d]
-        point: dict = {"date": d, "runs": b["runs"]}
-        for provider in ("anthropic", "nebius", "tavily"):
+    for k in keys:
+        b = buckets[k]
+        point: dict = {"date": k, "runs": b["runs"]}
+
+        if anthropic_live_by_key is not None:
+            live = anthropic_live_by_key.get(k, {"usd": 0.0, "rate_configured": True})
+            point["anthropic"] = {"usd": live["usd"], "rate_configured": live["rate_configured"], "source": "anthropic_usage_api"}
+            if live["rate_configured"]:
+                totals["anthropic_usd"] += live["usd"]
+            else:
+                totals["anthropic_priced"] = False
+            providers = ("nebius", "tavily")
+        else:
+            providers = ("anthropic", "nebius", "tavily")
+
+        for provider in providers:
             pb = b[provider]
             if not pb["any_runs"]:
-                point[provider] = {"usd": 0.0, "rate_configured": True}
+                point[provider] = {"usd": 0.0, "rate_configured": True, "source": "local_reports"}
             elif pb["all_priced"]:
-                point[provider] = {"usd": pb["usd_sum"], "rate_configured": True}
+                point[provider] = {"usd": pb["usd_sum"], "rate_configured": True, "source": "local_reports"}
                 totals[f"{provider}_usd"] += pb["usd_sum"]
             else:
-                point[provider] = {"usd": None, "rate_configured": False}
+                point[provider] = {"usd": None, "rate_configured": False, "source": "local_reports"}
                 totals[f"{provider}_priced"] = False
+
         credits_used = b["amass"]["credits_sum"] if b["amass"]["any_data"] else 0.0
         point["amass"] = {"credits_used": credits_used}
         totals["amass_credits_used"] += credits_used
@@ -303,9 +394,11 @@ def get_usage_history(days: int = 30, reports_dir: Path = REPORTS_DIR) -> dict:
             totals[f"{provider}_usd"] = None
 
     return {
-        "days": days,
-        "start_date": dates[0],
-        "end_date": dates[-1],
+        "granularity": granularity,
+        "days": days if granularity == "day" else None,
+        "hours": hours if granularity == "hour" else None,
+        "start_date": keys[0],
+        "end_date": keys[-1],
         "series": series,
         "totals": totals,
     }

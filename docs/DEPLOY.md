@@ -167,11 +167,21 @@ The dashboard fails **closed**, not open: every `/api/admin/*` route returns
 503 while `ADMIN_TOKEN` is unset, rather than being reachable with no auth.
 
 **`ANTHROPIC_ADMIN_KEY`** (optional) is a separate, org-level Admin API key —
-**not** `ANTHROPIC_API_KEY` — used only for the live "Anthropic spend, last 7
-days" figure in the usage snapshot. It's unavailable on individual/non-org
-Console accounts; if unset (or the account doesn't support it), that one
-figure just shows "not configured" — the usage-history graph doesn't need it
-at all, since it's computed from already-priced local run reports instead.
+**not** `ANTHROPIC_API_KEY` — used for two things: the live "Anthropic spend,
+last 7 days" figure in the usage snapshot, and the real hour-by-hour
+Anthropic series in the usage-history graph's **24h** view (sourced from
+Anthropic's own Usage API, priced with our confirmed rate table — genuinely
+fetched, not locally estimated). It's unavailable on individual/non-org
+Console accounts; if unset (or the account doesn't support it), both of
+those fall back gracefully — the 7-day figure shows "not configured," and
+the 24h graph uses the same locally-computed per-run costs the 7d/30d views
+already use.
+
+**No remaining-credit-balance API exists.** Anthropic's Admin API exposes
+usage and spend *reporting* only (Usage API, Cost API) — there is no
+endpoint for how much prepaid credit is left on the account. That figure is
+Console-UI-only (the billing page). This dashboard tracks usage/spend, not
+a balance, for that reason.
 
 **`ADMIN_OVERRIDES_PATH`** defaults to `<repo-root>/admin_overrides.env`,
 already bind-mounted into the `app` container by `docker-compose.yml` and
