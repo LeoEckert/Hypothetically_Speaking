@@ -28,6 +28,7 @@ This file is appended to as more findings come in.
 | HQ-05 | Medium | Collapsed section preview shows only the list marker ("1.") and no text | `main` @ `c3a958e` |
 | HQ-06 | Low | "partial estimate" collides with the `partial` run status and is unexplained at the point of use | `main` @ `c3a958e` |
 | HQ-07 | Low (not prioritised) | Amass/Tavily/Nebius usage is tracked but unpriced, so the cost total is incomplete | `main` @ `c3a958e` |
+| HQ-08 | Medium | Expanded hypothesis card is hard to read — citation chips dominate, no visual hierarchy or separation | `main` @ `c3a958e` |
 
 ---
 
@@ -533,6 +534,129 @@ been set, so `extract_genes` runs its regex fallback and records zero tokens.
 If that is still true in production, Nebius would show `$0.0000` even with a
 rate configured — its "not priced" state is doubly moot, and configuring its
 rates would achieve nothing until the key exists.
+
+---
+
+## HQ-08 — The expanded hypothesis card is hard to read
+
+**Severity:** medium (readability). **File:**
+`frontend/src/components/HypothesisCard.tsx:124-160`, with citation chips
+from `frontend/src/lib/citations.tsx:27`.
+
+**What the tester saw.** Expanding a candidate hypothesis in the overview
+gives a rationale paragraph plus two evidence columns. *"It's hard to read.
+All the references in square brackets are hard to follow."*
+
+### Why it reads badly
+
+Six things compound, and none of them is the content:
+
+1. **Citation chips out-weigh the prose they annotate.** `citations.tsx:27`
+   renders every marker as `font-mono text-xs bg-muted px-1 py-0.5 rounded` —
+   a filled grey box, in monospace, at the same size as the body text,
+   dropped mid-sentence. Monospace plus a filled background is high visual
+   weight. The rationale in the screenshot carries nine of them, three
+   consecutively (`[ENRICH:GO:0002367] [ENRICH:GO:0002718]
+   [ENRICH:GO:0002700]`). The eye is pulled to the identifiers, which carry
+   no meaning to a human — nobody reads "ENRICH:GO:0002718" as information.
+2. **Three tiers of information share one tonal register.** Rationale is
+   `text-sm text-muted-foreground`; column headers are `text-xs font-semibold
+   text-muted-foreground`; evidence items are `text-xs`. All muted, all
+   within 2px of each other. The headers do not read as headers.
+3. **Nothing separates the regions.** `space-y-3` between rationale and grid,
+   `gap-3` (12px) between two columns of running text, no rules and no
+   ground change. The columns visually merge into one grey block.
+4. **The semantic opposition is not encoded.** "Evidence that supports it"
+   and "Evidence against it" are styled identically. The most important
+   distinction on the card is carried by wording alone.
+5. **The imbalance looks like breakage.** Eight supporting items against
+   three contradicting leaves a large void on the right with nothing
+   explaining it.
+6. **Citations are read twice.** The rationale cites `[PMID:31332389]`, then
+   the same PMID reappears in the evidence list below. The reader parses the
+   same identifier in two places.
+
+### Recommendation
+
+Ordered by readability gained per unit of work.
+
+**1. Replace inline ID chips with numbered references.** This is the single
+biggest win and the established convention for cited prose. Inline, render a
+small superscript index; let the evidence list below be the numbered key:
+
+```
+Directly demonstrated healthspan/lifespan extension via FMT in progeroid
+mice ¹, reinforced by microbiome-rejuvenation reducing inflammaging ², and
+donor-derived liver-health benefits in Ames dwarf mouse FMT ³.
+```
+
+Keep the existing hover tooltip and outbound link on the superscript, so
+nothing is lost. This removes nine grey boxes from one paragraph and
+resolves problem 6 at the same time — the number *is* the pointer into the
+list. If full renumbering is too much surgery for now, the cheap interim is
+to drop the source prefix and shrink the chip (`31332389` rather than
+`[PMID:31332389]`), which recovers most of the horizontal noise.
+
+**2. Use colour on the label, never on the text or as a panel fill.** Give
+each column a 2px left rule and a small dot in its header. Do **not** tint
+whole backgrounds green and red: it is heavy, it reads as alarm, and it is
+genuinely hard to keep legible across this app's light and dark themes.
+
+Two qualifications that matter here:
+
+- **Avoid true red.** Contradicting evidence is not an error — in a
+  scientific tool it is valuable, and colouring it like a failure editorialises
+  the result. A warm amber or clay reads as "counterweight"; red reads as
+  "something went wrong". Suggest teal/green for supporting, amber/clay for
+  against.
+- **Never colour alone.** Pair it with a glyph (`+` / `−`) and keep the
+  existing words, so the distinction survives colour-blindness and greyscale.
+
+**3. Separate the regions properly.** A hairline rule above the evidence
+grid; widen the column gap from `gap-3` to roughly `gap-8`, optionally with a
+vertical hairline between the columns; give each evidence row slightly more
+leading and a faint divider so items stop running together.
+
+**4. Put counts in the headers** — `Evidence that supports it · 8`,
+`Evidence against it · 3`. This explains the empty space, and the ratio is
+itself decision-relevant: arguably the most useful number on the card.
+
+**5. Cap each list** at about four items with a "Show all 8" toggle. Balances
+the columns and shortens a card that is currently very tall when expanded.
+
+**6. Fix the type hierarchy** so the three tiers differ: rationale as the
+darkest text on the card (it is the argument), headers as an uppercase micro-
+label with letter-spacing, evidence items one step down in size and weight.
+Currently the argument is the same grey as its own footnotes.
+
+### Sketch
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ #1  Fecal microbiota transplantation (FMT) …   [Full report] │
+│     selected                              medium confidence  │
+│                                                              │
+│     Directly demonstrated healthspan extension via FMT in    │  ← darkest text
+│     progeroid mice ¹, reinforced by microbiome rejuvenation  │
+│     reducing inflammaging ². Downgraded because no completed │
+│     human efficacy trial exists ⁴ ⁵.                         │
+│  ───────────────────────────────────────────────────────── │  ← hairline
+│  ● SUPPORTS · 8              │  ● AGAINST · 3                │  ← dot + count
+│  ┃ 1. Healthspan and lifespan│  ┃ 4. Postmarketing safety    │
+│  ┃    extension by FMT …     │  ┃    signals … FDA FAERS     │
+│  ┃ 2. Life-long microbiome … │  ┃ 5. Pathogenic E. coli …    │
+│  ┃ 3. FMT from Ames dwarf …  │  ┃ 6. Effect of Gut Microbiome│
+│  ┃ Show all 8                │                               │
+└─────────────────────────────────────────────────────────────┘
+   ↑ 2px teal rule               ↑ 2px amber rule
+```
+
+**Scope note.** Items 3–6 are pure CSS and a count, contained entirely within
+`HypothesisCard.tsx:140-155` — an hour's work with no data changes. Item 1
+touches `citations.tsx` and needs a per-card index mapping shared between the
+rationale and the evidence list, so it is the larger piece; it is also the
+one the tester actually complained about, so it is worth doing properly
+rather than skipping.
 
 ---
 
