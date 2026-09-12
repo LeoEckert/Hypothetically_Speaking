@@ -30,7 +30,7 @@ export function Sidebar({
     <aside className="w-full md:w-[320px] shrink-0 space-y-4">
       <div className="flex gap-2">
         <Button className="flex-1 font-semibold" size="lg" onClick={onNewRequest}>
-          + New Request
+          + New Hypothesis
         </Button>
         <Dialog>
           <DialogTrigger asChild>

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { ChevronRightIcon } from "lucide-react"
 import { ComposeBox } from "@/components/ComposeBox"
 import { CostPanel } from "@/components/CostPanel"
+import { HypothesesTable } from "@/components/HypothesesTable"
 import { ReportView } from "@/components/ReportView"
 import { Sidebar } from "@/components/Sidebar"
 import { TraceTimeline } from "@/components/TraceTimeline"
@@ -10,6 +11,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { useConfig } from "@/hooks/useConfig"
 import { useRunsStore } from "@/hooks/useRunsStore"
 import { cancelRun, startRun } from "@/lib/api"
+import { deriveLiveStatus } from "@/lib/liveStatus"
 import { currentLiveRunId, ensureStream, onStreamFinished } from "@/lib/runStream"
 import { createRun, getRun, markCancelling } from "@/store/runsStore"
 import type { SseEvent } from "@/types"
@@ -86,11 +88,15 @@ function App() {
     cancelRun(liveRunId)
   }
 
+  function handleIterate(seedQuestion: string) {
+    setQuestion(seedQuestion)
+  }
+
   const isViewingLive = liveRunId !== null && viewedRunId === liveRunId
   const isRunning = isViewingLive && (viewedRun?.status === "running" || viewedRun?.status === "cancelling")
   const statusText = (() => {
     if (viewedRun?.status === "cancelling") return "cancelling…"
-    if (isViewingLive) return `run ${liveRunId} in progress…`
+    if (isViewingLive && viewedRun) return deriveLiveStatus(viewedRun.events)
     if (!viewedRun) return ""
     if (viewedRun.status === "done") return "done"
     if (viewedRun.status === "partial") return "done (partial run — budget limit reached)"
@@ -144,8 +150,14 @@ function App() {
 
               {doneEvent ? (
                 <>
+                  {doneEvent.hypotheses && doneEvent.hypotheses.length >= 2 && (
+                    <HypothesesTable
+                      hypotheses={doneEvent.hypotheses}
+                      evidence={doneEvent.evidence}
+                      onIterate={handleIterate}
+                    />
+                  )}
                   <ReportView report={doneEvent.report} evidence={doneEvent.evidence} />
-                  {viewedRun?.cost && <CostPanel cost={viewedRun.cost} />}
                   {viewedRun && viewedRun.events.length > 0 && (
                     <Collapsible className="mt-4">
                       <CollapsibleTrigger className="group flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground cursor-pointer">
@@ -157,6 +169,7 @@ function App() {
                       </CollapsibleContent>
                     </Collapsible>
                   )}
+                  {viewedRun?.cost && <CostPanel cost={viewedRun.cost} />}
                 </>
               ) : (
                 viewedRun && <TraceTimeline events={viewedRun.events} />

@@ -7,7 +7,9 @@ SSE endpoint, or scripts/run_demo.py) can stream/record the run live.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 from typing import Callable, Optional
 
 from anthropic import Anthropic
@@ -50,6 +52,27 @@ def _text_of(content_blocks) -> str:
     return "".join(b.text for b in content_blocks if getattr(b, "type", None) == "text")
 
 
+_HYPOTHESES_FENCE_RE = re.compile(r"```json\s*(\{.*?\"hypotheses\".*?\})\s*```", re.DOTALL)
+
+
+def _extract_hypotheses(report_text: str) -> tuple[str, list[dict]]:
+    """Split a trailing ```json {"hypotheses": [...]} fence off the end of
+    the report prose. Returns (report_text_with_fence_stripped, hypotheses).
+    On any parse failure, returns the original text unchanged and an empty
+    list — never raises, never corrupts the prose report."""
+    match = _HYPOTHESES_FENCE_RE.search(report_text)
+    if not match:
+        return report_text, []
+    try:
+        payload = json.loads(match.group(1))
+        hyps = payload.get("hypotheses", [])
+        if not isinstance(hyps, list):
+            return report_text, []
+    except json.JSONDecodeError:
+        return report_text, []
+    return report_text[: match.start()].rstrip(), hyps
+
+
 def _strip_empty_text_blocks(content_blocks):
     """Claude sometimes returns a text block with empty/whitespace-only text
     alongside a tool_use or thinking block in the same turn. Resending that
@@ -89,6 +112,7 @@ def run_agent(
     _emit(on_event, {"type": "phase", "phase": "plan_and_gather"})
 
     no_tool_nudges = 0
+    hypotheses: list[dict] = []
     try:
         while True:
             if should_cancel and should_cancel():
@@ -199,9 +223,10 @@ def run_agent(
         elif state.partial:
             report_instructions = PARTIAL_RUN_NOTICE + "\n\n" + report_instructions
         messages.append({"role": "user", "content": report_instructions})
-        report_resp = client.messages.create(model=model, max_tokens=4096, system=SYSTEM_PROMPT, messages=messages)
+        report_resp = client.messages.create(model=model, max_tokens=6144, system=SYSTEM_PROMPT, messages=messages)
         state.record_anthropic_usage(report_resp)
         report_text = _text_of(report_resp.content)
+        report_text, hypotheses = _extract_hypotheses(report_text)
 
     except Exception as exc:
         state.partial = True
@@ -226,6 +251,7 @@ def run_agent(
         "trace": [vars(t) for t in state.trace],
         "evidence": evidence_dict,
         "cost": cost_summary,
+        "hypotheses": hypotheses,
     }
     _emit(
         on_event,
@@ -237,6 +263,7 @@ def run_agent(
             "run_id": state.run_id,
             "cost": cost_summary,
             "evidence": evidence_dict,
+            "hypotheses": hypotheses,
         },
     )
     return result

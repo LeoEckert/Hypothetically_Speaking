@@ -75,6 +75,7 @@ export function appendEvent(runId: string, event: SseEvent) {
     updated.status = event.cancelled ? "cancelled" : event.partial ? "partial" : "done"
     updated.cost = event.cost
     updated.evidence = event.evidence
+    updated.hypotheses = event.hypotheses
   } else if (event.type === "error") {
     // An "error" event means the run is failing, but a `done` event still
     // follows it in this codebase's loop (it always finalizes) — don't

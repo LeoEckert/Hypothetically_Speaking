@@ -4,7 +4,7 @@ import type { EvidenceItem } from "@/types"
 
 const CITATION_RE = /\[([A-Za-z0-9_:.\-]+)\]/g
 
-function renderLineWithCitations(line: string, evidence: Record<string, EvidenceItem>, lineKey: string) {
+export function renderLineWithCitations(line: string, evidence: Record<string, EvidenceItem>, lineKey: string) {
   const parts: React.ReactNode[] = []
   let lastIndex = 0
   let match: RegExpExecArray | null

@@ -43,6 +43,17 @@ export interface CostSummary {
   unpriced_components: string[]
 }
 
+export type HypothesisConfidence = "high" | "medium" | "low"
+
+export interface RankedHypothesis {
+  rank: number
+  statement: string
+  confidence: HypothesisConfidence | null // null if the model emitted something unparseable — never fabricate a rating
+  rationale: string
+  selected: boolean
+  seed_question: string
+}
+
 export type SseEvent =
   | { type: "start"; run_id: string; question: string }
   | { type: "phase"; phase: string }
@@ -66,6 +77,7 @@ export type SseEvent =
       run_id: string
       cost: CostSummary
       evidence: Record<string, EvidenceItem>
+      hypotheses: RankedHypothesis[]
     }
   | { type: "stream_end" }
 
@@ -80,4 +92,5 @@ export interface RunRecord {
   parentId: string | null
   cost?: CostSummary
   evidence?: Record<string, EvidenceItem>
+  hypotheses?: RankedHypothesis[]
 }

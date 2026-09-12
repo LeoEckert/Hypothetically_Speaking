@@ -43,6 +43,10 @@ Your job, in order:
    it, say so explicitly in Confidence & Uncertainty instead of stating it
    as fact.
 
+   After the markdown report, include every hypothesis considered during
+   PLAN — including ones you rejected — as a fenced ```json block; see the
+   exact schema and instructions given to you in the report-writing turn.
+
 Be concise and precise — this report should be readable in one pass by a
 clinician or investor, not a literature dump.
 """
@@ -72,6 +76,39 @@ Evidence registry (use these exact citation IDs, do not invent new ones):
 
 If a claim isn't backed by an entry above, do not state it as fact —
 move it to Confidence & Uncertainty instead.
+
+After the full markdown report, append a fenced ```json code block (and
+nothing after it) listing EVERY hypothesis you considered in the PLAN
+step — including ones you ultimately rejected, with the reason you
+rejected them. A rejected hypothesis with its reason is informative; do
+not omit it. Use exactly this schema:
+
+```json
+{{
+  "hypotheses": [
+    {{
+      "rank": 1,
+      "statement": "one-sentence, testable hypothesis statement",
+      "confidence": "high",
+      "rationale": "why it is ranked here, citing [citation-id] markers from the registry above",
+      "selected": true,
+      "seed_question": "a standalone research question, self-contained enough to start a brand-new run investigating this specific hypothesis further"
+    }}
+  ]
+}}
+```
+
+Rules:
+- "confidence" must be exactly one of "high", "medium", "low" — never a
+  number, never any other word.
+- Exactly one hypothesis must have "selected": true — the one your
+  ## Hypothesis section is about. All others are "selected": false.
+- "rank" is 1 for the best-supported hypothesis, increasing for weaker
+  ones; ties are not allowed, break them using your own judgment.
+- "seed_question" must stand on its own — someone with no other context
+  should be able to hand it to a fresh research run and get a useful
+  answer about this specific hypothesis.
+- Emit nothing after the closing ``` of the json block.
 """
 
 PARTIAL_RUN_NOTICE = """\

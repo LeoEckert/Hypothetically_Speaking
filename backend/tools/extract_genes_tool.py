@@ -40,6 +40,11 @@ def _heuristic_fallback(text: str) -> list[str]:
     return sorted(candidates - _COMMON_FALSE_POSITIVES)[:15]
 
 
+def _fallback_summary(genes: list[str], reason: str) -> str:
+    gene_list = ", ".join(genes) if genes else "none"
+    return f"Gene extraction fell back to a regex heuristic ({reason}) — candidate genes: {gene_list}."
+
+
 def run(args: dict) -> dict:
     text = args["text"]
     api_key = os.environ.get("NEBIUS_API_KEY")
@@ -49,10 +54,7 @@ def run(args: dict) -> dict:
     if not api_key or not base_url:
         genes = _heuristic_fallback(text)
         return {
-            "summary": (
-                "Nebius not configured (NEBIUS_API_KEY/NEBIUS_BASE_URL missing); "
-                f"used a regex heuristic instead. Candidate genes: {genes}"
-            ),
+            "summary": _fallback_summary(genes, "Nebius not configured"),
             "items": [],
             "mock": True,
             "error": "missing_config",
@@ -84,7 +86,7 @@ def run(args: dict) -> dict:
     except Exception as exc:
         genes = _heuristic_fallback(text)
         return {
-            "summary": f"Nebius extraction failed ({exc}); used a regex heuristic. Candidate genes: {genes}",
+            "summary": _fallback_summary(genes, "Nebius call failed"),
             "items": [],
             "mock": True,
             "error": str(exc),
