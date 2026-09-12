@@ -21,14 +21,14 @@ This file is appended to as more findings come in.
 
 | ID | Severity | Finding | Verified against |
 |---|---|---|---|
-| HQ-01 | High | Cancel is not bound to a run — it always cancels the newest one | `main` @ `c3a958e` |
-| HQ-02 | High | Starting a second run silently orphans the first, which sticks at "running" forever | `main` @ `c3a958e` |
-| HQ-03 | Medium | Report sections render as bullets in one run and a prose wall in the next | `main` @ `c3a958e` |
-| HQ-04 | Medium | The original research question disappears from both the results and full-report views | `main` @ `c3a958e` |
-| HQ-05 | Medium | Collapsed section preview shows only the list marker ("1.") and no text | `main` @ `c3a958e` |
-| HQ-06 | Low | "partial estimate" collides with the `partial` run status and is unexplained at the point of use | `main` @ `c3a958e` |
-| HQ-07 | Low (not prioritised) | Amass/Tavily/Nebius usage is tracked but unpriced, so the cost total is incomplete | `main` @ `c3a958e` |
-| HQ-08 | Medium | Expanded hypothesis card is hard to read — citation chips dominate, no visual hierarchy or separation | `main` @ `c3a958e` |
+| HQ-01 | High | Cancel is not bound to a run — it always cancels the newest one | `main` @ `ee5c3a5` |
+| HQ-02 | High | Starting a second run silently orphans the first, which sticks at "running" forever | `main` @ `ee5c3a5` |
+| HQ-03 | Medium | Report sections render as bullets in one run and a prose wall in the next | `main` @ `ee5c3a5` |
+| HQ-04 | Medium | The original research question disappears from both the results and full-report views | `main` @ `ee5c3a5` |
+| HQ-05 | Medium | Collapsed section preview shows only the list marker ("1.") and no text | `main` @ `ee5c3a5` |
+| HQ-06 | Low | "partial estimate" collides with the `partial` run status and is unexplained at the point of use | `main` @ `ee5c3a5` |
+| HQ-07 | Low (not prioritised) | Amass/Tavily/Nebius usage is tracked but unpriced, so the cost total is incomplete | `main` @ `ee5c3a5` |
+| HQ-08 | Medium | Expanded hypothesis card is hard to read — citation chips dominate, no visual hierarchy or separation | `main` @ `ee5c3a5` |
 
 ---
 
@@ -58,7 +58,7 @@ function handleCancel() {
 
 This is not mis-targeting by list position — Cancel is not bound to a row at
 all. There is exactly one Cancel button, inside `LiveRunBar`
-(`LiveRunBar.tsx:84`), and it always acts on `liveRunId`, which `handleRun`
+(`LiveRunBar.tsx:75`), and it always acts on `liveRunId`, which `handleRun`
 sets to the last run started (`App.tsx:85`). Which run the user is *viewing*
 (`viewedRunId`) never enters the decision.
 
@@ -253,14 +253,14 @@ report view as well."*
 Both are correct, and they have different causes.
 
 **Cause 1 — the results overview.** The question is rendered in
-`LiveRunBar.tsx:81`:
+`LiveRunBar.tsx:72`:
 
 ```jsx
 <p className="text-sm truncate">{question}</p>
 ```
 
 but that sits inside `{isRunning && (…)}`, behind the same early return that
-hides terminal status (`LiveRunBar.tsx:63`, see `HS-01`). So the question is
+hides terminal status (`LiveRunBar.tsx:54`, see `HS-01`). So the question is
 visible for exactly as long as the run is in flight, and vanishes at the
 moment the results appear — precisely when the reader needs it to judge
 whether the hypotheses answer what was asked.
@@ -660,7 +660,7 @@ rather than skipping.
 
 ---
 
-## Related: findings status on `main` @ `c3a958e`
+## Related: findings status on `main` @ `ee5c3a5`
 
 Re-checked while verifying the above, since 17 commits landed after the
 Playwright audit:
@@ -668,7 +668,7 @@ Playwright audit:
 - **HS-13 (deployment pinned to the old branch) is fixed.** Both
   `deploy-backend.yml` and the new `deploy-frontend.yml` now trigger on
   `push: branches: [main]`.
-- **HS-01 still stands.** `LiveRunBar.tsx:63` retains
+- **HS-01 still stands.** `LiveRunBar.tsx:54` retains
   `if (!isRunning && !showLiveBanner) return null`, and `App.tsx:128-130`
   still builds the three terminal strings that nothing renders. Line numbers
   have shifted from those quoted in `QA_FINDINGS.md`.
