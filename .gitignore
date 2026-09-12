@@ -22,3 +22,9 @@ runs/
 frontend/.vercel
 .env*
 admin_overrides.env
+
+# qa/ Playwright harness
+qa/node_modules/
+qa/test-results/
+qa/playwright-report/
+qa/shots/

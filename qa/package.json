@@ -1,0 +1,14 @@
+{
+  "name": "hs-qa",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Playwright e2e/UX harness. Deliberately separate from frontend/package.json so Vercel builds don't install Playwright.",
+  "scripts": {
+    "test": "playwright test",
+    "headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0"
+  }
+}
