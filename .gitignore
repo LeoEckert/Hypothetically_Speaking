@@ -21,3 +21,4 @@ runs/
 .vercel
 frontend/.vercel
 .env*
+admin_overrides.env

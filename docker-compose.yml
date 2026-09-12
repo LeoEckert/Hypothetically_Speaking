@@ -4,6 +4,7 @@ services:
     env_file: .env
     volumes:
       - ./backend/reports:/app/backend/reports
+      - ./admin_overrides.env:/app/admin_overrides.env
     restart: unless-stopped
     expose:
       - "8000"

@@ -4,6 +4,43 @@ export interface ToolInfo {
   enabled: boolean
 }
 
+export interface AdminKeyInfo {
+  name: string
+  masked: string | null
+  source: "override" | "base" | "unset"
+}
+
+export interface AdminUsageSnapshot {
+  amass: { rate_configured: boolean; remaining_credits?: number; note?: string }
+  anthropic: { rate_configured: boolean; total_usd_last_7d?: number; daily?: Array<{ starting_at: string; usd: number }>; note?: string }
+  tavily: { rate_configured: boolean; usd: number | null; calls: number; source: string }
+  nebius: { rate_configured: boolean; usd: number | null; calls: number; source: string }
+  runs_counted: number
+}
+
+export interface AdminUsageDayPoint {
+  date: string
+  runs: number
+  anthropic: { usd: number | null; rate_configured: boolean }
+  nebius: { usd: number | null; rate_configured: boolean }
+  tavily: { usd: number | null; rate_configured: boolean }
+  amass: { credits_used: number }
+}
+
+export interface AdminUsageHistory {
+  days: number
+  start_date: string
+  end_date: string
+  series: AdminUsageDayPoint[]
+  totals: {
+    anthropic_usd: number | null
+    nebius_usd: number | null
+    tavily_usd: number | null
+    amass_credits_used: number
+    runs: number
+  }
+}
+
 export interface EvidenceItem {
   id: string
   source: string

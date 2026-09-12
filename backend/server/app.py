@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -21,6 +21,14 @@ from pydantic import BaseModel
 load_dotenv()
 
 from anthropic import Anthropic  # noqa: E402
+
+from backend.agent import admin  # noqa: E402
+
+# Admin-rotated key overrides (backend/agent/admin.py) — loaded after the
+# main .env with override=True so a rotation always wins, and survives a
+# container rebuild even though the main .env can't be rewritten from inside
+# the container (see admin.py's module docstring for why).
+load_dotenv(admin.ADMIN_OVERRIDES_PATH, override=True)
 
 from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
 from backend.agent.loop import HARD_MAX_TOOL_CALLS, run_agent  # noqa: E402
@@ -43,7 +51,7 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_origin_regex=_allowed_origin_regex,
     allow_methods=["GET", "POST", "PUT"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Admin-Token"],
     allow_credentials=False,
 )
 
@@ -80,6 +88,10 @@ class ToolToggleRequest(BaseModel):
 
 class EvaluateRequest(BaseModel):
     comment: str = ""
+
+
+class KeyRotateRequest(BaseModel):
+    value: str
 
 
 @app.get("/")
@@ -241,3 +253,23 @@ def evaluate_run(run_id: str, req: EvaluateRequest):
         return evaluate_hypothesis(run_result, req.comment, client, model)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/admin/usage", dependencies=[Depends(admin.check_admin_token)])
+def get_admin_usage():
+    return admin.get_usage_snapshot()
+
+
+@app.get("/api/admin/usage/history", dependencies=[Depends(admin.check_admin_token)])
+def get_admin_usage_history(days: int = 30):
+    return admin.get_usage_history(days=days)
+
+
+@app.get("/api/admin/keys", dependencies=[Depends(admin.check_admin_token)])
+def get_admin_keys():
+    return admin.list_keys()
+
+
+@app.post("/api/admin/keys/{name}", dependencies=[Depends(admin.check_admin_token)])
+def set_admin_key(name: str, req: KeyRotateRequest):
+    return admin.set_key(name, req.value)

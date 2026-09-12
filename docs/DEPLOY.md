@@ -99,15 +99,16 @@ nebius compute image list --parent-id project-e0<N>public-images --format json  
      --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
      --exclude='frontend/node_modules' --exclude='frontend/dist' \
      --exclude='backend/reports/*.json' --exclude='backend/reports/*.md' \
-     --exclude='.env' --exclude='.pytest_cache' \
+     --exclude='.env' --exclude='.pytest_cache' --exclude='admin_overrides.env' \
      ./ ubuntu@<vm-ip>:/opt/app/repo/
    scp .env ubuntu@<vm-ip>:/opt/app/repo/.env
    ```
-   `rsync` from the local machine directly, rather than `git clone` on the VM — this repo is private, and rsync avoids ever needing a GitHub credential (deploy key or PAT) on the VM at all. Re-run the same `rsync` command to push any future code change; it's idempotent (`--delete` keeps the VM's copy exactly in sync).
+   `rsync` from the local machine directly, rather than `git clone` on the VM — this repo is private, and rsync avoids ever needing a GitHub credential (deploy key or PAT) on the VM at all. Re-run the same `rsync` command to push any future code change; it's idempotent (`--delete` keeps the VM's copy exactly in sync). `admin_overrides.env` is excluded deliberately — it doesn't exist locally (gitignored, VM-only) and `--delete` would otherwise erase any dashboard-rotated keys on every deploy.
 6. Edit `Caddyfile` on the VM to the real sslip.io hostname derived from the reserved IP (`api-<ip-with-dashes>.sslip.io`), then:
    ```bash
-   ssh ubuntu@<vm-ip> 'cd /opt/app/repo && sudo docker compose up -d --build'
+   ssh ubuntu@<vm-ip> 'cd /opt/app/repo && touch admin_overrides.env && sudo docker compose up -d --build'
    ```
+   The `touch` matters on a fresh VM: `admin_overrides.env` is bind-mounted into the container (`docker-compose.yml`), and Docker silently creates a **directory** at that path instead of an empty file if nothing exists there yet — which then breaks the first key rotation from the admin dashboard.
 7. Verify: `curl -v https://api-<ip>.sslip.io/api/config` — should return real JSON over a trusted cert with no `-k` needed.
 
 **Secrets are never baked into cloud-init/instance metadata** — metadata is
@@ -147,6 +148,54 @@ same thing, don't keep retrying — use the dashboard instead:
    `https://.*\.vercel\.app$` (confirmed: a live `curl` with `Origin:
    https://<project>.vercel.app` against the deployed backend returns the
    matching `Access-Control-Allow-Origin` header with no extra config).
+
+## Admin dashboard
+
+A `/api/admin/*` set of routes (`backend/agent/admin.py`) lets you monitor
+paid-service usage over time and rotate provider API keys without SSH-ing
+into the VM for routine key changes.
+
+**Enabling it**: generate a token and set it on the backend:
+
+```bash
+openssl rand -hex 32   # -> ADMIN_TOKEN value
+```
+
+Set `ADMIN_TOKEN=<value>` in the VM's `.env`, then
+`ssh ubuntu@<vm-ip> 'cd /opt/app/repo && sudo docker compose restart app'`.
+The dashboard fails **closed**, not open: every `/api/admin/*` route returns
+503 while `ADMIN_TOKEN` is unset, rather than being reachable with no auth.
+
+**`ANTHROPIC_ADMIN_KEY`** (optional) is a separate, org-level Admin API key —
+**not** `ANTHROPIC_API_KEY` — used only for the live "Anthropic spend, last 7
+days" figure in the usage snapshot. It's unavailable on individual/non-org
+Console accounts; if unset (or the account doesn't support it), that one
+figure just shows "not configured" — the usage-history graph doesn't need it
+at all, since it's computed from already-priced local run reports instead.
+
+**`ADMIN_OVERRIDES_PATH`** defaults to `<repo-root>/admin_overrides.env`,
+already bind-mounted into the `app` container by `docker-compose.yml` and
+already gitignored. It's created lazily the first time you rotate a key from
+the dashboard — nothing to set up in advance.
+
+**Interaction with manual key rotation** (see "Rotating a key later" under
+the Nebius VM section above): a key rotated through the dashboard is written
+to `admin_overrides.env` on the VM, which is loaded with `override=True`
+*after* `.env` at process start (`app.py`) — so a dashboard rotation wins
+over whatever is in `.env`, including a `.env` you `scp` up *after* the
+dashboard rotation, unless you also update/clear the corresponding line in
+`admin_overrides.env`. If you use both rotation paths, know that the
+dashboard's value wins by default.
+
+**Reaching it**: visit `https://<frontend-host>/#admin` — this opens a small
+login prompt where you paste the token once per browser tab (kept in
+`sessionStorage`, so a fresh tab or "Sign out" asks again). A
+`https://<frontend-host>/#token=<ADMIN_TOKEN>` link also works as a
+one-click shortcut: it stores the token the same way and immediately
+rewrites the visible URL to plain `#admin`. Either way the token is passed
+as a URL **fragment** (`#...`), never a query string, so it never appears in
+a server or CDN access log — but it's still a bearer credential, so share it
+only over a secure channel.
 
 ## CI/CD
 
