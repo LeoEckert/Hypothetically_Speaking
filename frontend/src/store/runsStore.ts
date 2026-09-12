@@ -122,6 +122,10 @@ export function appendEvent(runId: string, event: SseEvent) {
     updated.phase = event.phase
     updated.phaseStartedAt = Date.now()
     updated.progress = undefined
+  } else if (event.type === "tool_call") {
+    // Recorded once per step here (not derived at render time) so a step's
+    // in-flight elapsed-time ticker (ToolStepCard) has a stable start point.
+    updated.toolStepStartedAt = { ...(run.toolStepStartedAt ?? {}), [event.step]: Date.now() }
   } else if (event.type === "progress") {
     updated.progress = event
   } else if (event.type === "grounding_step") {

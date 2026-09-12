@@ -1,19 +1,10 @@
-import { useEffect, useState } from "react"
 import { CheckIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { WaitingDots } from "@/components/WaitingDots"
+import { useElapsedSeconds } from "@/hooks/useElapsedSeconds"
 import { deriveLiveProgress } from "@/lib/liveStatus"
 import type { RunRecord } from "@/types"
-
-function useElapsedSeconds(since: number | undefined, active: boolean): number {
-  const [now, setNow] = useState(Date.now())
-  useEffect(() => {
-    if (!active) return
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [active])
-  return since ? Math.max(0, Math.floor((now - since) / 1000)) : 0
-}
 
 function PhaseStepper({ steps }: { steps: ReturnType<typeof deriveLiveProgress>["steps"] }) {
   return (
@@ -89,7 +80,11 @@ export function LiveRunBar({
               <>
                 <PhaseStepper steps={progress.steps} />
                 <p className="text-xs text-muted-foreground" aria-live="polite">
-                  <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary/70 align-middle mr-1.5" />
+                  {progress.waiting ? (
+                    <WaitingDots className="mr-1.5" />
+                  ) : (
+                    <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary/70 align-middle mr-1.5" />
+                  )}
                   {progress.detail}
                   {run?.phaseStartedAt ? ` · ${elapsed}s in this step` : ""}
                   {progress.remaining.length > 0 && (

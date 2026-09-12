@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 from anthropic import Anthropic
@@ -30,6 +32,15 @@ from backend.tools.registry import enabled_tool_names, get_specs, run_tool
 
 EventCallback = Optional[Callable[[dict], None]]
 CancelCheck = Optional[Callable[[], bool]]
+
+# The system prompt is identical on every PLAN/ACT/REVISE/REPORT call (up to
+# ~30+ times per run) — sending it as a cached block lets Anthropic serve it
+# from cache (read price = CACHE_READ_MULTIPLIER, see backend/agent/costs.py)
+# on every call after the first instead of pricing it as fresh input tokens
+# every time. Precomputed once since SYSTEM_PROMPT never changes at runtime.
+_SYSTEM_PROMPT_BLOCKS = [
+    {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+]
 
 # Absolute ceiling on tool calls for any run, regardless of what a caller
 # (the API's max_tool_calls request field, MAX_TOOL_CALLS env var, or a
@@ -53,7 +64,29 @@ def _emit(on_event: EventCallback, event: dict) -> None:
 _GROUNDING_KEYS = ("ANTHROPIC_API_KEY", "AMASS_API_KEY")
 
 
-def _grounding_payload(question: str, state: RunState | None = None, on_event=None, mode: str = "normal") -> dict:
+def _resolve_amass_credits_before(state: RunState, thread: threading.Thread | None, box: list) -> None:
+    """Amass's account-wide balance only needs to be sampled once, before any
+    Amass call this run makes — it doesn't need to happen synchronously right
+    at that call site. `thread`/`box` are the background prefetch started at
+    run start (see run_agent); this just waits for it instead of making a
+    fresh blocking call, so the ~10s request never sits on the critical path."""
+    if state.amass_credits_before is not None:
+        return
+    if thread is not None:
+        thread.join()
+        state.amass_credits_before = box[0] if box else None
+    else:
+        state.amass_credits_before = amass_tool.get_credits()
+
+
+def _grounding_payload(
+    question: str,
+    state: RunState | None = None,
+    on_event=None,
+    mode: str = "normal",
+    amass_credits_thread: threading.Thread | None = None,
+    amass_credits_box: list | None = None,
+) -> dict:
     """Run L0-L4 and return the same structured payload sent to the UI.
 
     Every Amass and Claude call the grounding makes is streamed as a
@@ -77,8 +110,8 @@ def _grounding_payload(question: str, state: RunState | None = None, on_event=No
             _emit(on_event, {"type": "tool_call", "tool": entry["tool"], "args": entry["args"], "step": step})
             _emit(on_event, {"type": "tool_result", "tool": entry["tool"], "step": step, "mock": False, "error": None, "summary": entry["summary"], "usage": None})
 
-        if state is not None and state.amass_credits_before is None:
-            state.amass_credits_before = amass_tool.get_credits()
+        if state is not None:
+            _resolve_amass_credits_before(state, amass_credits_thread, amass_credits_box or [])
         grounding = ground(
             question,
             ledger=Ledger(record),
@@ -402,12 +435,34 @@ def run_agent(
         state.run_id = run_id
     state.enabled_tools = set(enabled_tool_names())
     tools = get_specs()
+    if tools:
+        # The tool roster is snapshotted once per run and never changes for
+        # the life of this run (see enabled_tools above) — cache it too, on
+        # the last spec, same reasoning as the system prompt.
+        tools = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
     messages: list[dict] = [{"role": "user", "content": f"Research question: {question}"}]
+    # Rolling cache breakpoint on the growing ACT-loop transcript: each turn
+    # marks its own tool-results block as the new "cache everything up to
+    # here" point and clears the previous one, so later turns mostly pay the
+    # cheap cache_read rate for the whole prior transcript instead of full
+    # input price for it every time.
+    last_cache_marker: dict | None = None
+
+    # Amass's account-wide credit balance only needs to be sampled once
+    # before this run's first Amass call — fire it off the critical path now
+    # instead of blocking on it right before whichever call needs it first.
+    amass_credits_box: list = []
+    amass_credits_thread: threading.Thread | None = None
+    if os.environ.get("AMASS_API_KEY"):
+        amass_credits_thread = threading.Thread(
+            target=lambda: amass_credits_box.append(amass_tool.get_credits()), daemon=True
+        )
+        amass_credits_thread.start()
 
     _emit(on_event, {"type": "start", "run_id": state.run_id, "question": question})
 
     _emit(on_event, {"type": "phase", "phase": "grounding"})
-    grounding = _grounding_payload(question, state, on_event, mode)
+    grounding = _grounding_payload(question, state, on_event, mode, amass_credits_thread, amass_credits_box)
     grounding_text = _grounding_text(grounding)
     _emit(on_event, {"type": "grounding", **grounding})
 
@@ -419,7 +474,7 @@ def run_agent(
         messages.append({"role": "user", "content": _plan_message(grounding_text, candidate_count)})
         plan_resp = _stream_message(
             client, on_event, "plan", {"candidates": candidate_count},
-            model=model, max_tokens=1536, system=SYSTEM_PROMPT, messages=messages,
+            model=model, max_tokens=1536, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
         )
         state.record_anthropic_usage(plan_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})
@@ -444,7 +499,7 @@ def run_agent(
             response = client.messages.create(
                 model=model,
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=_SYSTEM_PROMPT_BLOCKS,
                 messages=messages,
                 **({"tools": tools} if tools else {}),
             )
@@ -462,38 +517,70 @@ def run_agent(
                     continue
                 break
 
-            tool_results = []
-            for block in response.content:
-                if getattr(block, "type", None) != "tool_use":
-                    continue
-                if should_cancel and should_cancel():
-                    state.cancelled = True
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": "Run cancelled by the user; call skipped.",
-                        }
-                    )
-                    continue
-                if state.budget_exceeded():
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": "Tool budget exceeded for this run; call skipped.",
-                        }
-                    )
-                    continue
+            tool_use_blocks = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
 
+            # Cancel/budget are evaluated once for the whole batch rather than
+            # per block: the calls below run concurrently, so there is no
+            # meaningful "already dispatched vs. not yet" boundary mid-batch
+            # to check between them the way there was in sequential dispatch.
+            cancelled_now = bool(should_cancel and should_cancel())
+            if cancelled_now:
+                state.cancelled = True
+            budget_exhausted = state.budget_exceeded()
+            remaining_budget = max(0, state.max_tool_calls - state.tool_calls_made)
+
+            to_run: list[int] = []
+            skip_reason: dict[int, str] = {}
+            for i, block in enumerate(tool_use_blocks):
+                if cancelled_now:
+                    skip_reason[i] = "Run cancelled by the user; call skipped."
+                elif budget_exhausted or len(to_run) >= remaining_budget:
+                    skip_reason[i] = "Tool budget exceeded for this run; call skipped."
+                else:
+                    to_run.append(i)
+
+            # Announce every call that will actually run, in original order,
+            # before dispatching — the step numbers assigned here are exactly
+            # the trace positions they'll land on below (trace insertion
+            # happens in this same order), so tool_call/tool_result SSE
+            # events always agree on `step` regardless of completion order.
+            base_step = len(state.trace)
+            for position, i in enumerate(to_run):
+                block = tool_use_blocks[i]
                 _emit(
                     on_event,
-                    {"type": "tool_call", "tool": block.name, "args": block.input, "step": len(state.trace) + 1},
+                    {"type": "tool_call", "tool": block.name, "args": block.input, "step": base_step + 1 + position},
                 )
-                if block.name == "amass" and state.amass_credits_before is None:
-                    state.amass_credits_before = amass_tool.get_credits()
-                result = run_tool(block.name, block.input, enabled_names=state.enabled_tools)
+                if block.name == "amass":
+                    _resolve_amass_credits_before(state, amass_credits_thread, amass_credits_box)
 
+            # Independent tool calls requested in one turn are run side by
+            # side instead of one after another — this is the same reasoning
+            # (and the same ThreadPoolExecutor pattern) already used for
+            # grounding link verification, backend/grounding/premises.py.
+            # Results are gathered back in original block order below, so the
+            # trace/evidence/report content is identical to running them
+            # sequentially; only the wall-clock time changes (bounded by the
+            # slowest call in the batch instead of their sum).
+            run_results: dict[int, dict] = {}
+            if to_run:
+                with ThreadPoolExecutor(max_workers=len(to_run)) as pool:
+                    futures = {
+                        pool.submit(
+                            run_tool, tool_use_blocks[i].name, tool_use_blocks[i].input, enabled_names=state.enabled_tools
+                        ): i
+                        for i in to_run
+                    }
+                    for future, i in futures.items():
+                        run_results[i] = future.result()
+
+            tool_results = []
+            for i, block in enumerate(tool_use_blocks):
+                if i in skip_reason:
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": skip_reason[i]})
+                    continue
+
+                result = run_results[i]
                 for item in result.get("items", []):
                     state.add_evidence(
                         item["id"],
@@ -526,6 +613,12 @@ def run_agent(
 
                 tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content_text})
 
+            if tool_results:
+                if last_cache_marker is not None:
+                    last_cache_marker.pop("cache_control", None)
+                tool_results[-1]["cache_control"] = {"type": "ephemeral"}
+                last_cache_marker = tool_results[-1]
+
             messages.append({"role": "user", "content": tool_results})
 
         # --- REVISE ---
@@ -534,7 +627,7 @@ def run_agent(
         messages.append({"role": "user", "content": REVISE_PROMPT})
         revise_resp = _stream_message(
             client, on_event, "revise", revise_detail,
-            model=model, max_tokens=2048, system=SYSTEM_PROMPT, messages=messages,
+            model=model, max_tokens=2048, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
         )
         state.record_anthropic_usage(revise_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(revise_resp.content)})
@@ -559,7 +652,7 @@ def run_agent(
         messages.append({"role": "user", "content": report_instructions})
         report_resp = _stream_message(
             client, on_event, "report", report_detail,
-            model=model, max_tokens=8192, system=SYSTEM_PROMPT, messages=messages,
+            model=model, max_tokens=8192, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
         )
         state.record_anthropic_usage(report_resp)
         report_text, raw_final_hyps = _extract_hypotheses(_text_of(report_resp.content))

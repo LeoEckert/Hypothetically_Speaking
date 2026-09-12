@@ -12,6 +12,11 @@ export interface LiveProgress {
   headline: string
   detail: string
   remaining: string[]
+  /** True when there is genuinely no finer-grained signal to show right now
+   * (Claude deciding its next move between tool calls, or before the first
+   * phase event arrives) — the one case a fancier "still working" animation
+   * is worth showing instead of the usual single pulsing dot. */
+  waiting: boolean
 }
 
 export function deriveLiveStatus(events: SseEvent[]): string {
@@ -69,6 +74,7 @@ export function deriveLiveProgress(run: RunRecord): LiveProgress {
   const p = run.progress
 
   let detail = ""
+  let waiting = phase === null
   switch (phase) {
     case "grounding": {
       const stepsSeen = run.groundingSteps ?? []
@@ -91,6 +97,7 @@ export function deriveLiveProgress(run: RunRecord): LiveProgress {
       detail = calling.length
         ? `Tool call ${toolCalls} · calling ${calling.join(", ")}`
         : `${toolCalls} tool call(s) so far · deciding which evidence to fetch next`
+      waiting = calling.length === 0
       break
     case "revise":
       detail = `Weighing ${p?.hypotheses ?? run.hypotheses?.length ?? 0} hypotheses against ${p?.evidence ?? Object.keys(run.evidence ?? {}).length} evidence items` +
@@ -114,5 +121,6 @@ export function deriveLiveProgress(run: RunRecord): LiveProgress {
     headline: finished ? phaseLabel("report") + " — done" : deriveLiveStatus(run.events),
     detail,
     remaining,
+    waiting,
   }
 }

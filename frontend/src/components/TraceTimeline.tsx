@@ -11,7 +11,7 @@ type TimelineItem =
   | { kind: "step"; step: StepData; key: string }
   | { kind: "error"; error: string; key: string }
 
-function buildTimeline(events: SseEvent[]): TimelineItem[] {
+function buildTimeline(events: SseEvent[], startedAtByStep: Record<number, number>): TimelineItem[] {
   const items: TimelineItem[] = []
   const stepIndexByNumber = new Map<number, number>()
 
@@ -24,7 +24,12 @@ function buildTimeline(events: SseEvent[]): TimelineItem[] {
         items.push({ kind: "reasoning", text: event.text, key: `reasoning-${i}` })
         break
       case "tool_call": {
-        const step: StepData = { step: event.step, tool: event.tool, args: event.args }
+        const step: StepData = {
+          step: event.step,
+          tool: event.tool,
+          args: event.args,
+          startedAt: startedAtByStep[event.step],
+        }
         const itemIndex = items.length
         items.push({ kind: "step", step, key: `step-${event.step}` })
         stepIndexByNumber.set(event.step, itemIndex)
@@ -55,8 +60,14 @@ function buildTimeline(events: SseEvent[]): TimelineItem[] {
   return items
 }
 
-export function TraceTimeline({ events }: { events: SseEvent[] }) {
-  const items = buildTimeline(events)
+export function TraceTimeline({
+  events,
+  startedAtByStep = {},
+}: {
+  events: SseEvent[]
+  startedAtByStep?: Record<number, number>
+}) {
+  const items = buildTimeline(events, startedAtByStep)
 
   if (items.length === 0) {
     return null

@@ -17,7 +17,7 @@ export function ProgressView({ run }: { run: RunRecord }) {
           <HypothesisList hypotheses={run.hypotheses} evidence={run.evidence ?? {}} grounding={run.grounding} />
         </div>
       )}
-      <TraceTimeline events={run.events} />
+      <TraceTimeline events={run.events} startedAtByStep={run.toolStepStartedAt} />
     </div>
   )
 }

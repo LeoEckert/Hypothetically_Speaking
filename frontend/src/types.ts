@@ -276,6 +276,9 @@ export interface RunRecord {
   groundingSteps?: GroundingStepEvent[]
   phase?: string
   phaseStartedAt?: number
+  /** ms timestamp each tool_call step was first seen, keyed by step number —
+   * backs the per-step elapsed-time ticker in ToolStepCard. */
+  toolStepStartedAt?: Record<number, number>
   progress?: ProgressEvent
   mode?: RunMode
   evaluations?: EvaluationResult[]
