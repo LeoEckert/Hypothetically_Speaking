@@ -55,6 +55,9 @@ class RunState:
     anthropic_output_tokens: int = 0
     anthropic_cache_creation_input_tokens: int = 0
     anthropic_cache_read_input_tokens: int = 0
+    # Per-model token counts: the grounding stage runs on Haiku while the loop
+    # runs on ANTHROPIC_MODEL, and each must be priced at its own rate.
+    anthropic_by_model: dict = field(default_factory=dict)
 
     # Nebius usage, accumulated from extract_genes tool calls this run.
     nebius_calls: int = 0
@@ -81,7 +84,7 @@ class RunState:
         self.tool_calls_made += 1
         self.trace.append(
             ToolCallRecord(
-                step=self.tool_calls_made,
+                step=len(self.trace) + 1,
                 tool_name=tool_name,
                 args=args,
                 result_summary=result_summary,
@@ -94,17 +97,43 @@ class RunState:
             self.nebius_prompt_tokens += usage.get("prompt_tokens", 0) or 0
             self.nebius_completion_tokens += usage.get("completion_tokens", 0) or 0
 
+    def record_external_call(self, tool_name: str, args: dict, result_summary: str, mock: bool = False) -> int:
+        """A call made outside the agent's tool budget (the grounding stage's
+        Amass and Claude calls): it appears in the trace and the cost summary
+        but does not count against max_tool_calls. Returns its step number."""
+        step = len(self.trace) + 1
+        self.trace.append(
+            ToolCallRecord(step=step, tool_name=tool_name, args=args, result_summary=result_summary, mock=mock, usage=None)
+        )
+        return step
+
+    def record_anthropic_tokens(self, usage: dict, model: str = "") -> None:
+        self.anthropic_calls += 1
+        self.anthropic_input_tokens += usage.get("input_tokens", 0) or 0
+        self.anthropic_output_tokens += usage.get("output_tokens", 0) or 0
+        self.anthropic_cache_creation_input_tokens += usage.get("cache_creation_input_tokens", 0) or 0
+        self.anthropic_cache_read_input_tokens += usage.get("cache_read_input_tokens", 0) or 0
+        bucket = self.anthropic_by_model.setdefault(
+            model or "unknown",
+            {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+        )
+        bucket["calls"] += 1
+        for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+            bucket[key] += usage.get(key, 0) or 0
+
     def record_anthropic_usage(self, response) -> None:
         """Accumulate token usage from an Anthropic Messages API response.
         Guards missing/None fields since some usage fields are SDK-version-dependent."""
         usage = getattr(response, "usage", None)
         if usage is None:
             return
-        self.anthropic_calls += 1
-        self.anthropic_input_tokens += getattr(usage, "input_tokens", 0) or 0
-        self.anthropic_output_tokens += getattr(usage, "output_tokens", 0) or 0
-        self.anthropic_cache_creation_input_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
-        self.anthropic_cache_read_input_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
+        self.record_anthropic_tokens(
+            {
+                key: getattr(usage, key, 0) or 0
+                for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+            },
+            getattr(response, "model", "") or "",
+        )
 
     def budget_exceeded(self) -> bool:
         elapsed = time.time() - self.started_at

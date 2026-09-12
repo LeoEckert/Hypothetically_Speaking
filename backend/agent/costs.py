@@ -33,12 +33,22 @@ def _env_float(name: str) -> float | None:
         return None
 
 
+def _pricing_for(model: str) -> dict | None:
+    """Dated ids ("claude-haiku-4-5-20251001") price as their family."""
+    if model in ANTHROPIC_PRICING_PER_1M:
+        return ANTHROPIC_PRICING_PER_1M[model]
+    for family, pricing in ANTHROPIC_PRICING_PER_1M.items():
+        if model.startswith(family):
+            return pricing
+    return None
+
+
 def anthropic_cost_usd(
     model: str, input_tokens: int, output_tokens: int, cache_write_tokens: int, cache_read_tokens: int
 ) -> tuple[float | None, bool]:
     """Returns (usd, rate_configured). An unrecognized model is never priced
     against another model's rate — it comes back unconfigured instead."""
-    pricing = ANTHROPIC_PRICING_PER_1M.get(model)
+    pricing = _pricing_for(model)
     if pricing is None:
         return None, False
     usd = (
@@ -88,13 +98,32 @@ def build_cost_summary(state: RunState, model: str) -> dict:
     if state.amass_credits_before is not None and state.amass_credits_after is not None:
         credits_used = state.amass_credits_before - state.amass_credits_after
 
-    anthropic_usd, anthropic_priced = anthropic_cost_usd(
-        model,
-        state.anthropic_input_tokens,
-        state.anthropic_output_tokens,
-        state.anthropic_cache_creation_input_tokens,
-        state.anthropic_cache_read_input_tokens,
-    )
+    # Price each model at its own rate (Haiku grounding, Sonnet loop); fall
+    # back to the run model only for tokens recorded without one.
+    by_model = state.anthropic_by_model or {
+        model: {
+            "calls": state.anthropic_calls,
+            "input_tokens": state.anthropic_input_tokens,
+            "output_tokens": state.anthropic_output_tokens,
+            "cache_creation_input_tokens": state.anthropic_cache_creation_input_tokens,
+            "cache_read_input_tokens": state.anthropic_cache_read_input_tokens,
+        }
+    }
+    anthropic_usd, anthropic_priced = 0.0, True
+    anthropic_models = []
+    for name, tokens in by_model.items():
+        usd, priced = anthropic_cost_usd(
+            name if name != "unknown" else model,
+            tokens["input_tokens"], tokens["output_tokens"],
+            tokens["cache_creation_input_tokens"], tokens["cache_read_input_tokens"],
+        )
+        anthropic_models.append({"model": name, **tokens, "usd": usd, "rate_configured": priced})
+        if usd is None:
+            anthropic_priced = False
+        else:
+            anthropic_usd += usd
+    if not anthropic_priced and all(entry["usd"] is None for entry in anthropic_models):
+        anthropic_usd = None
     nebius_usd, nebius_priced = nebius_cost_usd(state.nebius_prompt_tokens, state.nebius_completion_tokens)
     amass_usd, amass_priced = amass_cost_usd(credits_used)
     tavily_usd, tavily_priced = tavily_cost_usd(tavily_live)
@@ -124,6 +153,7 @@ def build_cost_summary(state: RunState, model: str) -> dict:
             "cache_read_input_tokens": state.anthropic_cache_read_input_tokens,
             "usd": anthropic_usd,
             "rate_configured": anthropic_priced,
+            "by_model": anthropic_models,
         },
         "nebius": {
             "calls": state.nebius_calls,

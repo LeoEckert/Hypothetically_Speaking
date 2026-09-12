@@ -3,7 +3,7 @@
 transcript + report under backend/reports/, so there is always a
 re-playable artifact even if a live API is unavailable during judging.
 
-Usage: python scripts/run_demo.py ["custom question"]
+Usage: python scripts/run_demo.py ["custom question"] [--fast]
 """
 from __future__ import annotations
 
@@ -31,13 +31,21 @@ REPORTS_DIR = Path(__file__).resolve().parent.parent / "backend" / "reports"
 
 
 def main() -> None:
-    question = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_QUESTION
+    fast = "--fast" in sys.argv
+    positional = [a for a in sys.argv[1:] if not a.startswith("--")]
+    question = positional[0] if positional else DEFAULT_QUESTION
     print(f"Question: {question}\n")
 
     def on_event(event: dict) -> None:
         t = event.get("type")
         if t == "phase":
             print(f"\n=== PHASE: {event['phase']} ===")
+        elif t == "grounding_step":
+            detail = event.get("destination") or event.get("status") or event.get("kept")
+            print(f"  [grounding {event['stage']}] {event.get('link', {}).get('subject', '') if event.get('link') else ''} {detail if detail is not None else ''}")
+        elif t == "grounding":
+            body = event.get("knowledge_graph") or event.get("why", "")
+            print(f"  [grounding {event.get('status', '')}] {body[:1500]}")
         elif t == "tool_call":
             print(f"  -> CALL {event['tool']}({event['args']})")
         elif t == "tool_result":
@@ -54,7 +62,7 @@ def main() -> None:
             print("\n=== DONE ===")
 
     started = time.time()
-    result = run_agent(question, on_event=on_event)
+    result = run_agent(question, on_event=on_event, mode="fast" if fast else "normal")
     elapsed = time.time() - started
 
     REPORTS_DIR.mkdir(exist_ok=True)

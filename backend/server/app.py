@@ -5,32 +5,45 @@ that talks to this API cross-origin — this app is a pure JSON/SSE API.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import queue
 import threading
 import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
 
 from anthropic import Anthropic  # noqa: E402
 
+from backend.agent import admin  # noqa: E402
+
+# Admin-rotated key overrides (backend/agent/admin.py) — loaded after the
+# main .env with override=True so a rotation always wins, and survives a
+# container rebuild even though the main .env can't be rewritten from inside
+# the container (see admin.py's module docstring for why).
+load_dotenv(admin.ADMIN_OVERRIDES_PATH, override=True)
+
 from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
 from backend.agent.loop import HARD_MAX_TOOL_CALLS, run_agent  # noqa: E402
+from backend.kgviz.graph import snapshot as trajectory_snapshot  # noqa: E402
+from backend.kgviz.render import render_html as render_trajectory  # noqa: E402
 from backend.tools import registry  # noqa: E402
 from backend.tools.registry import all_specs, enabled_tool_names  # noqa: E402
 
 app = FastAPI(title="Hypothetically Speaking — Longevity AI Scientist")
 
-_default_origins = "http://localhost:5173,http://localhost:4173"
+_default_origins = "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173"
 _allowed_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",") if o.strip()]
+for _loopback in ("http://127.0.0.1:5173", "http://127.0.0.1:4173"):
+    if _loopback not in _allowed_origins:
+        _allowed_origins.append(_loopback)
 _allowed_origin_regex = os.environ.get("ALLOWED_ORIGIN_REGEX", r"https://.*\.vercel\.app$")
 
 app.add_middleware(
@@ -38,7 +51,7 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_origin_regex=_allowed_origin_regex,
     allow_methods=["GET", "POST", "PUT"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Admin-Token"],
     allow_credentials=False,
 )
 
@@ -55,18 +68,37 @@ IS_DEV_MODE = os.environ.get("APP_ENV", "development") != "production"
 DEFAULT_MAX_TOOL_CALLS = min(int(os.environ.get("MAX_TOOL_CALLS", 30)), HARD_MAX_TOOL_CALLS)
 
 _run_events: dict[str, list[dict]] = {}
-# Pure wake-up signals for stream_run — content is never read, just used to
-# unblock a waiting reader when a new event lands in _run_events. The list is
-# the single source of truth for event content, so readers never lose or
-# double-deliver events regardless of when they attach.
-_wakeups: dict[str, queue.Queue] = {}
+# Per-connection wake-up waiters for stream_run. A single shared Queue would
+# wake exactly one consumer per put — wrong semantics for "N browser tabs
+# watching the same run" — so each attached SSE connection registers its own
+# (event_loop, asyncio.Event) pair here, and _notify() below wakes every
+# currently-attached reader. _run_events remains the single source of truth
+# for event content, so readers never lose or double-deliver events
+# regardless of when they attach.
+_waiters: dict[str, list[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
+_waiters_lock = threading.Lock()
+KEEPALIVE_SECONDS = 15.0  # module constant so tests can shrink it
 _results: dict[str, dict] = {}
 _cancel_events: dict[str, threading.Event] = {}
+
+
+def _notify(run_id: str) -> None:
+    """Wake every SSE connection currently attached to run_id. Called from a
+    background worker thread (never from an event loop itself), hence
+    call_soon_threadsafe to safely cross into each waiter's own loop."""
+    with _waiters_lock:
+        waiters = list(_waiters.get(run_id, ()))
+    for loop, event in waiters:
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass  # target loop already closed (process shutdown / dead client)
 
 
 class RunRequest(BaseModel):
     question: str
     max_tool_calls: int | None = None
+    mode: str = "normal"  # "fast" — Haiku everywhere, 4 links, no second look — or "normal"
 
 
 class ToolToggleRequest(BaseModel):
@@ -75,6 +107,10 @@ class ToolToggleRequest(BaseModel):
 
 class EvaluateRequest(BaseModel):
     comment: str = ""
+
+
+class KeyRotateRequest(BaseModel):
+    value: str
 
 
 @app.get("/")
@@ -120,7 +156,7 @@ def set_tool(name: str, req: ToolToggleRequest):
 def start_run(req: RunRequest):
     run_id = uuid.uuid4().hex[:8]
     _run_events[run_id] = []
-    _wakeups[run_id] = queue.Queue()
+    _waiters[run_id] = []
     cancel_event = threading.Event()
     _cancel_events[run_id] = cancel_event
 
@@ -130,20 +166,28 @@ def start_run(req: RunRequest):
     def _worker():
         def on_event(event: dict) -> None:
             _run_events[run_id].append(event)
-            _wakeups[run_id].put(None)
+            _notify(run_id)
 
-        result = run_agent(
-            req.question,
-            on_event=on_event,
-            run_id=run_id,
-            max_tool_calls=effective_max_tool_calls,
-            should_cancel=cancel_event.is_set,
-        )
-        _results[run_id] = result
-        (REPORTS_DIR / f"{run_id}.json").write_text(json.dumps(result, indent=2, default=str))
-        _run_events[run_id].append({"type": "stream_end"})
-        _wakeups[run_id].put(None)
-        _cancel_events.pop(run_id, None)
+        try:
+            result = run_agent(
+                req.question,
+                on_event=on_event,
+                run_id=run_id,
+                max_tool_calls=effective_max_tool_calls,
+                should_cancel=cancel_event.is_set,
+                mode="fast" if req.mode == "fast" else "normal",
+            )
+            _results[run_id] = result
+            (REPORTS_DIR / f"{run_id}.json").write_text(json.dumps(result, indent=2, default=str))
+        finally:
+            # A finally, not a plain trailing statement: run_agent can still
+            # raise after its own internal try/except (e.g. in
+            # build_cost_summary or the final amass_tool.get_credits() call)
+            # — without this, stream_end would never be appended and every
+            # attached stream would keepalive-loop forever instead of closing.
+            _run_events[run_id].append({"type": "stream_end"})
+            _notify(run_id)
+            _cancel_events.pop(run_id, None)
 
     threading.Thread(target=_worker, daemon=True).start()
     return {"run_id": run_id, "max_tool_calls": effective_max_tool_calls}
@@ -159,34 +203,66 @@ def cancel_run(run_id: str):
 
 
 @app.get("/api/run/{run_id}/stream")
-def stream_run(run_id: str):
+async def stream_run(run_id: str):
     if run_id not in _run_events:
-        return StreamingResponse(iter([]), media_type="text/event-stream")
+        async def _empty():
+            return
+            yield  # pragma: no cover — unreachable, just makes this an async generator
 
-    def event_gen():
-        # _run_events is the single source of truth; each connection tracks
-        # its own read position into it, so a reload or a late "View live
-        # run" attach replays everything so far exactly once, and a live
-        # tail never double-delivers what replay already showed.
-        next_index = 0
-        while True:
-            events = _run_events[run_id]
-            while next_index < len(events):
-                event = events[next_index]
-                next_index += 1
-                yield f"data: {json.dumps(event, default=str)}\n\n"
-                if event.get("type") == "stream_end":
-                    return
+        return StreamingResponse(_empty(), media_type="text/event-stream")
 
-            # Nothing new yet — wait for a wake-up. A long gap between
-            # events (slow tool calls, a multi-minute Anthropic response)
-            # over a real network hop could otherwise look like a dead
-            # connection to an intermediary; send an SSE comment line as a
-            # keepalive instead of blocking forever.
-            try:
-                _wakeups[run_id].get(timeout=15)
-            except queue.Empty:
-                yield ": keepalive\n\n"
+    async def event_gen():
+        # An async generator, not a sync one — a sync generator behind
+        # StreamingResponse gets iterated via Starlette's threadpool bridge,
+        # and this generator's per-iteration blocking wait used to hold one
+        # of that pool's slots for the entire lifetime of a run (up to 18
+        # minutes), for every open run. Under enough concurrent runs that
+        # exhausted the shared pool and made brand-new, trivially-fast
+        # requests (e.g. GET /api/config) queue behind them long enough to
+        # look like a dead connection. Running natively on the event loop
+        # avoids the shared pool entirely.
+        loop = asyncio.get_running_loop()
+        wake = asyncio.Event()
+        entry = (loop, wake)
+        with _waiters_lock:
+            _waiters.setdefault(run_id, []).append(entry)
+        try:
+            # _run_events is the single source of truth; each connection
+            # tracks its own read position into it, so a reload or a late
+            # "View live run" attach replays everything so far exactly once,
+            # and a live tail never double-delivers what replay already
+            # showed.
+            next_index = 0
+            while True:
+                events = _run_events[run_id]
+                while next_index < len(events):
+                    event = events[next_index]
+                    next_index += 1
+                    yield f"data: {json.dumps(event, default=str)}\n\n"
+                    if event.get("type") == "stream_end":
+                        return
+
+                # Clear before re-checking, not after waiting: clearing
+                # after the wait would leave a window where an event
+                # appended between the drain above and the wait below is
+                # missed until the next full keepalive timeout.
+                wake.clear()
+                if len(_run_events[run_id]) > next_index:
+                    continue
+                # Nothing new yet — wait for a wake-up. A long gap between
+                # events (slow tool calls, a multi-minute Anthropic
+                # response) over a real network hop could otherwise look
+                # like a dead connection to an intermediary; send an SSE
+                # comment line as a keepalive instead of waiting forever.
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            with _waiters_lock:
+                lst = _waiters.get(run_id)
+                if lst and entry in lst:
+                    lst.remove(entry)
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
@@ -194,6 +270,29 @@ def stream_run(run_id: str):
 @app.get("/api/run/{run_id}/result")
 def get_result(run_id: str):
     return _results.get(run_id, {"status": "not_ready"})
+
+
+def _trajectory(question: str | None, walk: str, depth: int, records: bool) -> dict:
+    """Read-only view over runs/knowledge.db (GROUNDING_KB): the premises,
+    verdicts and hypotheses a question activated, plus the reasoning log."""
+    try:
+        return trajectory_snapshot(question=question, mode=walk, depth=depth, include_records=records)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/api/trajectory")
+def get_trajectory(question: str | None = None, walk: str = "bfs", depth: int = 3, records: bool = False):
+    return _trajectory(question, walk, depth, records)
+
+
+@app.get("/api/trajectory/view", response_class=HTMLResponse)
+def view_trajectory(question: str | None = None, walk: str = "bfs", depth: int = 3, records: bool = False):
+    """The knowledge-trajectory viewer as a page, for the frontend to embed."""
+    from urllib.parse import urlencode
+
+    query = urlencode({k: v for k, v in {"question": question, "walk": walk, "depth": depth, "records": int(records)}.items() if v is not None})
+    return render_trajectory(_trajectory(question, walk, depth, records), reload_url=f"/api/trajectory?{query}")
 
 
 @app.post("/api/run/{run_id}/evaluate")
@@ -213,3 +312,30 @@ def evaluate_run(run_id: str, req: EvaluateRequest):
         return evaluate_hypothesis(run_result, req.comment, client, model)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/admin/usage", dependencies=[Depends(admin.check_admin_token)])
+def get_admin_usage():
+    return admin.get_usage_snapshot()
+
+
+@app.get("/api/admin/usage/history", dependencies=[Depends(admin.check_admin_token)])
+def get_admin_usage_history(granularity: str = "day", days: int = 30, hours: int = 24):
+    if granularity not in ("day", "hour"):
+        raise HTTPException(status_code=400, detail="granularity must be 'day' or 'hour'")
+    return admin.get_usage_history(granularity=granularity, days=days, hours=hours)
+
+
+@app.get("/api/admin/keys", dependencies=[Depends(admin.check_admin_token)])
+def get_admin_keys():
+    return admin.list_keys()
+
+
+@app.post("/api/admin/keys/{name}", dependencies=[Depends(admin.check_admin_token)])
+def set_admin_key(name: str, req: KeyRotateRequest):
+    return admin.set_key(name, req.value)
+
+
+@app.post("/api/admin/token/rotate", dependencies=[Depends(admin.check_admin_token)])
+def rotate_admin_token():
+    return admin.rotate_admin_token()

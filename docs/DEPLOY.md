@@ -99,15 +99,16 @@ nebius compute image list --parent-id project-e0<N>public-images --format json  
      --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
      --exclude='frontend/node_modules' --exclude='frontend/dist' \
      --exclude='backend/reports/*.json' --exclude='backend/reports/*.md' \
-     --exclude='.env' --exclude='.pytest_cache' \
+     --exclude='.env' --exclude='.pytest_cache' --exclude='admin_overrides.env' \
      ./ ubuntu@<vm-ip>:/opt/app/repo/
    scp .env ubuntu@<vm-ip>:/opt/app/repo/.env
    ```
-   `rsync` from the local machine directly, rather than `git clone` on the VM — this repo is private, and rsync avoids ever needing a GitHub credential (deploy key or PAT) on the VM at all. Re-run the same `rsync` command to push any future code change; it's idempotent (`--delete` keeps the VM's copy exactly in sync).
+   `rsync` from the local machine directly, rather than `git clone` on the VM — this repo is private, and rsync avoids ever needing a GitHub credential (deploy key or PAT) on the VM at all. Re-run the same `rsync` command to push any future code change; it's idempotent (`--delete` keeps the VM's copy exactly in sync). `admin_overrides.env` is excluded deliberately — it doesn't exist locally (gitignored, VM-only) and `--delete` would otherwise erase any dashboard-rotated keys on every deploy.
 6. Edit `Caddyfile` on the VM to the real sslip.io hostname derived from the reserved IP (`api-<ip-with-dashes>.sslip.io`), then:
    ```bash
-   ssh ubuntu@<vm-ip> 'cd /opt/app/repo && sudo docker compose up -d --build'
+   ssh ubuntu@<vm-ip> 'cd /opt/app/repo && touch admin_overrides.env && sudo docker compose up -d --build'
    ```
+   The `touch` matters on a fresh VM: `admin_overrides.env` is bind-mounted into the container (`docker-compose.yml`), and Docker silently creates a **directory** at that path instead of an empty file if nothing exists there yet — which then breaks the first key rotation from the admin dashboard.
 7. Verify: `curl -v https://api-<ip>.sslip.io/api/config` — should return real JSON over a trusted cert with no `-k` needed.
 
 **Secrets are never baked into cloud-init/instance metadata** — metadata is
@@ -148,10 +149,89 @@ same thing, don't keep retrying — use the dashboard instead:
    https://<project>.vercel.app` against the deployed backend returns the
    matching `Access-Control-Allow-Origin` header with no extra config).
 
+## Admin dashboard
+
+A `/api/admin/*` set of routes (`backend/agent/admin.py`) lets you monitor
+paid-service usage over time and rotate provider API keys without SSH-ing
+into the VM for routine key changes.
+
+**Enabling it**: generate a token and set it on the backend:
+
+```bash
+openssl rand -hex 32   # -> ADMIN_TOKEN value
+```
+
+Set `ADMIN_TOKEN=<value>` in the VM's `.env`, then
+`ssh ubuntu@<vm-ip> 'cd /opt/app/repo && sudo docker compose up -d app'`
+(`up -d`, not `restart` — `restart` reuses the existing container without
+re-reading `env_file`, so a `.env` change alone has no effect until the
+container is recreated). The dashboard fails **closed**, not open: every
+`/api/admin/*` route returns 503 while `ADMIN_TOKEN` is unset, rather than
+being reachable with no auth.
+
+**Rotating the admin token itself**: once you're in, the "Rotate admin
+token" button (top of the dashboard) generates a new one server-side —
+never a value you type in, since this is our own high-entropy bearer
+secret, not a provider key from an external console. It takes effect
+immediately (no restart) and is shown exactly once, so save it before
+closing the dialog. Rotating invalidates the old token everywhere at once:
+this browser tab keeps working (it gets the new value automatically), but
+any other open admin tab or saved `#token=...` link stops working and needs
+the new token re-entered.
+
+**Lost the admin token and can't reach the dashboard to rotate it?** Once
+you've rotated at least once through the dashboard, `ADMIN_TOKEN` lives in
+`admin_overrides.env` on the VM, which wins over `.env` (`override=True`,
+loaded after `.env` — see below) — so editing `.env` no longer recovers
+access. Recovery: `ssh` in, remove the `ADMIN_TOKEN=...` line from
+`admin_overrides.env` (or delete the file), set a fresh value in `.env`
+instead, then `sudo docker compose up -d app`.
+
+**`ANTHROPIC_ADMIN_KEY`** (optional) is a separate, org-level Admin API key —
+**not** `ANTHROPIC_API_KEY` — used for two things: the live "Anthropic spend,
+last 7 days" figure in the usage snapshot, and the real hour-by-hour
+Anthropic series in the usage-history graph's **24h** view (sourced from
+Anthropic's own Usage API, priced with our confirmed rate table — genuinely
+fetched, not locally estimated). It's unavailable on individual/non-org
+Console accounts; if unset (or the account doesn't support it), both of
+those fall back gracefully — the 7-day figure shows "not configured," and
+the 24h graph uses the same locally-computed per-run costs the 7d/30d views
+already use.
+
+**No remaining-credit-balance API exists.** Anthropic's Admin API exposes
+usage and spend *reporting* only (Usage API, Cost API) — there is no
+endpoint for how much prepaid credit is left on the account. That figure is
+Console-UI-only (the billing page). This dashboard tracks usage/spend, not
+a balance, for that reason.
+
+**`ADMIN_OVERRIDES_PATH`** defaults to `<repo-root>/admin_overrides.env`,
+already bind-mounted into the `app` container by `docker-compose.yml` and
+already gitignored. It's created lazily the first time you rotate a key from
+the dashboard — nothing to set up in advance.
+
+**Interaction with manual key rotation** (see "Rotating a key later" under
+the Nebius VM section above): a key rotated through the dashboard is written
+to `admin_overrides.env` on the VM, which is loaded with `override=True`
+*after* `.env` at process start (`app.py`) — so a dashboard rotation wins
+over whatever is in `.env`, including a `.env` you `scp` up *after* the
+dashboard rotation, unless you also update/clear the corresponding line in
+`admin_overrides.env`. If you use both rotation paths, know that the
+dashboard's value wins by default.
+
+**Reaching it**: visit `https://<frontend-host>/#admin` — this opens a small
+login prompt where you paste the token once per browser tab (kept in
+`sessionStorage`, so a fresh tab or "Sign out" asks again). A
+`https://<frontend-host>/#token=<ADMIN_TOKEN>` link also works as a
+one-click shortcut: it stores the token the same way and immediately
+rewrites the visible URL to plain `#admin`. Either way the token is passed
+as a URL **fragment** (`#...`), never a query string, so it never appears in
+a server or CDN access log — but it's still a bearer credential, so share it
+only over a secure channel.
+
 ## CI/CD
 
 **Frontend** — `.github/workflows/deploy-frontend.yml`: on every push to
-`claude/gracious-curie-lkjlq1` (or manually via `workflow_dispatch`), a
+`main` (or manually via `workflow_dispatch`), a
 GitHub Actions job runs `vercel deploy --prod` against the existing Vercel
 project (`frontend`), authenticated with a personal access token rather
 than Vercel's native git integration.
@@ -189,7 +269,7 @@ Actions where that dashboard-only env var wouldn't be visible).
 
 **Limitation:** since git deploys are fully disabled repo-wide, Preview
 deployments for PRs/other branches no longer happen automatically — only
-pushes to `claude/gracious-curie-lkjlq1` deploy anything now. A manual
+pushes to `main` deploy anything now. A manual
 `vercel deploy` (without `--prod`) can still produce an ad hoc preview if
 ever needed.
 
@@ -200,7 +280,7 @@ anything or recur, and Hobby still doesn't expose a way to dismiss it.
 Ignore it, or clean it up later if Vercel ever adds that ability.
 
 **Backend** — `.github/workflows/deploy-backend.yml`: on every push to
-`claude/gracious-curie-lkjlq1` (or manually via `workflow_dispatch`), a
+`main` (or manually via `workflow_dispatch`), a
 GitHub Actions job rsyncs the repo to the VM and runs `docker compose up -d
 --build app` over SSH — the same two commands as the manual first-time
 setup above, just automated. It deliberately only rebuilds the `app`

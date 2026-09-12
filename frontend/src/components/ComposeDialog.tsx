@@ -3,6 +3,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import { ToolsPanel } from "@/components/ToolsPanel"
+import type { RunMode } from "@/types"
+
+const MODES: Array<{ value: RunMode; label: string; hint: string }> = [
+  { value: "fast", label: "Fast", hint: "The question's own claims plus one hop (4 links), shorter abstracts, no second search — about half the time and cost" },
+  { value: "normal", label: "Thorough", hint: "Up to 8 links, whole abstracts, and a second literature search before any link is called unverified" },
+]
 
 export function ComposeDialog({
   open,
@@ -16,6 +22,8 @@ export function ComposeDialog({
   maxToolCalls,
   onMaxToolCallsChange,
   maxToolCallsCeiling,
+  mode,
+  onModeChange,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -28,6 +36,8 @@ export function ComposeDialog({
   maxToolCalls: number
   onMaxToolCallsChange: (n: number) => void
   maxToolCallsCeiling: number
+  mode: RunMode
+  onModeChange: (mode: RunMode) => void
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -54,6 +64,24 @@ export function ComposeDialog({
             Run
           </Button>
 
+          <div className="flex items-center gap-1 rounded-md border p-0.5" role="radiogroup" aria-label="Run mode">
+            {MODES.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={mode === option.value}
+                title={option.hint}
+                onClick={() => onModeChange(option.value)}
+                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                  mode === option.value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+
           <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
             Tool budget:
             <input
@@ -70,6 +98,8 @@ export function ComposeDialog({
             <span className="text-xs">(max {maxToolCallsCeiling})</span>
           </label>
         </div>
+
+        <p className="text-xs text-muted-foreground">{MODES.find((option) => option.value === mode)?.hint}</p>
 
         <Separator />
 

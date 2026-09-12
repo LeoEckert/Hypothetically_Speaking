@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Knowledge trajectory</title>
+  <style>
+    :root {
+      --bg: #f4f2ee;
+      --card: #fffdf8;
+      --ink: #1f1c18;
+      --muted: #6f685e;
+      --line: #ddd6cb;
+      --dim: #c8c0b4;
+      --question: #1f3a5f;
+      --established: #2f6b4f;
+      --contested: #8a5a12;
+      --unverified: #8b3d2f;
+      --concept: #3d4a3a;
+      --record: #8a847a;
+      --hypothesis: #5b3d7a;
+      --active: #c45c26;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    header {
+      display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end;
+      padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--card);
+    }
+    header h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+    header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    select, input[type="number"] { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; min-width: 72px; }
+    button { font: inherit; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button:hover { border-color: var(--ink); }
+    .row { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; height: calc(100% - 74px); }
+    #graph { width: 100%; height: 100%; display: block; }
+    aside { border-left: 1px solid var(--line); background: var(--card); overflow: auto; padding: 14px 16px 24px; }
+    aside h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+    .step { display: grid; grid-template-columns: 28px 1fr; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+    .step .n { font-variant-numeric: tabular-nums; color: var(--active); font-weight: 650; }
+    .step:hover { background: rgba(196, 92, 38, 0.06); }
+    .stage { margin: 14px 0 4px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+    .why { color: var(--muted); font-size: 12px; margin-top: 3px; line-height: 1.35; }
+    .hint { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
+    .dot.focus { stroke-width: 4; }
+    .dot.rejected { stroke-dasharray: 3 2; fill: var(--bg); }
+    .dot.destination { stroke-width: 4; filter: drop-shadow(0 0 3px var(--active)); }
+    .verb { font-size: 9px; fill: var(--muted); }
+    .verb.inactive { opacity: 0.3; }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); padding: 6px 18px; border-bottom: 1px solid var(--line); background: var(--card); }
+    .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor; margin-right: 5px; vertical-align: -1px; }
+    .legend .rej::before { border-style: dashed; }
+    .legend .dest::before { border-width: 3px; }
+    .step.rejected .name { text-decoration: line-through; color: var(--muted); }
+    .step .name { font-weight: 550; }
+    .step .meta { color: var(--muted); font-size: 11px; }
+    .badge { display: inline-block; font-size: 10px; font-weight: 650; letter-spacing: 0.03em; text-transform: uppercase; }
+    .dot { fill: var(--card); stroke-width: 2; }
+    .dot.inactive { opacity: 0.28; }
+    .edge { fill: none; stroke: var(--dim); stroke-width: 1.1; }
+    .edge.tree { stroke: var(--active); stroke-width: 2; }
+    .edge.inactive { opacity: 0.18; }
+    .label { font-size: 11px; fill: var(--ink); }
+    .label.inactive { fill: var(--muted); }
+    @media (max-width: 860px) {
+      main { grid-template-columns: 1fr; grid-template-rows: 55vh 1fr; }
+      aside { border-left: 0; border-top: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Knowledge trajectory</h1>
+      <p>Activated walk over the premises graph. Same question, same path.</p>
+    </div>
+    <div class="row">
+      <label>Question
+        <select id="question"></select>
+      </label>
+      <label>Walk
+        <select id="walk">
+          <option value="bfs">bfs</option>
+          <option value="dfs">dfs</option>
+        </select>
+      </label>
+      <label>Depth
+        <input id="depth" type="number" min="0" max="8" value="3" />
+      </label>
+      <label>Records
+        <select id="records">
+          <option value="0">hide</option>
+          <option value="1">show</option>
+        </select>
+      </label>
+      <label>Scope
+        <select id="scope">
+          <option value="latest">latest run of this question</option>
+          <option value="question">this question, all runs</option>
+          <option value="all">whole knowledge base</option>
+        </select>
+      </label>
+      <button type="button" id="reload">Reload KB</button>
+    </div>
+  </header>
+  <div class="legend">
+    <span style="color: var(--question)">question</span>
+    <span style="color: var(--concept)">entity</span>
+    <span style="color: var(--concept)" class="dest">destination (outcome asked about)</span>
+    <span style="color: var(--established)">established link</span>
+    <span style="color: var(--contested)">contested link</span>
+    <span style="color: var(--unverified)">unverified link</span>
+    <span style="color: var(--hypothesis)">hypothesis kept</span>
+    <span style="color: var(--hypothesis)" class="rej">hypothesis rejected</span>
+    <span style="color: var(--dim)">outside this question's walk</span>
+  </div>
+  <main>
+    <svg id="graph" xmlns="http://www.w3.org/2000/svg"></svg>
+    <aside>
+      <h2>Activation path</h2>
+      <p class="hint">Stage by stage: what the question was split into, which links were checked, what each verdict rested on, and which gap each hypothesis aims at. Hover a step to find it in the graph.</p>
+      <div id="steps"></div>
+    </aside>
+  </main>
+  <script>
+    const EMBEDDED = __SNAPSHOT__;
+    const RELOAD_URL = __RELOAD_URL__;
+    const KIND_RANK = { question: 0, premise: 1, hypothesis: 2, concept: 3, record: 4, paper: 4 };
+    const EVIDENCE = new Set(["record", "paper"]);
+    const STATUS_COLOR = {
+      ESTABLISHED: "var(--established)",
+      CONTESTED: "var(--contested)",
+      UNVERIFIED: "var(--unverified)",
+    };
+
+    let graph = EMBEDDED;
+
+    function kindOf(id) {
+      const node = graph.nodes.find((item) => item.id === id);
+      return node ? node.kind : "other";
+    }
+
+    function adjacency(includeRecords) {
+      const adj = {};
+      for (const edge of graph.edges) {
+        if (!includeRecords && (EVIDENCE.has(kindOf(edge.src)) || EVIDENCE.has(kindOf(edge.dst)))) continue;
+        if (!adj[edge.src]) adj[edge.src] = [];
+        adj[edge.src].push([edge.dst, edge.kind]);
+      }
+      for (const src of Object.keys(adj)) {
+        adj[src].sort((a, b) => {
+          const ka = KIND_RANK[kindOf(a[0])] ?? 9;
+          const kb = KIND_RANK[kindOf(b[0])] ?? 9;
+          return ka - kb || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0);
+        });
+      }
+      return adj;
+    }
+
+    function walk(seed, mode, depth, includeRecords) {
+      const adj = adjacency(includeRecords);
+      const visited = [];
+      const tree = [];
+      const seen = new Set();
+      const visit = (id, at) => { seen.add(id); visited.push({ id, depth: at, order: visited.length }); };
+      if (mode === "bfs") {
+        const queue = [[seed, 0]];
+        seen.add(seed);
+        while (queue.length) {
+          const [id, at] = queue.shift();
+          visited.push({ id, depth: at, order: visited.length });
+          if (at >= depth) continue;
+          for (const [neighbour, kind] of adj[id] || []) {
+            if (seen.has(neighbour)) continue;
+            seen.add(neighbour);
+            tree.push({ src: id, dst: neighbour, kind });
+            queue.push([neighbour, at + 1]);
+          }
+        }
+      } else {
+        const dfs = (id, at) => {
+          visit(id, at);
+          if (at >= depth) return;
+          for (const [neighbour, kind] of adj[id] || []) {
+            if (seen.has(neighbour)) continue;
+            tree.push({ src: id, dst: neighbour, kind });
+            dfs(neighbour, at + 1);
+          }
+        };
+        dfs(seed, 0);
+      }
+      return { visited, tree };
+    }
+
+    function color(node) {
+      if (node.kind === "question") return "var(--question)";
+      if (node.kind === "hypothesis") return "var(--hypothesis)";
+      if (node.kind === "premise") return STATUS_COLOR[node.status] || "var(--ink)";
+      if (EVIDENCE.has(node.kind)) return "var(--record)";
+      return "var(--concept)";
+    }
+
+    function layout(visibleIds) {
+      const seed = document.getElementById("question").value;
+      const includeRecords = document.getElementById("records").value === "1";
+      const distances = walk(seed, "bfs", 32, includeRecords);
+      const depthOf = Object.fromEntries(distances.visited.map((item) => [item.id, item.depth]));
+      const layers = {};
+      for (const id of visibleIds) {
+        const depth = depthOf[id] ?? 0;
+        if (!layers[depth]) layers[depth] = [];
+        layers[depth].push(id);
+      }
+      const positions = {};
+      const depths = Object.keys(layers).map(Number).sort((a, b) => a - b);
+      const width = Math.max(document.getElementById("graph").clientWidth, 640);
+      const height = Math.max(document.getElementById("graph").clientHeight, 420);
+      const padX = 70, padY = 40;
+      depths.forEach((depth, i) => {
+        const ids = layers[depth].sort((a, b) => {
+          const ka = KIND_RANK[kindOf(a)] ?? 9;
+          const kb = KIND_RANK[kindOf(b)] ?? 9;
+          return ka - kb || (a < b ? -1 : a > b ? 1 : 0);
+        });
+        ids.forEach((id, j) => {
+          const x = padX + (i * (width - padX * 2)) / Math.max(depths.length - 1, 1);
+          const y = padY + ((j + 0.5) * (height - padY * 2)) / Math.max(ids.length, 1);
+          positions[id] = { x, y };
+        });
+      });
+      return { positions, width, height };
+    }
+
+    function render() {
+      const seed = document.getElementById("question").value;
+      const mode = document.getElementById("walk").value;
+      const depth = Number(document.getElementById("depth").value);
+      const includeRecords = document.getElementById("records").value === "1";
+      const activation = walk(seed, mode, depth, includeRecords);
+      const active = new Set(activation.visited.map((item) => item.id));
+      const treeKey = new Set(activation.tree.map((edge) => `${edge.src}\t${edge.dst}\t${edge.kind}`));
+      const scope = document.getElementById("scope").value;
+      const current = currentHypotheses(seed);
+      const visible = graph.nodes.filter((node) => {
+        if (!includeRecords && EVIDENCE.has(node.kind)) return false;
+        if (scope === "all") return true;
+        if (!active.has(node.id)) return false;
+        if (scope === "latest" && node.kind === "hypothesis" && current && !current.has(node.name)) return false;
+        return true;
+      });
+      const visibleIds = visible.map((node) => node.id);
+      const { positions, width, height } = layout(visibleIds);
+      const svg = document.getElementById("graph");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const byIdAll = Object.fromEntries(graph.nodes.map((node) => [node.id, node]));
+      const destination = ((byIdAll[seed] || {}).destination || "").toLowerCase();
+      const edges = graph.edges.filter((edge) => visibleIds.includes(edge.src) && visibleIds.includes(edge.dst));
+      const edgeMarkup = edges.map((edge) => {
+        const a = positions[edge.src], b = positions[edge.dst];
+        if (!a || !b) return "";
+        const midX = (a.x + b.x) / 2;
+        const on = active.has(edge.src) && active.has(edge.dst);
+        const cls = [
+          "edge",
+          treeKey.has(`${edge.src}\t${edge.dst}\t${edge.kind}`) ? "tree" : "",
+          on ? "" : "inactive",
+        ].filter(Boolean).join(" ");
+        // The premise node stands for the link; its verb rides the edge to the object.
+        const src = byIdAll[edge.src];
+        const verb = edge.kind === "object" && src && src.verb
+          ? `<text class="verb ${on ? "" : "inactive"}" x="${midX}" y="${(a.y + b.y) / 2 - 4}" text-anchor="middle">${escapeXml(src.verb)}</text>` : "";
+        return `<path class="${cls}" d="M ${a.x} ${a.y} C ${midX} ${a.y}, ${midX} ${b.y}, ${b.x} ${b.y}" />${verb}`;
+      }).join("");
+      const nodeMarkup = visible.map((node) => {
+        const p = positions[node.id];
+        if (!p) return "";
+        const on = active.has(node.id);
+        const rejected = node.kind === "hypothesis" && node.dropped;
+        const isDestination = node.kind === "concept" && destination && node.name.toLowerCase() === destination;
+        const r = node.kind === "question" ? 9 : EVIDENCE.has(node.kind) ? 4 : isDestination ? 9 : 7;
+        const raw = node.kind === "hypothesis" ? (rejected ? "✕ " + node.name : (node.label || node.name)) : node.name;
+        const label = raw.length > 42 ? raw.slice(0, 41) + "…" : raw;
+        const cls = ["dot", on ? "" : "inactive", rejected ? "rejected" : "", isDestination ? "destination" : ""].filter(Boolean).join(" ");
+        return `<g data-id="${escapeXml(node.id)}">
+          <circle class="${cls}" cx="${p.x}" cy="${p.y}" r="${r}" stroke="${color(node)}" />
+          <text class="label ${on ? "" : "inactive"}" x="${p.x + 12}" y="${p.y + 4}">${escapeXml(label)}</text>
+        </g>`;
+      }).join("");
+      svg.innerHTML = edgeMarkup + nodeMarkup;
+
+      document.getElementById("steps").innerHTML = activationPath(seed, active);
+      document.querySelectorAll(".step[data-node]").forEach((el) => {
+        el.addEventListener("mouseenter", () => focusNode(el.dataset.node, true));
+        el.addEventListener("mouseleave", () => focusNode(el.dataset.node, false));
+      });
+    }
+
+    // Hypotheses accumulate across runs of the same question; the latest
+    // `hypothesize` step names the ones (kept and rejected) of the last run.
+    function currentHypotheses(seed) {
+      const step = [...(graph.steps || [])].reverse().find((s) => s.node_id === seed && s.stage === "hypothesize");
+      if (!step) return null;
+      const names = new Set();
+      for (const node of graph.nodes) {
+        if (node.kind === "hypothesis" && step.rationale.includes(node.name)) names.add(node.name);
+      }
+      return names;
+    }
+
+    function focusNode(id, on) {
+      document.querySelectorAll(`[data-id="${CSS.escape(id)}"] .dot`).forEach((dot) => dot.classList.toggle("focus", on));
+    }
+
+    // The stage-ordered path: L0 split, L1 probe, L2 verdict per link (in the
+    // order the links were checked), L4 hypotheses. Reads the reasoning log,
+    // so a second run of the same question shows the same steps.
+    function activationPath(seed, active) {
+      const byId = Object.fromEntries(graph.nodes.map((node) => [node.id, node]));
+      const steps = graph.steps || [];
+      const latest = (nodeId, stage) => [...steps].reverse().find((s) => s.node_id === nodeId && s.stage === stage);
+      const clip = (text, n) => (text && text.length > n ? text.slice(0, n - 1) + "…" : text || "");
+      let n = 0;
+      const row = (nodeId, name, meta, why) => `<div class="step" data-node="${escapeHtml(nodeId)}">
+          <div class="n">${String(n++).padStart(2, "0")}</div>
+          <div>
+            <div class="name">${escapeHtml(name)}</div>
+            <div class="meta">${meta}</div>
+            ${why ? `<div class="why">${escapeHtml(why)}</div>` : ""}
+          </div>
+        </div>`;
+      const out = [];
+      const question = byId[seed];
+      out.push(`<div class="stage">Question</div>`, row(seed, question.name, question.destination ? `destination: ${escapeHtml(question.destination)}` : "seed", ""));
+      const split = latest(seed, "triplify");
+      if (split) out.push(`<div class="stage">L0 · split into claims</div>`, row(seed, split.verdict, "coherence", clip(split.rationale, 260)));
+      const probe = latest(seed, "probe");
+      if (probe) out.push(`<div class="stage">L1 · links to check</div>`, row(seed, probe.verdict, "probe", clip(probe.rationale, 260)));
+      const premises = graph.edges
+        .filter((e) => e.src === seed && e.kind === "asks")
+        .map((e) => byId[e.dst]).filter(Boolean)
+        .sort((a, b) => (a.first_seen || "").localeCompare(b.first_seen || ""));
+      if (premises.length) out.push(`<div class="stage">L2 · verdict per link</div>`);
+      premises.forEach((p) => {
+        const verdict = latest(p.id, "verify");
+        const status = `<span class="badge" style="color:${color(p)}">${p.status || ""}</span>`;
+        const evidence = p.evidence_count ? ` · ${p.evidence_count} records` : p.absence_checked ? ` · ${escapeHtml(p.absence_checked)}` : "";
+        out.push(row(p.id, p.name, `${status}${evidence}${active.has(p.id) ? "" : " · outside walk"}`, clip(verdict && verdict.rationale, 260)));
+      });
+      const current = document.getElementById("scope").value === "latest" ? currentHypotheses(seed) : null;
+      const hypotheses = graph.nodes.filter((node) => node.kind === "hypothesis" && premises.some((p) => p.id === node.targets) && (!current || current.has(node.name)));
+      const kept = hypotheses.filter((h) => !h.dropped), rejected = hypotheses.filter((h) => h.dropped);
+      if (kept.length) out.push(`<div class="stage">L4 · hypotheses aimed at the gaps</div>`);
+      kept.forEach((h) => {
+        const target = byId[h.targets];
+        const why = [
+          h.intervention ? `do: ${h.intervention}` : "",
+          h.readout ? `measure: ${h.readout}` : "",
+          h.model_system ? `in: ${h.model_system}` : "",
+          h.falsification ? `rejected if: ${h.falsification}` : "",
+        ].filter(Boolean).join(" · ");
+        out.push(row(h.id, h.name, `${escapeHtml(h.label || "")} → tests: ${escapeHtml(target ? target.name : h.targets)}`, why));
+      });
+      if (rejected.length) out.push(`<div class="stage">L4 · candidates rejected by the testability filter</div>`);
+      rejected.forEach((h) => {
+        const target = byId[h.targets];
+        out.push(row(h.id, h.name, `tests: ${escapeHtml(target ? target.name : h.targets)}`, `rejected: ${h.dropped}`).replace('class="step"', 'class="step rejected"'));
+      });
+      return out.join("");
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+    function escapeXml(value) { return escapeHtml(value); }
+
+    function fillQuestions() {
+      const select = document.getElementById("question");
+      const current = select.value;
+      select.innerHTML = graph.questions.map((item) =>
+        `<option value="${item.id}">${escapeHtml(item.name.slice(0, 90))}</option>`
+      ).join("");
+      if (graph.questions.some((item) => item.id === (current || graph.seed))) {
+        select.value = current || graph.seed;
+      }
+    }
+
+    async function reload() {
+      try {
+        const response = await fetch(RELOAD_URL, { cache: "no-store" });
+        if (response.ok) graph = await response.json();
+      } catch (_) { /* standalone file — keep embedded snapshot */ }
+      fillQuestions();
+      render();
+    }
+
+    ["question", "walk", "depth", "records", "scope"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", render);
+      document.getElementById(id).addEventListener("input", render);
+    });
+    document.getElementById("reload").addEventListener("click", reload);
+    document.getElementById("walk").value = graph.walk || "bfs";
+    document.getElementById("depth").value = graph.depth ?? 3;
+    document.getElementById("records").value = graph.include_records ? "1" : "0";
+    fillQuestions();
+    render();
+    window.addEventListener("resize", render);
+  </script>
+</body>
+</html>

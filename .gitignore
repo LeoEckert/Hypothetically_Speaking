@@ -14,9 +14,14 @@ frontend/.env
 frontend/.env.local
 create_vm.sh
 secret_*.txt
+
+# grounding knowledge base / run archives (local cache, regenerated on demand)
+runs/
+
 .vercel
 frontend/.vercel
 .env*
+admin_overrides.env
 
 # local dev fixture for the evaluation diff preview (?evalpreview)
 frontend/public/eval-fixture.json

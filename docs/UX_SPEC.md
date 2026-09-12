@@ -71,7 +71,8 @@ such inventory existed before this doc).
 | `type` | Payload | Notes |
 |---|---|---|
 | `start` | `run_id`, `question` | first event of every run |
-| `phase` | `phase: "plan"\|"plan_and_gather"\|"revise"\|"report"` | `plan` is the new dedicated hypothesis-proposal turn |
+| `phase` | `phase: "grounding"\|"plan"\|"plan_and_gather"\|"revise"\|"report"` | `grounding` decomposes and checks premises before PLAN |
+| `grounding` | `status`, `coherent`, `why`, `triples`, `premises`, `knowledge_graph`, `hypotheses` | L0-L4 explainability payload rendered before PLAN |
 | `hypotheses` | `stage: "plan"\|"revise"\|"final"`, `hypotheses: RankedHypothesis[]` | **new** — the live-updating hypothesis roster; see lifecycle table above |
 | `assistant_text` | `text` | free-text reasoning during ACT/REVISE (not emitted for the REPORT turn itself) |
 | `tool_call` | `tool`, `args`, `step` | |

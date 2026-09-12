@@ -1,11 +1,12 @@
 name: Deploy backend to Nebius VM
 
-# Frontend deploys automatically via Vercel's git integration (no workflow
-# needed here). This workflow only handles the backend, which lives on a
-# plain VM with no platform-native CI/CD of its own.
+# Frontend deploys separately via deploy-frontend.yml (Vercel CLI/token,
+# not git integration — see docs/DEPLOY.md). This workflow only handles
+# the backend, which lives on a plain VM with no platform-native CI/CD of
+# its own.
 on:
   push:
-    branches: [claude/gracious-curie-lkjlq1]
+    branches: [main]
   workflow_dispatch: {}
 
 jobs:
@@ -27,11 +28,12 @@ jobs:
             --exclude='.git' --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
             --exclude='frontend/node_modules' --exclude='frontend/dist' \
             --exclude='backend/reports/*.json' --exclude='backend/reports/*.md' \
-            --exclude='.env' --exclude='.pytest_cache' \
+            --exclude='runs/' \
+            --exclude='.env' --exclude='.pytest_cache' --exclude='admin_overrides.env' \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
             ./ ubuntu@${{ secrets.NEBIUS_VM_HOST }}:/opt/app/repo/
 
       - name: Rebuild and restart the backend container
         run: |
           ssh -i ~/.ssh/deploy_key ubuntu@${{ secrets.NEBIUS_VM_HOST }} \
-            'cd /opt/app/repo && sudo docker compose up -d --build app'
+            'cd /opt/app/repo && touch admin_overrides.env && sudo docker compose up -d --build app'

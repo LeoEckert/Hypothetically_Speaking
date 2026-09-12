@@ -4,6 +4,11 @@ services:
     env_file: .env
     volumes:
       - ./backend/reports:/app/backend/reports
+      - ./admin_overrides.env:/app/admin_overrides.env
+      # The grounding knowledge base (runs/knowledge.db): the LLM/Amass cache,
+      # every verdict's history, and what the trajectory view reads. It must
+      # outlive image rebuilds, so it lives on the host like the reports do.
+      - ./runs:/app/runs
     restart: unless-stopped
     expose:
       - "8000"

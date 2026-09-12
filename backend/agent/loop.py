@@ -10,6 +10,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 from anthropic import Anthropic
@@ -30,6 +33,15 @@ from backend.tools.registry import enabled_tool_names, get_specs, run_tool
 EventCallback = Optional[Callable[[dict], None]]
 CancelCheck = Optional[Callable[[], bool]]
 
+# The system prompt is identical on every PLAN/ACT/REVISE/REPORT call (up to
+# ~30+ times per run) — sending it as a cached block lets Anthropic serve it
+# from cache (read price = CACHE_READ_MULTIPLIER, see backend/agent/costs.py)
+# on every call after the first instead of pricing it as fresh input tokens
+# every time. Precomputed once since SYSTEM_PROMPT never changes at runtime.
+_SYSTEM_PROMPT_BLOCKS = [
+    {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+]
+
 # Absolute ceiling on tool calls for any run, regardless of what a caller
 # (the API's max_tool_calls request field, MAX_TOOL_CALLS env var, or a
 # future caller) asks for — protects against runaway cost/time no matter
@@ -47,6 +59,194 @@ MAX_NO_TOOL_NUDGES = 2
 def _emit(on_event: EventCallback, event: dict) -> None:
     if on_event:
         on_event(event)
+
+
+_GROUNDING_KEYS = ("ANTHROPIC_API_KEY", "AMASS_API_KEY")
+
+
+def _resolve_amass_credits_before(state: RunState, thread: threading.Thread | None, box: list) -> None:
+    """Amass's account-wide balance only needs to be sampled once, before any
+    Amass call this run makes — it doesn't need to happen synchronously right
+    at that call site. `thread`/`box` are the background prefetch started at
+    run start (see run_agent); this just waits for it instead of making a
+    fresh blocking call, so the ~10s request never sits on the critical path."""
+    if state.amass_credits_before is not None:
+        return
+    if thread is not None:
+        thread.join()
+        state.amass_credits_before = box[0] if box else None
+    else:
+        state.amass_credits_before = amass_tool.get_credits()
+
+
+def _grounding_payload(
+    question: str,
+    state: RunState | None = None,
+    on_event=None,
+    mode: str = "normal",
+    amass_credits_thread: threading.Thread | None = None,
+    amass_credits_box: list | None = None,
+) -> dict:
+    """Run L0-L4 and return the same structured payload sent to the UI.
+
+    Every Amass and Claude call the grounding makes is streamed as a
+    tool_call/tool_result pair and recorded on the run state (trace, Anthropic
+    tokens, Amass credits) so the trace and cost panel show the whole run —
+    without counting against the agent's tool budget."""
+    missing = [name for name in _GROUNDING_KEYS if not os.environ.get(name)]
+    empty = {"coherent": None, "triples": [], "destination": "", "premises": [], "knowledge_graph": "", "hypotheses": [], "rejected": []}
+    if missing:
+        return {"status": "skipped", "why": f"Missing {', '.join(missing)}", **empty}
+    try:
+        from backend.grounding.adapters import Ledger
+        from scripts.run_grounding import ground
+
+        def record(entry: dict) -> None:
+            if state is None:
+                return
+            step = state.record_external_call(entry["tool"], entry["args"], entry["summary"])
+            if entry["tool"] == "grounding" and entry.get("usage"):
+                state.record_anthropic_tokens(entry["usage"], entry["args"].get("model", ""))
+            _emit(on_event, {"type": "tool_call", "tool": entry["tool"], "args": entry["args"], "step": step})
+            _emit(on_event, {"type": "tool_result", "tool": entry["tool"], "step": step, "mock": False, "error": None, "summary": entry["summary"], "usage": None})
+
+        if state is not None:
+            _resolve_amass_credits_before(state, amass_credits_thread, amass_credits_box or [])
+        grounding = ground(
+            question,
+            ledger=Ledger(record),
+            fast=mode == "fast",
+            on_progress=lambda event: _emit(on_event, {"type": "grounding_step", **event}),
+        )
+        return {
+            "status": "complete",
+            "mode": mode,
+            "coherent": grounding.coherent,
+            "why": grounding.why,
+            "triples": [triple.model_dump(mode="json") for triple in grounding.triples],
+            "destination": grounding.destination,
+            "premises": [premise.model_dump(mode="json") for premise in grounding.premises],
+            "knowledge_graph": grounding.knowledge_graph,
+            "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in grounding.hypotheses],
+            "rejected": [hypothesis.model_dump(mode="json") for hypothesis in grounding.rejected],
+        }
+    except Exception as exc:
+        return {"status": "failed", "why": str(exc), **empty}
+
+
+def _grounding_text(payload: dict) -> str:
+    """Dump structured grounding as text for the PLAN prompt."""
+    if payload["status"] != "complete":
+        return f"(grounding {payload['status']}: {payload['why']})"
+    if not payload["coherent"]:
+        return f"(grounding: question judged not coherent — {payload['why']})"
+    unverified = [
+        premise for premise in payload["premises"] if premise["status"] == "UNVERIFIED"
+    ]
+    candidates = "\n".join(
+        f"- {h['statement']}  (tests: {h['targets']}; do: {h['intervention']}; "
+        f"measure: {h['readout']}; in: {h['model_system']})\n  why: {h.get('story', '')}"
+        for h in payload.get("hypotheses", [])
+    )
+    return (
+        f"Knowledge graph:\n{payload['knowledge_graph']}\n\n"
+        f"Unverified premises (the gaps hypotheses should target):\n"
+        f"{json.dumps(unverified, indent=2)}"
+        + (
+            "\n\nCandidate hypotheses, already filtered to one testable claim each. "
+            "Use these as your hypotheses, in this order, keeping each statement as "
+            "written or shorter — never merge, extend or qualify them:\n" + candidates
+            if candidates else ""
+        )
+    )
+
+
+def _plan_message(grounding_text: str, n_candidates: int = 0) -> str:
+    """PLAN's prompt asks for 2-4 hypotheses; when the grounding already
+    produced candidates, PLAN's job is to adopt exactly those — padding the
+    list with its own would reintroduce ungrounded, compound hypotheses."""
+    prompt = plan_prompt()
+    if n_candidates:
+        prompt = prompt.replace(
+            "propose 2-4 concrete, testable hypotheses\nthat could answer the research question, each grounded in a plausible\nageing-biology mechanism.",
+            f"propose exactly {n_candidates} hypothes{'is' if n_candidates == 1 else 'es'}: the grounded "
+            f"candidate{'' if n_candidates == 1 else 's'} listed above, statement{'' if n_candidates == 1 else 's'} "
+            "kept as written. Do not add hypotheses of your own; this overrides the 2-4 range in the system instructions.",
+        )
+    return (
+        "Grounding context from a prior extraction step. Use this when "
+        "proposing hypotheses; do not treat it as already-verified evidence.\n\n"
+        f"{grounding_text}\n\n"
+        + prompt
+    )
+
+
+def _adopt_candidates(raw_plan: list, candidates: list[dict]) -> list[dict]:
+    """When the grounding produced candidates, the PLAN roster is exactly those,
+    in order. PLAN's own additions are dropped (its system prompt still says
+    "2-4", and the model pads the list with compound, ungrounded hypotheses);
+    only its seed_question is kept where it wrote about the same statement."""
+    def norm(text: str) -> str:
+        return re.sub(r"[^a-z0-9 ]", "", str(text).lower()).strip()
+
+    by_statement = {norm(h.get("statement", "")): h for h in raw_plan if isinstance(h, dict)}
+    adopted = []
+    for candidate in candidates:
+        planned = by_statement.get(norm(candidate["statement"]), {})
+        seed = str(planned.get("seed_question") or "").strip() or (
+            f"Does {candidate['intervention']} change {candidate['readout']} in {candidate['model_system']}?"
+        )
+        adopted.append({"statement": candidate["statement"], "seed_question": seed})
+    return adopted
+
+
+REPORT_SECTIONS = [
+    "Hypothesis",
+    "Evidence That Supports It",
+    "Evidence That Doesn't / Contradicts It",
+    "Confidence & Uncertainty",
+    "Failure Modes",
+    "Next Experiment To Run",
+    "Tool Trace",
+]
+_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.M)
+
+
+def _stream_message(client, on_event, phase: str, detail: dict, **kwargs):
+    """Stream one Messages call and emit a `progress` event about once a
+    second: characters written so far and, for the report, which of the fixed
+    sections is being written. PLAN, REVISE and REPORT are each a single long
+    call with nothing else to show, so this is what keeps the status bar
+    moving. Returns the same final Message that messages.create would."""
+    buffer: list[str] = []
+    last_emit = 0.0
+
+    def emit(force: bool = False) -> None:
+        nonlocal last_emit
+        now = time.time()
+        if not force and now - last_emit < 1.0:
+            return
+        last_emit = now
+        text = "".join(buffer)
+        headings = _HEADING_RE.findall(text)
+        _emit(
+            on_event,
+            {
+                "type": "progress",
+                "phase": phase,
+                "chars": len(text),
+                "section": headings[-1] if headings else None,
+                "sections_done": len(headings),
+                **detail,
+            },
+        )
+
+    with client.messages.stream(**kwargs) as stream:
+        for chunk in stream.text_stream:
+            buffer.append(chunk)
+            emit()
+        emit(force=True)
+        return stream.get_final_message()
 
 
 def _text_of(content_blocks) -> str:
@@ -145,7 +345,15 @@ def _normalize_hypotheses(
             normalized[0]["selected"] = True
         return normalized
 
-    candidates = [h for h in raw if isinstance(h, dict) and h.get("id") in known]
+    # Ids are matched case-insensitively: PLAN mints h1..hN, but the model
+    # sometimes echoes the H1..HN labels it saw in the grounding candidates.
+    candidates = []
+    for h in raw:
+        if not isinstance(h, dict):
+            continue
+        hid = str(h.get("id", "")).strip().lower()
+        if hid in known:
+            candidates.append({**h, "id": hid})
 
     def _rank_key(pair: tuple[int, dict]) -> tuple[float, int]:
         idx, h = pair
@@ -211,6 +419,7 @@ def run_agent(
     run_id: str | None = None,
     max_tool_calls: int | None = None,
     should_cancel: CancelCheck = None,
+    mode: str = "normal",
 ) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
@@ -226,19 +435,52 @@ def run_agent(
         state.run_id = run_id
     state.enabled_tools = set(enabled_tool_names())
     tools = get_specs()
+    if tools:
+        # The tool roster is snapshotted once per run and never changes for
+        # the life of this run (see enabled_tools above) — cache it too, on
+        # the last spec, same reasoning as the system prompt.
+        tools = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
     messages: list[dict] = [{"role": "user", "content": f"Research question: {question}"}]
+    # Rolling cache breakpoint on the growing ACT-loop transcript: each turn
+    # marks its own tool-results block as the new "cache everything up to
+    # here" point and clears the previous one, so later turns mostly pay the
+    # cheap cache_read rate for the whole prior transcript instead of full
+    # input price for it every time.
+    last_cache_marker: dict | None = None
+
+    # Amass's account-wide credit balance only needs to be sampled once
+    # before this run's first Amass call — fire it off the critical path now
+    # instead of blocking on it right before whichever call needs it first.
+    amass_credits_box: list = []
+    amass_credits_thread: threading.Thread | None = None
+    if os.environ.get("AMASS_API_KEY"):
+        amass_credits_thread = threading.Thread(
+            target=lambda: amass_credits_box.append(amass_tool.get_credits()), daemon=True
+        )
+        amass_credits_thread.start()
 
     _emit(on_event, {"type": "start", "run_id": state.run_id, "question": question})
+
+    _emit(on_event, {"type": "phase", "phase": "grounding"})
+    grounding = _grounding_payload(question, state, on_event, mode, amass_credits_thread, amass_credits_box)
+    grounding_text = _grounding_text(grounding)
+    _emit(on_event, {"type": "grounding", **grounding})
 
     no_tool_nudges = 0
     try:
         # --- PLAN ---
-        _emit(on_event, {"type": "phase", "phase": "plan"})
-        messages.append({"role": "user", "content": plan_prompt()})
-        plan_resp = client.messages.create(model=model, max_tokens=1536, system=SYSTEM_PROMPT, messages=messages)
+        candidate_count = len(grounding.get("hypotheses") or [])
+        _emit(on_event, {"type": "phase", "phase": "plan", "detail": {"candidates": candidate_count}})
+        messages.append({"role": "user", "content": _plan_message(grounding_text, candidate_count)})
+        plan_resp = _stream_message(
+            client, on_event, "plan", {"candidates": candidate_count},
+            model=model, max_tokens=1536, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
+        )
         state.record_anthropic_usage(plan_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})
         raw_plan_hyps = _parse_hypotheses(_text_of(plan_resp.content))
+        if grounding.get("hypotheses"):
+            raw_plan_hyps = _adopt_candidates(raw_plan_hyps, grounding["hypotheses"])
         state.hypotheses = _normalize_hypotheses(raw_plan_hyps, "plan", {}, set(state.evidence))
         _emit(on_event, {"type": "hypotheses", "stage": "plan", "hypotheses": state.hypotheses})
         messages.append({"role": "user", "content": _PLAN_TO_ACT_NUDGE})
@@ -257,7 +499,7 @@ def run_agent(
             response = client.messages.create(
                 model=model,
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=_SYSTEM_PROMPT_BLOCKS,
                 messages=messages,
                 **({"tools": tools} if tools else {}),
             )
@@ -275,38 +517,70 @@ def run_agent(
                     continue
                 break
 
-            tool_results = []
-            for block in response.content:
-                if getattr(block, "type", None) != "tool_use":
-                    continue
-                if should_cancel and should_cancel():
-                    state.cancelled = True
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": "Run cancelled by the user; call skipped.",
-                        }
-                    )
-                    continue
-                if state.budget_exceeded():
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": "Tool budget exceeded for this run; call skipped.",
-                        }
-                    )
-                    continue
+            tool_use_blocks = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
 
+            # Cancel/budget are evaluated once for the whole batch rather than
+            # per block: the calls below run concurrently, so there is no
+            # meaningful "already dispatched vs. not yet" boundary mid-batch
+            # to check between them the way there was in sequential dispatch.
+            cancelled_now = bool(should_cancel and should_cancel())
+            if cancelled_now:
+                state.cancelled = True
+            budget_exhausted = state.budget_exceeded()
+            remaining_budget = max(0, state.max_tool_calls - state.tool_calls_made)
+
+            to_run: list[int] = []
+            skip_reason: dict[int, str] = {}
+            for i, block in enumerate(tool_use_blocks):
+                if cancelled_now:
+                    skip_reason[i] = "Run cancelled by the user; call skipped."
+                elif budget_exhausted or len(to_run) >= remaining_budget:
+                    skip_reason[i] = "Tool budget exceeded for this run; call skipped."
+                else:
+                    to_run.append(i)
+
+            # Announce every call that will actually run, in original order,
+            # before dispatching — the step numbers assigned here are exactly
+            # the trace positions they'll land on below (trace insertion
+            # happens in this same order), so tool_call/tool_result SSE
+            # events always agree on `step` regardless of completion order.
+            base_step = len(state.trace)
+            for position, i in enumerate(to_run):
+                block = tool_use_blocks[i]
                 _emit(
                     on_event,
-                    {"type": "tool_call", "tool": block.name, "args": block.input, "step": state.tool_calls_made + 1},
+                    {"type": "tool_call", "tool": block.name, "args": block.input, "step": base_step + 1 + position},
                 )
-                if block.name == "amass" and state.amass_credits_before is None:
-                    state.amass_credits_before = amass_tool.get_credits()
-                result = run_tool(block.name, block.input, enabled_names=state.enabled_tools)
+                if block.name == "amass":
+                    _resolve_amass_credits_before(state, amass_credits_thread, amass_credits_box)
 
+            # Independent tool calls requested in one turn are run side by
+            # side instead of one after another — this is the same reasoning
+            # (and the same ThreadPoolExecutor pattern) already used for
+            # grounding link verification, backend/grounding/premises.py.
+            # Results are gathered back in original block order below, so the
+            # trace/evidence/report content is identical to running them
+            # sequentially; only the wall-clock time changes (bounded by the
+            # slowest call in the batch instead of their sum).
+            run_results: dict[int, dict] = {}
+            if to_run:
+                with ThreadPoolExecutor(max_workers=len(to_run)) as pool:
+                    futures = {
+                        pool.submit(
+                            run_tool, tool_use_blocks[i].name, tool_use_blocks[i].input, enabled_names=state.enabled_tools
+                        ): i
+                        for i in to_run
+                    }
+                    for future, i in futures.items():
+                        run_results[i] = future.result()
+
+            tool_results = []
+            for i, block in enumerate(tool_use_blocks):
+                if i in skip_reason:
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": skip_reason[i]})
+                    continue
+
+                result = run_results[i]
                 for item in result.get("items", []):
                     state.add_evidence(
                         item["id"],
@@ -325,7 +599,7 @@ def run_agent(
                     {
                         "type": "tool_result",
                         "tool": block.name,
-                        "step": state.tool_calls_made,
+                        "step": len(state.trace),
                         "mock": result.get("mock", False),
                         "error": result.get("error"),
                         "summary": result.get("summary", ""),
@@ -339,12 +613,22 @@ def run_agent(
 
                 tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content_text})
 
+            if tool_results:
+                if last_cache_marker is not None:
+                    last_cache_marker.pop("cache_control", None)
+                tool_results[-1]["cache_control"] = {"type": "ephemeral"}
+                last_cache_marker = tool_results[-1]
+
             messages.append({"role": "user", "content": tool_results})
 
         # --- REVISE ---
-        _emit(on_event, {"type": "phase", "phase": "revise"})
+        revise_detail = {"hypotheses": len(state.hypotheses), "evidence": len(state.evidence), "tool_calls": state.tool_calls_made}
+        _emit(on_event, {"type": "phase", "phase": "revise", "detail": revise_detail})
         messages.append({"role": "user", "content": REVISE_PROMPT})
-        revise_resp = client.messages.create(model=model, max_tokens=2048, system=SYSTEM_PROMPT, messages=messages)
+        revise_resp = _stream_message(
+            client, on_event, "revise", revise_detail,
+            model=model, max_tokens=2048, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
+        )
         state.record_anthropic_usage(revise_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(revise_resp.content)})
         revise_text, raw_revise_hyps = _extract_hypotheses(_text_of(revise_resp.content))
@@ -358,14 +642,18 @@ def run_agent(
         _emit(on_event, {"type": "hypotheses", "stage": "revise", "hypotheses": state.hypotheses})
 
         # --- REPORT ---
-        _emit(on_event, {"type": "phase", "phase": "report"})
+        report_detail = {"sections_total": len(REPORT_SECTIONS), "evidence": len(state.evidence), "hypotheses": len(state.hypotheses)}
+        _emit(on_event, {"type": "phase", "phase": "report", "detail": report_detail})
         report_instructions = final_report_prompt(state.citation_index())
         if state.cancelled:
             report_instructions = CANCELLED_RUN_NOTICE + "\n\n" + report_instructions
         elif state.partial:
             report_instructions = PARTIAL_RUN_NOTICE + "\n\n" + report_instructions
         messages.append({"role": "user", "content": report_instructions})
-        report_resp = client.messages.create(model=model, max_tokens=8192, system=SYSTEM_PROMPT, messages=messages)
+        report_resp = _stream_message(
+            client, on_event, "report", report_detail,
+            model=model, max_tokens=8192, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
+        )
         state.record_anthropic_usage(report_resp)
         report_text, raw_final_hyps = _extract_hypotheses(_text_of(report_resp.content))
         normalized_final = _normalize_hypotheses(

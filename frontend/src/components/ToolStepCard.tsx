@@ -1,6 +1,8 @@
 import { ChevronRightIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { WaitingDots } from "@/components/WaitingDots"
+import { useElapsedSeconds } from "@/hooks/useElapsedSeconds"
 import { humanizeError } from "@/lib/humanizeError"
 import { parseSummaryLines } from "@/lib/parseSummary"
 import { toolLabel } from "@/lib/toolLabels"
@@ -15,10 +17,18 @@ export interface StepData {
     summary: string
   }
   usage?: { prompt_tokens: number; completion_tokens: number } | null
+  /** ms timestamp of when this step was first seen, for the in-flight
+   * elapsed-time ticker below — set once in the runs store (runsStore.ts). */
+  startedAt?: number
 }
 
 const LIVE_BADGE = "border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/40 dark:text-green-300"
 const MOCK_BADGE = "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+const COMPUTE_BADGE = "border-violet-300 bg-violet-50 text-violet-700 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300"
+
+// The one "real computed result" step (CLAUDE.md) — worth a visibly
+// different wait treatment from an ordinary evidence-gathering search.
+const COMPUTE_TOOLS = new Set(["extract_genes", "run_enrichment"])
 
 function ResultBody({ summary }: { summary: string }) {
   const lines = parseSummaryLines(summary)
@@ -37,6 +47,9 @@ function ResultBody({ summary }: { summary: string }) {
 }
 
 export function ToolStepCard({ step }: { step: StepData }) {
+  const isCompute = COMPUTE_TOOLS.has(step.tool)
+  const running = !step.result
+  const elapsed = useElapsedSeconds(step.startedAt, running)
   const preview = step.result
     ? (parseSummaryLines(step.result.summary)?.[0]?.text ?? step.result.summary).slice(0, 90)
     : null
@@ -52,8 +65,10 @@ export function ToolStepCard({ step }: { step: StepData }) {
             {step.result.mock ? "mock" : "live"}
           </Badge>
         ) : (
-          <Badge variant="outline" className="shrink-0 text-[10px] animate-pulse">
-            running
+          <Badge variant="outline" className={`shrink-0 gap-1 text-[10px] ${isCompute ? COMPUTE_BADGE : ""}`}>
+            <WaitingDots />
+            {isCompute ? "running analysis" : "running"}
+            {elapsed > 0 && ` · ${elapsed}s`}
           </Badge>
         )}
         {preview && <span className="truncate text-muted-foreground text-xs">{preview}</span>}
@@ -78,7 +93,10 @@ export function ToolStepCard({ step }: { step: StepData }) {
             )}
           </>
         ) : (
-          <p className="text-muted-foreground italic text-xs">waiting for result…</p>
+          <p className="flex items-center gap-1.5 text-muted-foreground italic text-xs">
+            <WaitingDots />
+            {isCompute ? "running the computational analysis…" : "waiting for result…"}
+          </p>
         )}
 
         {step.usage && (

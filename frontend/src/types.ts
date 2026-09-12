@@ -4,6 +4,47 @@ export interface ToolInfo {
   enabled: boolean
 }
 
+export interface AdminKeyInfo {
+  name: string
+  masked: string | null
+  source: "override" | "base" | "unset"
+}
+
+export interface AdminUsageSnapshot {
+  amass: { rate_configured: boolean; remaining_credits?: number; note?: string }
+  anthropic: { rate_configured: boolean; total_usd_last_7d?: number; daily?: Array<{ starting_at: string; usd: number }>; note?: string }
+  tavily: { rate_configured: boolean; usd: number | null; calls: number; source: string }
+  nebius: { rate_configured: boolean; usd: number | null; calls: number; source: string }
+  runs_counted: number
+}
+
+export type AdminUsageSource = "local_reports" | "anthropic_usage_api"
+
+export interface AdminUsageDayPoint {
+  date: string
+  runs: number
+  anthropic: { usd: number | null; rate_configured: boolean; source: AdminUsageSource }
+  nebius: { usd: number | null; rate_configured: boolean; source: AdminUsageSource }
+  tavily: { usd: number | null; rate_configured: boolean; source: AdminUsageSource }
+  amass: { credits_used: number }
+}
+
+export interface AdminUsageHistory {
+  granularity: "day" | "hour"
+  days: number | null
+  hours: number | null
+  start_date: string
+  end_date: string
+  series: AdminUsageDayPoint[]
+  totals: {
+    anthropic_usd: number | null
+    nebius_usd: number | null
+    tavily_usd: number | null
+    amass_credits_used: number
+    runs: number
+  }
+}
+
 export interface EvidenceItem {
   id: string
   source: string
@@ -65,6 +106,88 @@ export interface RankedHypothesis {
 
 export type HypothesisStage = "plan" | "revise" | "final"
 
+export interface GroundingTriple {
+  subject: string
+  verb: string
+  object: string
+}
+
+export interface GroundingPremise extends GroundingTriple {
+  statement: string
+  status: "ESTABLISHED" | "CONTESTED" | "UNVERIFIED"
+  evidence: Array<{
+    amass_id: string
+    pmid: string | null
+    nct_id: string | null
+    url: string | null
+    how: string
+  }>
+  absence_checked: string | null
+  derived_from: string
+}
+
+export interface GroundingHypothesis extends GroundingTriple {
+  id: string
+  statement: string
+  targets: string
+  intervention: string
+  readout: string
+  model_system: string
+  falsification?: string
+  rationale: string
+  supported_by?: string[]
+  conflicts_with?: string[]
+  missing?: string | null
+  dropped?: string | null
+  story?: string
+}
+
+export type RunMode = "fast" | "normal"
+
+/** About once a second while PLAN / REVISE / REPORT stream their single long reply. */
+export interface ProgressEvent {
+  type: "progress"
+  phase: string
+  chars: number
+  section?: string | null
+  sections_done?: number
+  sections_total?: number
+  hypotheses?: number
+  evidence?: number
+  candidates?: number
+  tool_calls?: number
+}
+
+/** Fired as each grounding stage lands, before the full `grounding` event. */
+export interface GroundingStepEvent {
+  type: "grounding_step"
+  stage: "L0" | "L1" | "L2" | "L4"
+  coherent?: boolean
+  why?: string
+  triples?: GroundingTriple[]
+  destination?: string
+  links?: GroundingTriple[]
+  cut?: number
+  link?: GroundingTriple
+  status?: GroundingPremise["status"]
+  kept?: number
+  rejected?: number
+}
+
+export interface GroundingEvent {
+  type: "grounding"
+  status: "complete" | "skipped" | "failed"
+  mode?: RunMode
+  coherent: boolean | null
+  why: string
+  triples: GroundingTriple[]
+  destination?: string
+  premises: GroundingPremise[]
+  knowledge_graph: string
+  hypotheses: GroundingHypothesis[]
+  rejected?: GroundingHypothesis[]
+}
+
 export interface EvaluationFinding {
   criterion: string
   problem: string
@@ -108,7 +231,10 @@ export interface EvaluationResult {
 
 export type SseEvent =
   | { type: "start"; run_id: string; question: string }
-  | { type: "phase"; phase: string }
+  | { type: "phase"; phase: string; detail?: Record<string, number | string> }
+  | ProgressEvent
+  | GroundingStepEvent
+  | GroundingEvent
   | { type: "assistant_text"; text: string }
   | { type: "tool_call"; tool: string; args: Record<string, unknown>; step: number }
   | {
@@ -146,5 +272,14 @@ export interface RunRecord {
   cost?: CostSummary
   evidence?: Record<string, EvidenceItem>
   hypotheses?: RankedHypothesis[]
+  grounding?: GroundingEvent
+  groundingSteps?: GroundingStepEvent[]
+  phase?: string
+  phaseStartedAt?: number
+  /** ms timestamp each tool_call step was first seen, keyed by step number —
+   * backs the per-step elapsed-time ticker in ToolStepCard. */
+  toolStepStartedAt?: Record<number, number>
+  progress?: ProgressEvent
+  mode?: RunMode
   evaluations?: EvaluationResult[]
 }

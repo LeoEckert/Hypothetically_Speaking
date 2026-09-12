@@ -2,7 +2,7 @@
 // configuration — set VITE_API_BASE_URL as a project env var to override
 // this (e.g. after moving the backend to a new host), no code change needed
 // either way since the env var always takes precedence when set.
-import type { EvaluationResult } from "@/types"
+import type { AdminKeyInfo, AdminUsageHistory, AdminUsageSnapshot, EvaluationResult } from "@/types"
 
 const PROD_API_BASE_FALLBACK = "https://api-185-175-110-142.sslip.io"
 
@@ -38,12 +38,13 @@ export async function setToolEnabled(name: string, enabled: boolean) {
 
 export async function startRun(
   question: string,
-  maxToolCalls?: number
+  maxToolCalls?: number,
+  mode: "fast" | "normal" = "normal"
 ): Promise<{ run_id: string; max_tool_calls: number }> {
   const res = await fetch(`${API_BASE}/api/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, max_tool_calls: maxToolCalls }),
+    body: JSON.stringify({ question, max_tool_calls: maxToolCalls, mode }),
   })
   return res.json()
 }
@@ -67,4 +68,49 @@ export async function evaluateHypothesis(runId: string, comment: string): Promis
     throw new Error(body.detail || `evaluate failed (${res.status})`)
   }
   return res.json()
+}
+
+function adminHeaders(token: string): HeadersInit {
+  return { "Content-Type": "application/json", "X-Admin-Token": token }
+}
+
+async function adminJson<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers: adminHeaders(token) })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `admin request failed (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function fetchAdminUsage(token: string): Promise<AdminUsageSnapshot> {
+  return adminJson<AdminUsageSnapshot>("/api/admin/usage", token)
+}
+
+export async function fetchAdminUsageHistory(
+  token: string,
+  opts: { granularity?: "day" | "hour"; days?: number; hours?: number } = {}
+): Promise<AdminUsageHistory> {
+  const { granularity = "day", days = 30, hours = 24 } = opts
+  const query = granularity === "hour" ? `granularity=hour&hours=${hours}` : `granularity=day&days=${days}`
+  return adminJson<AdminUsageHistory>(`/api/admin/usage/history?${query}`, token)
+}
+
+export async function fetchAdminKeys(token: string): Promise<AdminKeyInfo[]> {
+  return adminJson<AdminKeyInfo[]>("/api/admin/keys", token)
+}
+
+export async function rotateAdminKey(
+  token: string,
+  name: string,
+  value: string
+): Promise<{ name: string; updated: boolean; masked: string }> {
+  return adminJson(`/api/admin/keys/${encodeURIComponent(name)}`, token, {
+    method: "POST",
+    body: JSON.stringify({ value }),
+  })
+}
+
+export async function rotateAdminToken(token: string): Promise<{ token: string }> {
+  return adminJson("/api/admin/token/rotate", token, { method: "POST" })
 }

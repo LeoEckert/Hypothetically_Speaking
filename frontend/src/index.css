@@ -48,6 +48,13 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
+
+  /* Categorical palette slots 1/2/3/4 (dataviz skill, references/palette.md)
+     for the admin usage-history chart — fixed order, never reassigned. */
+  --series-anthropic: #2a78d6;
+  --series-nebius: #eb6834;
+  --series-tavily: #1baf7a;
+  --series-credits: #eda100;
 }
 
 .dark {
@@ -69,6 +76,11 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+
+  --series-anthropic: #3987e5;
+  --series-nebius: #d95926;
+  --series-tavily: #199e70;
+  --series-credits: #c98500;
 }
 
 @layer base {
