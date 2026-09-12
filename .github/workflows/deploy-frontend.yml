@@ -1,0 +1,33 @@
+name: Deploy frontend to Vercel
+
+# Vercel's native git integration is intentionally disconnected for this
+# project (see docs/DEPLOY.md) to work around a Hobby-plan limitation: any
+# push by a non-owner GitHub identity makes the linked GitHub App file a
+# "request to join the team", which Hobby cannot resolve and which blocks
+# ALL deploys until resolved. This workflow deploys via the Vercel CLI with
+# a personal access token instead — that path checks the token's own
+# permissions on the project, not the pushing GitHub identity, so it isn't
+# subject to that restriction.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Deploy to Vercel (production)
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes

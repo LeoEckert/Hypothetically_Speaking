@@ -1,11 +1,12 @@
 name: Deploy backend to Nebius VM
 
-# Frontend deploys automatically via Vercel's git integration (no workflow
-# needed here). This workflow only handles the backend, which lives on a
-# plain VM with no platform-native CI/CD of its own.
+# Frontend deploys separately via deploy-frontend.yml (Vercel CLI/token,
+# not git integration — see docs/DEPLOY.md). This workflow only handles
+# the backend, which lives on a plain VM with no platform-native CI/CD of
+# its own.
 on:
   push:
-    branches: [claude/gracious-curie-lkjlq1]
+    branches: [main]
   workflow_dispatch: {}
 
 jobs:
