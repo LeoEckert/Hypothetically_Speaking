@@ -4,7 +4,7 @@ import { EvidencePanel } from "@/components/EvidencePanel"
 import { HypothesisList } from "@/components/HypothesisCard"
 import { ReportView } from "@/components/ReportView"
 import { TraceTimeline } from "@/components/TraceTimeline"
-import type { CostSummary, EvaluationResult, EvidenceItem, RankedHypothesis, RunRecord } from "@/types"
+import type { CostSummary, EvidenceItem, RankedHypothesis, RunRecord } from "@/types"
 
 export function ResultsView({
   run,
@@ -12,19 +12,19 @@ export function ResultsView({
   evidence,
   hypotheses,
   cost,
-  evaluations,
   onIterate,
-  onEvaluate,
+  onOpenDetails,
 }: {
   run: RunRecord
   report: string
   evidence: Record<string, EvidenceItem>
   hypotheses: RankedHypothesis[]
   cost: CostSummary
-  evaluations?: EvaluationResult[]
   onIterate: (seedQuestion: string) => void
-  onEvaluate?: (comment: string) => Promise<void>
+  onOpenDetails?: () => void
 }) {
+  const hasSelected = hypotheses.some((h) => h.selected)
+
   return (
     <div className="mt-4 space-y-4">
       {hypotheses.length > 0 && (
@@ -35,13 +35,14 @@ export function ResultsView({
             evidence={evidence}
             onIterate={onIterate}
             autoExpandSelected
-            evaluations={evaluations}
-            onEvaluate={onEvaluate}
+            onOpenDetails={onOpenDetails}
           />
         </div>
       )}
 
-      <ReportView report={report} evidence={evidence} />
+      {/* A run with no selected hypothesis (error/empty run) has no details
+          view to send the report to — show it inline so it's never hidden. */}
+      {!hasSelected && <ReportView report={report} evidence={evidence} />}
 
       <Accordion type="multiple" className="border rounded-xl bg-card px-4">
         <AccordionItem value="evidence">

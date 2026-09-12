@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { ComposeBox, type ComposeVariant } from "@/components/ComposeBox"
+import { HypothesisDetailsView } from "@/components/HypothesisDetailsView"
 import { ProgressView } from "@/components/ProgressView"
 import { ResultsView } from "@/components/ResultsView"
 import { Sidebar } from "@/components/Sidebar"
@@ -18,6 +19,7 @@ function App() {
 
   const [liveRunId, setLiveRunId] = useState<string | null>(currentLiveRunId())
   const [viewedRunId, setViewedRunId] = useState<string | null>(null)
+  const [showDetails, setShowDetails] = useState(false)
   const [question, setQuestion] = useState("")
   const [maxToolCalls, setMaxToolCalls] = useState(30)
   const prefilledRef = useRef(false)
@@ -49,9 +51,11 @@ function App() {
   const doneEvent = viewedRun?.events.find(
     (e): e is Extract<SseEvent, { type: "done" }> => e.type === "done"
   )
+  const selectedHypothesis = doneEvent?.hypotheses?.find((h) => h.selected)
 
   function handleNewRequest() {
     setViewedRunId(null)
+    setShowDetails(false)
     setQuestion(config?.dev_mode ? config.demo_question : "")
   }
 
@@ -59,6 +63,7 @@ function App() {
     const run = getRun(id)
     if (!run) return
     setViewedRunId(id)
+    setShowDetails(false)
     setQuestion(run.question)
   }
 
@@ -75,6 +80,7 @@ function App() {
     createRun(run_id, trimmed, forkedFrom)
     setLiveRunId(run_id)
     setViewedRunId(run_id)
+    setShowDetails(false)
     ensureStream(run_id)
   }
 
@@ -153,16 +159,25 @@ function App() {
                 variant={composeVariant}
               />
 
-              {doneEvent && viewedRun ? (
+              {showDetails && doneEvent && viewedRun && selectedHypothesis ? (
+                <HypothesisDetailsView
+                  hypothesis={selectedHypothesis}
+                  report={doneEvent.report}
+                  evidence={doneEvent.evidence}
+                  evaluations={viewedRun.evaluations}
+                  onIterate={handleIterate}
+                  onEvaluate={handleEvaluate}
+                  onBack={() => setShowDetails(false)}
+                />
+              ) : doneEvent && viewedRun ? (
                 <ResultsView
                   run={viewedRun}
                   report={doneEvent.report}
                   evidence={doneEvent.evidence}
                   hypotheses={doneEvent.hypotheses ?? []}
                   cost={doneEvent.cost}
-                  evaluations={viewedRun.evaluations}
                   onIterate={handleIterate}
-                  onEvaluate={handleEvaluate}
+                  onOpenDetails={() => setShowDetails(true)}
                 />
               ) : (
                 viewedRun && <ProgressView run={viewedRun} />

@@ -45,7 +45,7 @@ export function HistoryList({
                 run.id === viewedRunId ? "border-primary bg-accent/50 shadow-sm" : ""
               }`}
             >
-              <div className="truncate font-medium">{run.question}</div>
+              <div className="line-clamp-2 font-medium">{run.question}</div>
               <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
                 <Badge variant="outline" className={`text-[10px] ${STATUS_STYLES[status]}`}>
                   {status}

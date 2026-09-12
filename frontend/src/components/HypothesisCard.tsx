@@ -1,11 +1,9 @@
 import { useState } from "react"
-import { ChevronRightIcon, SparklesIcon } from "lucide-react"
+import { ChevronRightIcon, FileTextIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
-import { EvaluationPanel } from "@/components/EvaluationPanel"
 import { withCitations } from "@/lib/citations"
-import type { EvaluationResult, EvidenceItem, RankedHypothesis } from "@/types"
+import type { EvidenceItem, RankedHypothesis } from "@/types"
 
 const CONFIDENCE_STYLES: Record<string, string> = {
   high: "border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/40 dark:text-green-300",
@@ -60,75 +58,20 @@ function EvidenceLinks({
   )
 }
 
-function EvaluateBlock({
-  evidence,
-  evaluations,
-  onEvaluate,
-}: {
-  evidence: Record<string, EvidenceItem>
-  evaluations: EvaluationResult[]
-  onEvaluate: (comment: string) => Promise<void>
-}) {
-  const [comment, setComment] = useState("")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function handleClick() {
-    setBusy(true)
-    setError(null)
-    try {
-      await onEvaluate(comment)
-      setComment("")
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Evaluation failed.")
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="space-y-2 border-t pt-3">
-      <p className="text-xs font-semibold text-muted-foreground">Evaluate with AI</p>
-      <Textarea
-        value={comment}
-        onChange={(e) => setComment(e.target.value)}
-        placeholder="Optional note for the reviewer — e.g. a concern, a paper you know of, what to double-check…"
-        className="text-sm"
-        rows={2}
-      />
-      <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={handleClick} disabled={busy}>
-          <SparklesIcon className="size-3.5" />
-          {busy ? "Evaluating…" : "Evaluate with AI"}
-        </Button>
-        {error && <span className="text-xs text-destructive">{error}</span>}
-      </div>
-      {evaluations
-        .slice()
-        .reverse()
-        .map((ev, i) => (
-          <EvaluationPanel key={`${ev.created_at}-${i}`} evaluation={ev} evidence={evidence} />
-        ))}
-    </div>
-  )
-}
-
 function HypothesisCard({
   hypothesis,
   evidence,
   expanded,
   onToggle,
   onIterate,
-  evaluations,
-  onEvaluate,
+  onOpenDetails,
 }: {
   hypothesis: RankedHypothesis
   evidence: Record<string, EvidenceItem>
   expanded: boolean
   onToggle: () => void
   onIterate?: (seedQuestion: string) => void
-  evaluations?: EvaluationResult[]
-  onEvaluate?: (comment: string) => Promise<void>
+  onOpenDetails?: () => void
 }) {
   const h = hypothesis
   return (
@@ -176,13 +119,18 @@ function HypothesisCard({
               />
             </div>
           </div>
-          {onIterate && h.seed_question && (
-            <Button size="sm" variant="outline" onClick={() => onIterate(h.seed_question)}>
-              Iterate on this hypothesis
+          {h.selected && onOpenDetails ? (
+            <Button size="sm" variant="outline" onClick={onOpenDetails}>
+              <FileTextIcon className="size-3.5" />
+              See full report
             </Button>
-          )}
-          {h.selected && onEvaluate && (
-            <EvaluateBlock evidence={evidence} evaluations={evaluations ?? []} onEvaluate={onEvaluate} />
+          ) : (
+            onIterate &&
+            h.seed_question && (
+              <Button size="sm" variant="outline" onClick={() => onIterate(h.seed_question)}>
+                Iterate on this hypothesis
+              </Button>
+            )
           )}
         </div>
       )}
@@ -195,15 +143,13 @@ export function HypothesisList({
   evidence,
   onIterate,
   autoExpandSelected = false,
-  evaluations,
-  onEvaluate,
+  onOpenDetails,
 }: {
   hypotheses: RankedHypothesis[]
   evidence: Record<string, EvidenceItem>
   onIterate?: (seedQuestion: string) => void
   autoExpandSelected?: boolean
-  evaluations?: EvaluationResult[]
-  onEvaluate?: (comment: string) => Promise<void>
+  onOpenDetails?: () => void
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(() =>
     autoExpandSelected ? hypotheses.find((h) => h.selected)?.id ?? hypotheses[0]?.id ?? null : null
@@ -221,8 +167,7 @@ export function HypothesisList({
           expanded={expandedId === h.id}
           onToggle={() => setExpandedId((cur) => (cur === h.id ? null : h.id))}
           onIterate={onIterate}
-          evaluations={evaluations}
-          onEvaluate={onEvaluate}
+          onOpenDetails={h.selected ? onOpenDetails : undefined}
         />
       ))}
     </div>
