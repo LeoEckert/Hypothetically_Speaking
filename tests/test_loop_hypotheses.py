@@ -191,3 +191,12 @@ def test_normalize_revise_matches_ids_case_insensitively():
     ]
     normalized = _normalize_hypotheses(raw, "revise", known, set())
     assert [(h["id"], h["confidence"], h["selected"]) for h in normalized] == [("h1", "high", True), ("h2", "low", False)]
+
+
+def test_plan_message_asks_for_exactly_the_grounded_candidates():
+    text = _plan_message("Candidate hypotheses ...", 2)
+    assert "propose exactly 2 hypotheses: the grounded candidates listed above" in text
+    assert "2-4" not in text
+    one = _plan_message("...", 1)
+    assert "propose exactly 1 hypothesis: the grounded candidate listed above" in one
+    assert "2-4 concrete" in _plan_message("no candidates", 0)

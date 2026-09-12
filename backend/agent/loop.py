@@ -127,12 +127,23 @@ def _grounding_text(payload: dict) -> str:
     )
 
 
-def _plan_message(grounding_text: str) -> str:
+def _plan_message(grounding_text: str, n_candidates: int = 0) -> str:
+    """PLAN's prompt asks for 2-4 hypotheses; when the grounding already
+    produced candidates, PLAN's job is to adopt exactly those — padding the
+    list with its own would reintroduce ungrounded, compound hypotheses."""
+    prompt = plan_prompt()
+    if n_candidates:
+        prompt = prompt.replace(
+            "propose 2-4 concrete, testable hypotheses\nthat could answer the research question, each grounded in a plausible\nageing-biology mechanism.",
+            f"propose exactly {n_candidates} hypothes{'is' if n_candidates == 1 else 'es'}: the grounded "
+            f"candidate{'' if n_candidates == 1 else 's'} listed above, statement{'' if n_candidates == 1 else 's'} "
+            "kept as written. Do not add hypotheses of your own.",
+        )
     return (
         "Grounding context from a prior extraction step. Use this when "
         "proposing hypotheses; do not treat it as already-verified evidence.\n\n"
         f"{grounding_text}\n\n"
-        + plan_prompt()
+        + prompt
     )
 
 
@@ -335,7 +346,7 @@ def run_agent(
     try:
         # --- PLAN ---
         _emit(on_event, {"type": "phase", "phase": "plan"})
-        messages.append({"role": "user", "content": _plan_message(grounding_text)})
+        messages.append({"role": "user", "content": _plan_message(grounding_text, len(grounding.get("hypotheses") or []))})
         plan_resp = client.messages.create(model=model, max_tokens=1536, system=SYSTEM_PROMPT, messages=messages)
         state.record_anthropic_usage(plan_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})

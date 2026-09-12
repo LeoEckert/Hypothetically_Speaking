@@ -98,12 +98,13 @@ def activate(link: Triple, sources: list, verifier, second_look: bool = True) ->
         rounds = 2
         if fresh:
             verification = verifier.verify(link, list(seen.values()))
+    searches = f"{rounds} search{'es' if rounds > 1 else ''}"
     if verification is None:
-        return PremiseStatus.UNVERIFIED, [], f"{SOURCES}, 0 records over {rounds} searches", "no literature retrieved", None
+        return PremiseStatus.UNVERIFIED, [], f"{SOURCES}, 0 records over {searches}", "no literature retrieved", None
     digest = getattr(verification, "prompt_hash", None)
     if verification.status is PremiseStatus.UNVERIFIED:
         # Topical papers are not evidence for the link; the recorded query is.
-        absence = f"{SOURCES}, {len(seen)} records over {rounds} searches, none verify the link"
+        absence = f"{SOURCES}, {len(seen)} records over {searches}, none verify the link"
         return PremiseStatus.UNVERIFIED, [], absence, verification.why, digest
     return verification.status, verification.evidence, None, verification.why, digest
 
