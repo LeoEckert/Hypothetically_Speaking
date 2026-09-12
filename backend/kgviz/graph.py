@@ -16,6 +16,10 @@ WALKS = ("bfs", "dfs")
 
 
 def _open(path: Path | str) -> sqlite3.Connection:
+    if not Path(path).exists():
+        # A fresh deployment has no knowledge base until the first run grounds a
+        # question; that is "nothing yet", not a server error.
+        raise ValueError(f"no knowledge base at {path} yet — run a question first")
     uri = f"file:{Path(path).resolve().as_posix()}?mode=ro"
     connection = sqlite3.connect(uri, uri=True)
     connection.row_factory = sqlite3.Row

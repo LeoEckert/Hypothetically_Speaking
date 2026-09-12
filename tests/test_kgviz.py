@@ -99,3 +99,11 @@ def test_dfs_visit_order_differs_but_set_matches_bfs():
     dfs = walk(graph, seed, mode="dfs", depth=3)
     assert {item["id"] for item in bfs["visited"]} == {item["id"] for item in dfs["visited"]}
     assert [item["id"] for item in bfs["visited"]] != [item["id"] for item in dfs["visited"]]
+
+
+def test_missing_knowledge_base_is_a_value_error_not_a_crash(tmp_path):
+    import pytest
+    from backend.kgviz.graph import snapshot
+
+    with pytest.raises(ValueError, match="no knowledge base"):
+        snapshot(path=tmp_path / "absent.db")
