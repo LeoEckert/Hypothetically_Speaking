@@ -1,4 +1,4 @@
-import type { RunRecord, SseEvent } from "@/types"
+import type { EvaluationResult, RunRecord, SseEvent } from "@/types"
 
 const STORAGE_KEY = "hs_history_v3"
 const PREV_STORAGE_KEY = "hs_history_v2"
@@ -110,6 +110,16 @@ export function appendEvent(runId: string, event: SseEvent) {
     // follows it in this codebase's loop (it always finalizes) — don't
     // downgrade status here, `done` is authoritative for the final state.
   }
+  runs = [...runs.slice(0, idx), updated, ...runs.slice(idx + 1)]
+  save()
+  notify()
+}
+
+export function appendEvaluation(runId: string, evaluation: EvaluationResult) {
+  const idx = runs.findIndex((r) => r.id === runId)
+  if (idx === -1) return
+  const run = runs[idx]
+  const updated: RunRecord = { ...run, evaluations: [...(run.evaluations ?? []), evaluation] }
   runs = [...runs.slice(0, idx), updated, ...runs.slice(idx + 1)]
   save()
   notify()

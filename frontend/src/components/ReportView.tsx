@@ -1,36 +1,7 @@
-import type { JSX, ReactNode } from "react"
-import ReactMarkdown, { type Components } from "react-markdown"
+import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { withCitations } from "@/lib/citations"
+import { buildComponents } from "@/lib/markdownComponents"
 import type { EvidenceItem } from "@/types"
-
-function buildComponents(evidence: Record<string, EvidenceItem>): Components {
-  let counter = 0
-  const cited =
-    (Tag: keyof JSX.IntrinsicElements, className?: string) =>
-    ({ children }: { children?: ReactNode }) => {
-      const key = `md-${counter++}`
-      return <Tag className={className}>{withCitations(children, evidence, key)}</Tag>
-    }
-
-  return {
-    h2: cited("h2", "text-lg font-semibold mt-5 mb-1.5 pb-1 border-b first:mt-0"),
-    h3: cited("h3", "text-base font-semibold mt-4 mb-1"),
-    p: cited("p", "text-sm leading-relaxed mb-2"),
-    li: cited("li", "text-sm leading-relaxed"),
-    strong: cited("strong", "font-semibold"),
-    em: cited("em", "italic"),
-    ul: ({ children }) => <ul className="list-disc pl-5 space-y-0.5 mb-2">{children}</ul>,
-    ol: ({ children }) => <ol className="list-decimal pl-5 space-y-0.5 mb-2">{children}</ol>,
-    blockquote: ({ children }) => (
-      <blockquote className="border-l-2 border-muted-foreground/30 pl-3 italic text-muted-foreground">
-        {children}
-      </blockquote>
-    ),
-    code: ({ children }) => <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">{children}</code>,
-    hr: () => <hr className="my-3 border-border" />,
-  }
-}
 
 export function ReportView({
   report,

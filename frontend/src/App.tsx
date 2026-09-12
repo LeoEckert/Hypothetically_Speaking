@@ -6,10 +6,10 @@ import { Sidebar } from "@/components/Sidebar"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useConfig } from "@/hooks/useConfig"
 import { useRunsStore } from "@/hooks/useRunsStore"
-import { cancelRun, startRun } from "@/lib/api"
+import { cancelRun, evaluateHypothesis, startRun } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
 import { currentLiveRunId, ensureStream, onStreamFinished } from "@/lib/runStream"
-import { createRun, getRun, markCancelling } from "@/store/runsStore"
+import { appendEvaluation, createRun, getRun, markCancelling } from "@/store/runsStore"
 import type { SseEvent } from "@/types"
 
 function App() {
@@ -88,6 +88,12 @@ function App() {
     setQuestion(seedQuestion)
   }
 
+  async function handleEvaluate(comment: string) {
+    if (!viewedRunId) return
+    const result = await evaluateHypothesis(viewedRunId, comment)
+    appendEvaluation(viewedRunId, result)
+  }
+
   const isViewingLive = liveRunId !== null && viewedRunId === liveRunId
   const isRunning = isViewingLive && (viewedRun?.status === "running" || viewedRun?.status === "cancelling")
   const statusText = (() => {
@@ -154,7 +160,9 @@ function App() {
                   evidence={doneEvent.evidence}
                   hypotheses={doneEvent.hypotheses ?? []}
                   cost={doneEvent.cost}
+                  evaluations={viewedRun.evaluations}
                   onIterate={handleIterate}
+                  onEvaluate={handleEvaluate}
                 />
               ) : (
                 viewedRun && <ProgressView run={viewedRun} />

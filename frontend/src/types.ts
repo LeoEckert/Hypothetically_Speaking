@@ -65,6 +65,47 @@ export interface RankedHypothesis {
 
 export type HypothesisStage = "plan" | "revise" | "final"
 
+export interface EvaluationFinding {
+  criterion: string
+  problem: string
+  why_it_matters: string
+  evidence: string
+  suggestion: string
+}
+
+export interface SectionCritique {
+  section: string
+  title: string
+  source: "human" | "llm"
+  critique: string
+  findings: EvaluationFinding[]
+}
+
+export interface ChangeLogEntry {
+  section: string
+  what_changed: string
+  why: string
+}
+
+export interface RevisedHypothesis {
+  statement: string
+  confidence: HypothesisConfidence
+  confidence_reason: string
+  sections: Record<string, string>
+  change_log: ChangeLogEntry[]
+  unresolved: string[]
+}
+
+export interface EvaluationResult {
+  hypothesis_id: string
+  comment: string
+  model: string
+  critiques: SectionCritique[]
+  revised: RevisedHypothesis
+  cost: { usd: number | null; rate_configured: boolean; input_tokens: number; output_tokens: number }
+  created_at: string
+}
+
 export type SseEvent =
   | { type: "start"; run_id: string; question: string }
   | { type: "phase"; phase: string }
@@ -105,4 +146,5 @@ export interface RunRecord {
   cost?: CostSummary
   evidence?: Record<string, EvidenceItem>
   hypotheses?: RankedHypothesis[]
+  evaluations?: EvaluationResult[]
 }

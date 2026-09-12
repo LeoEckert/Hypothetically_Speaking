@@ -4,7 +4,7 @@ import { EvidencePanel } from "@/components/EvidencePanel"
 import { HypothesisList } from "@/components/HypothesisCard"
 import { ReportView } from "@/components/ReportView"
 import { TraceTimeline } from "@/components/TraceTimeline"
-import type { CostSummary, EvidenceItem, RankedHypothesis, RunRecord } from "@/types"
+import type { CostSummary, EvaluationResult, EvidenceItem, RankedHypothesis, RunRecord } from "@/types"
 
 export function ResultsView({
   run,
@@ -12,14 +12,18 @@ export function ResultsView({
   evidence,
   hypotheses,
   cost,
+  evaluations,
   onIterate,
+  onEvaluate,
 }: {
   run: RunRecord
   report: string
   evidence: Record<string, EvidenceItem>
   hypotheses: RankedHypothesis[]
   cost: CostSummary
+  evaluations?: EvaluationResult[]
   onIterate: (seedQuestion: string) => void
+  onEvaluate?: (comment: string) => Promise<void>
 }) {
   return (
     <div className="mt-4 space-y-4">
@@ -31,6 +35,8 @@ export function ResultsView({
             evidence={evidence}
             onIterate={onIterate}
             autoExpandSelected
+            evaluations={evaluations}
+            onEvaluate={onEvaluate}
           />
         </div>
       )}
