@@ -20,6 +20,7 @@ from backend.agent.prompts import (
     REVISE_PROMPT,
     SYSTEM_PROMPT,
     final_report_prompt,
+    plan_prompt,
 )
 from backend.agent.costs import build_cost_summary
 from backend.agent.state import RunState
@@ -54,23 +55,137 @@ def _text_of(content_blocks) -> str:
 
 _HYPOTHESES_FENCE_RE = re.compile(r"```json\s*(\{.*?\"hypotheses\".*?\})\s*```", re.DOTALL)
 
+_PLAN_TO_ACT_NUDGE = (
+    "Now gather evidence for these hypotheses using the available tools."
+)
+
+_CONFIDENCE_VALUES = ("high", "medium", "low")
+
+
+def _parse_hypotheses(text: str) -> list[dict]:
+    """Pull the raw hypotheses list out of a trailing ```json fence, if
+    present and parseable. Never raises; returns [] on any failure."""
+    match = _HYPOTHESES_FENCE_RE.search(text)
+    if not match:
+        return []
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+    hyps = payload.get("hypotheses", [])
+    return hyps if isinstance(hyps, list) else []
+
 
 def _extract_hypotheses(report_text: str) -> tuple[str, list[dict]]:
     """Split a trailing ```json {"hypotheses": [...]} fence off the end of
-    the report prose. Returns (report_text_with_fence_stripped, hypotheses).
-    On any parse failure, returns the original text unchanged and an empty
-    list — never raises, never corrupts the prose report."""
+    free-text prose. The fence region is always stripped once found, even
+    if it fails to parse — a broken/dangling code block must never leak
+    into what's shown to the user."""
     match = _HYPOTHESES_FENCE_RE.search(report_text)
     if not match:
         return report_text, []
-    try:
-        payload = json.loads(match.group(1))
-        hyps = payload.get("hypotheses", [])
-        if not isinstance(hyps, list):
-            return report_text, []
-    except json.JSONDecodeError:
-        return report_text, []
-    return report_text[: match.start()].rstrip(), hyps
+    stripped = report_text[: match.start()].rstrip()
+    return stripped, _parse_hypotheses(report_text)
+
+
+def _normalize_hypotheses(
+    raw: list[dict], stage: str, known: dict[str, dict], evidence_ids: set[str]
+) -> list[dict]:
+    """Coerce a model-supplied hypotheses list into the canonical shape.
+    Never raises regardless of what the model sent.
+
+    - stage "plan" (or any stage when `known` is empty, i.e. PLAN never
+      produced anything to recover from): mints fresh stable ids h1..hN.
+    - stage "revise"/"final" with an established `known` roster: matches
+      incoming items by id against it, drops anything with an
+      unrecognized id (ids are never renumbered or invented once PLAN has
+      assigned them), dedupes, and enforces exactly one `selected`.
+    """
+    if not isinstance(raw, list):
+        return []
+
+    if stage == "plan" or not known:
+        normalized: list[dict] = []
+        seen_selected = False
+        for h in raw:
+            if not isinstance(h, dict):
+                continue
+            statement = str(h.get("statement", "")).strip()
+            if not statement:
+                continue
+            confidence = h.get("confidence")
+            if confidence not in _CONFIDENCE_VALUES:
+                confidence = None
+            ev_ids = [e for e in (h.get("evidence_ids") or []) if isinstance(e, str) and e in evidence_ids]
+            contra_ids = [
+                e for e in (h.get("contradicting_ids") or []) if isinstance(e, str) and e in evidence_ids
+            ]
+            selected = bool(h.get("selected")) and not seen_selected
+            if selected:
+                seen_selected = True
+            normalized.append(
+                {
+                    "id": f"h{len(normalized) + 1}",
+                    "rank": len(normalized) + 1,
+                    "statement": statement,
+                    "confidence": confidence,
+                    "rationale": str(h.get("rationale", "")).strip(),
+                    "selected": selected,
+                    "evidence_ids": ev_ids,
+                    "contradicting_ids": contra_ids,
+                    "seed_question": str(h.get("seed_question", "")).strip(),
+                }
+            )
+        if normalized and not seen_selected:
+            normalized[0]["selected"] = True
+        return normalized
+
+    candidates = [h for h in raw if isinstance(h, dict) and h.get("id") in known]
+
+    def _rank_key(pair: tuple[int, dict]) -> tuple[float, int]:
+        idx, h = pair
+        r = h.get("rank")
+        return (r, idx) if isinstance(r, (int, float)) else (idx + 1, idx)
+
+    ordered = sorted(enumerate(candidates), key=_rank_key)
+
+    normalized = []
+    seen_ids: set[str] = set()
+    seen_selected = False
+    for _, h in ordered:
+        hid = h["id"]
+        if hid in seen_ids:
+            continue
+        seen_ids.add(hid)
+        base = known[hid]
+        confidence = h.get("confidence")
+        if confidence not in _CONFIDENCE_VALUES:
+            confidence = None
+        ev_ids = [e for e in (h.get("evidence_ids") or []) if isinstance(e, str) and e in evidence_ids]
+        contra_ids = [
+            e for e in (h.get("contradicting_ids") or []) if isinstance(e, str) and e in evidence_ids
+        ]
+        selected = bool(h.get("selected")) and not seen_selected
+        if selected:
+            seen_selected = True
+        normalized.append(
+            {
+                "id": hid,
+                "rank": len(normalized) + 1,
+                "statement": str(h.get("statement") or base.get("statement", "")).strip(),
+                "confidence": confidence,
+                "rationale": str(h.get("rationale", "")).strip(),
+                "selected": selected,
+                "evidence_ids": ev_ids,
+                "contradicting_ids": contra_ids,
+                "seed_question": str(h.get("seed_question") or base.get("seed_question", "")).strip(),
+            }
+        )
+
+    if normalized and not seen_selected:
+        normalized[0]["selected"] = True
+
+    return normalized
 
 
 def _strip_empty_text_blocks(content_blocks):
@@ -109,11 +224,22 @@ def run_agent(
     messages: list[dict] = [{"role": "user", "content": f"Research question: {question}"}]
 
     _emit(on_event, {"type": "start", "run_id": state.run_id, "question": question})
-    _emit(on_event, {"type": "phase", "phase": "plan_and_gather"})
 
     no_tool_nudges = 0
-    hypotheses: list[dict] = []
     try:
+        # --- PLAN ---
+        _emit(on_event, {"type": "phase", "phase": "plan"})
+        messages.append({"role": "user", "content": plan_prompt()})
+        plan_resp = client.messages.create(model=model, max_tokens=1536, system=SYSTEM_PROMPT, messages=messages)
+        state.record_anthropic_usage(plan_resp)
+        messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})
+        raw_plan_hyps = _parse_hypotheses(_text_of(plan_resp.content))
+        state.hypotheses = _normalize_hypotheses(raw_plan_hyps, "plan", {}, set(state.evidence))
+        _emit(on_event, {"type": "hypotheses", "stage": "plan", "hypotheses": state.hypotheses})
+        messages.append({"role": "user", "content": _PLAN_TO_ACT_NUDGE})
+
+        _emit(on_event, {"type": "phase", "phase": "plan_and_gather"})
+
         while True:
             if should_cancel and should_cancel():
                 state.cancelled = True
@@ -178,7 +304,12 @@ def run_agent(
 
                 for item in result.get("items", []):
                     state.add_evidence(
-                        item["id"], source=block.name, url=item.get("url", ""), summary=item["summary"], raw=item.get("raw", {})
+                        item["id"],
+                        source=block.name,
+                        url=item.get("url", ""),
+                        summary=item["summary"],
+                        title=item.get("title", ""),
+                        raw=item.get("raw", {}),
                     )
                 state.record_tool_call(
                     block.name, block.input, result.get("summary", ""), result.get("mock", False), usage=result.get("usage")
@@ -211,9 +342,15 @@ def run_agent(
         revise_resp = client.messages.create(model=model, max_tokens=2048, system=SYSTEM_PROMPT, messages=messages)
         state.record_anthropic_usage(revise_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(revise_resp.content)})
-        revise_text = _text_of(revise_resp.content)
+        revise_text, raw_revise_hyps = _extract_hypotheses(_text_of(revise_resp.content))
         if revise_text.strip():
             _emit(on_event, {"type": "assistant_text", "text": revise_text})
+        normalized_revise = _normalize_hypotheses(
+            raw_revise_hyps, "revise", {h["id"]: h for h in state.hypotheses}, set(state.evidence)
+        )
+        if normalized_revise:
+            state.hypotheses = normalized_revise
+        _emit(on_event, {"type": "hypotheses", "stage": "revise", "hypotheses": state.hypotheses})
 
         # --- REPORT ---
         _emit(on_event, {"type": "phase", "phase": "report"})
@@ -223,10 +360,15 @@ def run_agent(
         elif state.partial:
             report_instructions = PARTIAL_RUN_NOTICE + "\n\n" + report_instructions
         messages.append({"role": "user", "content": report_instructions})
-        report_resp = client.messages.create(model=model, max_tokens=6144, system=SYSTEM_PROMPT, messages=messages)
+        report_resp = client.messages.create(model=model, max_tokens=8192, system=SYSTEM_PROMPT, messages=messages)
         state.record_anthropic_usage(report_resp)
-        report_text = _text_of(report_resp.content)
-        report_text, hypotheses = _extract_hypotheses(report_text)
+        report_text, raw_final_hyps = _extract_hypotheses(_text_of(report_resp.content))
+        normalized_final = _normalize_hypotheses(
+            raw_final_hyps, "final", {h["id"]: h for h in state.hypotheses}, set(state.evidence)
+        )
+        if normalized_final:
+            state.hypotheses = normalized_final
+        _emit(on_event, {"type": "hypotheses", "stage": "final", "hypotheses": state.hypotheses})
 
     except Exception as exc:
         state.partial = True
@@ -251,7 +393,7 @@ def run_agent(
         "trace": [vars(t) for t in state.trace],
         "evidence": evidence_dict,
         "cost": cost_summary,
-        "hypotheses": hypotheses,
+        "hypotheses": state.hypotheses,
     }
     _emit(
         on_event,
@@ -263,7 +405,7 @@ def run_agent(
             "run_id": state.run_id,
             "cost": cost_summary,
             "evidence": evidence_dict,
-            "hypotheses": hypotheses,
+            "hypotheses": state.hypotheses,
         },
     )
     return result

@@ -50,6 +50,7 @@ def _search_csv(path: Path, query: str, source_label: str, max_results: int) -> 
                     {
                         "id": f"HAGR:{source_label}:{key_field}:{i}",
                         "url": "https://genomics.senescence.info/",
+                        "title": f"{source_label}: {key_field}",
                         "summary": f"[{source_label}] {'; '.join(summary_bits)}",
                         "raw": row,
                     }

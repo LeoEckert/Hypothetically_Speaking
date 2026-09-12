@@ -29,6 +29,7 @@ _MOCK_ITEMS = [
     {
         "id": "S:MOCK1",
         "url": "https://example.org/mock-result",
+        "title": "[MOCK] Representative web search hit",
         "summary": "[MOCK - no TAVILY_API_KEY] Representative web search hit for query context.",
         "raw": {"mock": True},
     }
@@ -71,8 +72,9 @@ def run(args: dict) -> dict:
     items = []
     for i, r in enumerate(results, start=1):
         cid = f"S:{abs(hash(r.get('url', str(i)))) % 100000}"
-        summary = f"{r.get('title', '')} — {r.get('content', '')[:200]}"
-        items.append({"id": cid, "url": r.get("url", ""), "summary": summary, "raw": r})
+        title = r.get("title", "")
+        summary = f"{title} — {r.get('content', '')[:200]}"
+        items.append({"id": cid, "url": r.get("url", ""), "title": title, "summary": summary, "raw": r})
 
     text_summary = "\n".join(f"[{it['id']}] {it['summary']}" for it in items)
     return {"summary": text_summary or f"No Tavily results for '{query}'.", "items": items, "mock": False, "error": None}

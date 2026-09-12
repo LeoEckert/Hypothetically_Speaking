@@ -42,14 +42,15 @@ _MOCK_ITEMS = [
     {
         "id": "AMASS:MOCK1",
         "url": "https://platform.amass.tech/",
+        "title": "[MOCK] Representative Core hit",
         "summary": "[MOCK - Amass API not configured/reachable] Representative Core hit for query context.",
         "raw": {"mock": True},
     }
 ]
 
 
-def _record_summary(core: str, rec: dict) -> tuple[str, str]:
-    """Return (url, human-readable summary) for a record from the given Core."""
+def _record_summary(core: str, rec: dict) -> tuple[str, str, str]:
+    """Return (url, title, human-readable summary) for a record from the given Core."""
     if core == "biomedcore":
         title = rec.get("title") or "(untitled)"
         authors = ", ".join(rec.get("authors", [])[:3])
@@ -58,22 +59,22 @@ def _record_summary(core: str, rec: dict) -> tuple[str, str]:
         doi = rec.get("doi")
         pmid = rec.get("pmid")
         url = f"https://doi.org/{doi}" if doi else (f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "")
-        return url, f"{title} — {authors} ({journal}, {pubdate})"
+        return url, title, f"{title} — {authors} ({journal}, {pubdate})"
     if core == "trialcore":
         title = rec.get("briefTitle") or rec.get("officialTitle") or "(untitled trial)"
         status = rec.get("overallStatus") or ""
         phase = rec.get("phase") or ""
         url = rec.get("sourceUrl") or ""
-        return url, f"{title} — status: {status}{f', phase: {phase}' if phase else ''}"
+        return url, title, f"{title} — status: {status}{f', phase: {phase}' if phase else ''}"
     if core == "patentcore":
         title = rec.get("title") or "(untitled patent)"
         pub_num = rec.get("publicationNumber") or ""
         assignees = ", ".join(rec.get("assignees", []) or [])[:200]
-        return "", f"{title} ({pub_num}) — {assignees}"
+        return "", title, f"{title} ({pub_num}) — {assignees}"
     # drugcore / genecore / regulatorycore: field names not fully confirmed
     # yet against live docs — fall back to whatever name-like field exists.
     title = rec.get("name") or rec.get("title") or rec.get("preferredName") or str(rec)[:200]
-    return "", str(title)
+    return "", str(title), str(title)
 
 
 def get_credits() -> float | None:
@@ -134,8 +135,8 @@ def run(args: dict) -> dict:
     items = []
     for rec in records:
         amass_id = rec.get("amassId", "unknown")
-        url, summary = _record_summary(core, rec)
-        items.append({"id": f"AMASS:{amass_id}", "url": url, "summary": summary, "raw": rec})
+        url, title, summary = _record_summary(core, rec)
+        items.append({"id": f"AMASS:{amass_id}", "url": url, "title": title, "summary": summary, "raw": rec})
 
     text_summary = "\n".join(f"[{it['id']}] {it['summary']}" for it in items)
     return {

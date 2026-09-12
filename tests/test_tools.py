@@ -31,7 +31,7 @@ def _assert_contract(result: dict) -> None:
     assert "mock" in result and isinstance(result["mock"], bool)
     assert "error" in result
     for item in result["items"]:
-        assert {"id", "url", "summary"} <= item.keys()
+        assert {"id", "url", "title", "summary"} <= item.keys()
 
 
 def test_tavily_mock_without_key():
@@ -141,3 +141,13 @@ def test_amass_get_credits_none_when_unconfigured(monkeypatch):
     monkeypatch.delenv("AMASS_API_KEY", raising=False)
     monkeypatch.delenv("AMASS_API_URL", raising=False)
     assert amass_tool.get_credits() is None
+
+
+def test_amass_record_summary_returns_url_title_summary():
+    url, title, summary = amass_tool._record_summary(
+        "biomedcore",
+        {"title": "Sirtuins and ageing", "authors": ["A"], "journal": "J", "publicationDate": "2020", "pmid": "123"},
+    )
+    assert title == "Sirtuins and ageing"
+    assert url == "https://pubmed.ncbi.nlm.nih.gov/123/"
+    assert "Sirtuins and ageing" in summary

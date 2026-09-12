@@ -12,6 +12,7 @@ class EvidenceItem:
     source: str          # tool name that produced this, e.g. "pubmed", "open_targets"
     url: str
     summary: str
+    title: str = ""
     raw: dict = field(default_factory=dict)
 
 
@@ -39,6 +40,11 @@ class RunState:
     partial: bool = False  # set True if we hit a budget limit and force-finalized
     cancelled: bool = False  # set True if the user cancelled the run (also implies partial)
 
+    # Structured hypotheses, updated monotonically at PLAN/REVISE/REPORT —
+    # a stage overwrites this only when it produces a non-empty parse, so a
+    # malformed fence at a later stage never erases an earlier good result.
+    hypotheses: list[dict] = field(default_factory=list)
+
     # Tools allowed for this run, snapshotted once at start — toggling tools
     # mid-run must not change an in-flight run's behavior or cost accounting.
     enabled_tools: set[str] = field(default_factory=set)
@@ -60,10 +66,12 @@ class RunState:
     amass_credits_before: float | None = None
     amass_credits_after: float | None = None
 
-    def add_evidence(self, evidence_id: str, source: str, url: str, summary: str, raw: dict) -> str:
+    def add_evidence(
+        self, evidence_id: str, source: str, url: str, summary: str, raw: dict, title: str = ""
+    ) -> str:
         """Store an evidence item; returns the citation id to use inline in the report."""
         self.evidence[evidence_id] = EvidenceItem(
-            id=evidence_id, source=source, url=url, summary=summary, raw=raw
+            id=evidence_id, source=source, url=url, summary=summary, title=title, raw=raw
         )
         return evidence_id
 

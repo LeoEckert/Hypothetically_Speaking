@@ -6,7 +6,7 @@ Every tool module under backend/tools/ exposes:
     {
       "summary": str,                # short text handed back to Claude as the tool_result
       "items": [                     # evidence entries to register for citation
-        {"id": str, "url": str, "summary": str, "raw": dict}, ...
+        {"id": str, "url": str, "title": str, "summary": str, "raw": dict}, ...
       ],
       "mock": bool,                  # True if this was a fallback/offline response
       "error": str | None,           # set if something went wrong (still non-fatal)

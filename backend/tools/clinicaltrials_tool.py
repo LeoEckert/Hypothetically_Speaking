@@ -26,6 +26,7 @@ _MOCK_ITEMS = [
     {
         "id": "NCT:NCT00000000",
         "url": "https://clinicaltrials.gov/",
+        "title": "[MOCK] Representative trial hit",
         "summary": "[MOCK - no network] Representative trial hit for query context.",
         "raw": {"mock": True},
     }
@@ -66,6 +67,7 @@ def run(args: dict) -> dict:
             {
                 "id": f"NCT:{nct_id}",
                 "url": f"https://clinicaltrials.gov/study/{nct_id}",
+                "title": title,
                 "summary": summary,
                 "raw": study,
             }

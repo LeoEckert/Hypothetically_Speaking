@@ -29,6 +29,7 @@ _MOCK_ITEMS = [
     {
         "id": "PMID:00000001",
         "url": "https://pubmed.ncbi.nlm.nih.gov/",
+        "title": "[MOCK] Representative PubMed hit",
         "summary": "[MOCK - no network] Representative PubMed hit for query context.",
         "raw": {"mock": True},
     }
@@ -84,6 +85,7 @@ def run(args: dict) -> dict:
             {
                 "id": f"PMID:{pmid}",
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                "title": title,
                 "summary": summary,
                 "raw": doc,
             }

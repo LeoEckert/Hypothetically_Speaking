@@ -50,6 +50,7 @@ _MOCK_ITEMS = [
     {
         "id": "OT:MOCK",
         "url": "https://platform.opentargets.org/",
+        "title": "[MOCK] Representative target-disease association",
         "summary": "[MOCK - no network] Representative target-disease association for query context.",
         "raw": {"mock": True},
     }
@@ -108,11 +109,13 @@ def run(args: dict) -> dict:
         disease = row["disease"]
         score = row["score"]
         cid = f"OT:{ensembl_id}:{disease['id']}"
+        title = f"{approved_symbol} × {disease['name']}"
         summary = f"{approved_symbol} ({ensembl_id}) — {disease['name']} association score {score:.3f}"
         items.append(
             {
                 "id": cid,
                 "url": f"https://platform.opentargets.org/evidence/{ensembl_id}/{disease['id']}",
+                "title": title,
                 "summary": summary,
                 "raw": row,
             }
