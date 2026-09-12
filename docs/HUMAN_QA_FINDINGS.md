@@ -23,6 +23,7 @@ This file is appended to as more findings come in.
 |---|---|---|---|
 | HQ-01 | High | Cancel is not bound to a run — it always cancels the newest one | `main` @ `c3a958e` |
 | HQ-02 | High | Starting a second run silently orphans the first, which sticks at "running" forever | `main` @ `c3a958e` |
+| HQ-03 | Medium | Report sections render as bullets in one run and a prose wall in the next | `main` @ `c3a958e` |
 
 ---
 
@@ -144,6 +145,88 @@ Either way, `ensureStream` should never close a stream for a run that has not
 reached a terminal state without marking that run — an orphaned `running`
 record is the worst outcome, since it is indistinguishable from a healthy
 in-flight run.
+
+---
+
+## HQ-03 — Report sections render as bullets in one run and a prose wall in the next
+
+**Severity:** medium (readability). **Reported:** side-by-side screenshot of
+"Confidence & Uncertainty" from two different runs.
+
+**What the tester saw.** The same section, same product, two runs:
+
+- **Left run** — four scannable bullets, each opening with a bolded
+  confidence level ("**High confidence** that shared CYP450/P-glycoprotein
+  machinery…", "**Moderate confidence** that…", "**Low confidence, not
+  stated as established fact**…").
+- **Right run** — one unbroken ~200-word paragraph carrying the same kind of
+  content ("I have **medium-high** confidence that… I have **medium**
+  confidence in h1… I have **low** confidence in h4…").
+
+Tester's note: *"different formats of the same section in different runs ->
+enforce bullets - it's easier to read"*.
+
+The right-hand version is not worse *reasoning* — it is arguably richer. It
+is worse *reading*: a per-hypothesis confidence breakdown is a list by
+nature, and rendering it as a wall of prose forces the reader to parse
+sentences to recover a structure that was already there.
+
+**Confirmed in code.** The report contract lives in
+`backend/agent/prompts.py:38-44` (`SYSTEM_PROMPT`) and specifies the six
+section *headings* exactly:
+
+```
+5. REPORT: write the final answer as markdown with these exact sections:
+   ## Hypothesis
+   ## Evidence That Supports It
+   ## Evidence That Doesn't / Contradicts It
+   ## Confidence & Uncertainty
+   ## Failure Modes
+   ## Next Experiment To Run
+```
+
+Nothing anywhere specifies the *body* format of any section. The only style
+guidance in the whole prompt is a single line — "Be concise and precise —
+this report should be readable in one pass by a clinician or investor, not a
+literature dump" (`prompts.py:57-58`). `final_report_prompt`
+(`prompts.py:135-147`) adds nothing either: it says to follow "the exact
+section structure and citation rules from your system prompt", and
+"structure" there means headings only.
+
+So the heading set is pinned and the body format is entirely unconstrained.
+Run-to-run variation is the expected outcome, not a glitch — the model is
+free to choose, and it does, differently each time.
+
+This is a determinism problem as much as a style one: two runs of the same
+product produce visibly different-looking documents, which undercuts the
+"defensible report" framing.
+
+**Suggested fix.** Add an explicit body-format rule to the section spec in
+`SYSTEM_PROMPT`. For example, after the section list:
+
+```
+   Body format, so reports read the same way every run:
+   - Confidence & Uncertainty, Failure Modes, Evidence That Supports It,
+     and Evidence That Doesn't / Contradicts It: markdown bullets, one
+     claim per bullet, each ending in its citation marker.
+   - Confidence & Uncertainty: open each bullet with a bolded confidence
+     level, e.g. "**High confidence** that …".
+   - Hypothesis and Next Experiment To Run: prose, at most one short
+     paragraph each.
+```
+
+Two judgement calls worth making deliberately rather than inheriting:
+
+1. **Not every section wants bullets.** `## Hypothesis` is a single claim and
+   reads better as one sentence; `## Next Experiment To Run` is a narrative
+   recommendation. The tester's "enforce bullets" is clearly aimed at the
+   list-like sections — applying it everywhere would make the report choppy.
+2. **Bullets must not cost the citation discipline.** Every factual sentence
+   still has to end in a resolvable `[citation-id]`
+   (`scripts/validate_citations.py` enforces ≥95% coverage). Whichever
+   wording is adopted, re-run that validator afterwards — a format change to
+   the prompt is exactly the kind of edit that can quietly drop citation
+   markers.
 
 ---
 
