@@ -49,6 +49,83 @@ def _emit(on_event: EventCallback, event: dict) -> None:
         on_event(event)
 
 
+_GROUNDING_KEYS = ("ANTHROPIC_API_KEY", "AMASS_API_KEY")
+
+
+def _grounding_payload(question: str) -> dict:
+    """Run L0-L4 and return the same structured payload sent to the UI."""
+    missing = [name for name in _GROUNDING_KEYS if not os.environ.get(name)]
+    if missing:
+        return {
+            "status": "skipped",
+            "coherent": None,
+            "why": f"Missing {', '.join(missing)}",
+            "triples": [],
+            "premises": [],
+            "knowledge_graph": "",
+            "hypotheses": [],
+        }
+    try:
+        from scripts.run_grounding import ground
+
+        grounding = ground(question)
+        return {
+            "status": "complete",
+            "coherent": grounding.coherent,
+            "why": grounding.why,
+            "triples": [triple.model_dump(mode="json") for triple in grounding.triples],
+            "premises": [premise.model_dump(mode="json") for premise in grounding.premises],
+            "knowledge_graph": grounding.knowledge_graph,
+            "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in grounding.hypotheses],
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "coherent": None,
+            "why": str(exc),
+            "triples": [],
+            "premises": [],
+            "knowledge_graph": "",
+            "hypotheses": [],
+        }
+
+
+def _grounding_text(payload: dict) -> str:
+    """Dump structured grounding as text for the PLAN prompt."""
+    if payload["status"] != "complete":
+        return f"(grounding {payload['status']}: {payload['why']})"
+    if not payload["coherent"]:
+        return f"(grounding: question judged not coherent — {payload['why']})"
+    unverified = [
+        premise for premise in payload["premises"] if premise["status"] == "UNVERIFIED"
+    ]
+    candidates = "\n".join(
+        f"- {h['id']}: {h['statement']}  (tests: {h['targets']}; do: {h['intervention']}; "
+        f"measure: {h['readout']}; in: {h['model_system']})"
+        for h in payload.get("hypotheses", [])
+    )
+    return (
+        f"Knowledge graph:\n{payload['knowledge_graph']}\n\n"
+        f"Unverified premises (the gaps hypotheses should target):\n"
+        f"{json.dumps(unverified, indent=2)}"
+        + (
+            "\n\nCandidate hypotheses, already filtered to one testable claim each. "
+            "Use these as your hypotheses, in this order, keeping each statement as "
+            "written or shorter — never merge, extend or qualify them:\n" + candidates
+            if candidates else ""
+        )
+    )
+
+
+def _plan_message(grounding_text: str) -> str:
+    return (
+        "Grounding context from a prior extraction step. Use this when "
+        "proposing hypotheses; do not treat it as already-verified evidence.\n\n"
+        f"{grounding_text}\n\n"
+        + plan_prompt()
+    )
+
+
 def _text_of(content_blocks) -> str:
     return "".join(b.text for b in content_blocks if getattr(b, "type", None) == "text")
 
@@ -230,11 +307,16 @@ def run_agent(
 
     _emit(on_event, {"type": "start", "run_id": state.run_id, "question": question})
 
+    _emit(on_event, {"type": "phase", "phase": "grounding"})
+    grounding = _grounding_payload(question)
+    grounding_text = _grounding_text(grounding)
+    _emit(on_event, {"type": "grounding", **grounding})
+
     no_tool_nudges = 0
     try:
         # --- PLAN ---
         _emit(on_event, {"type": "phase", "phase": "plan"})
-        messages.append({"role": "user", "content": plan_prompt()})
+        messages.append({"role": "user", "content": _plan_message(grounding_text)})
         plan_resp = client.messages.create(model=model, max_tokens=1536, system=SYSTEM_PROMPT, messages=messages)
         state.record_anthropic_usage(plan_resp)
         messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})

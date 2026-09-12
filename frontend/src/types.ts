@@ -65,9 +65,55 @@ export interface RankedHypothesis {
 
 export type HypothesisStage = "plan" | "revise" | "final"
 
+export interface GroundingTriple {
+  subject: string
+  verb: string
+  object: string
+}
+
+export interface GroundingPremise extends GroundingTriple {
+  statement: string
+  status: "ESTABLISHED" | "CONTESTED" | "UNVERIFIED"
+  evidence: Array<{
+    amass_id: string
+    pmid: string | null
+    nct_id: string | null
+    url: string | null
+    how: string
+  }>
+  absence_checked: string | null
+  derived_from: string
+}
+
+export interface GroundingHypothesis extends GroundingTriple {
+  id: string
+  statement: string
+  targets: string
+  intervention: string
+  readout: string
+  model_system: string
+  falsification?: string
+  rationale: string
+  supported_by?: string[]
+  conflicts_with?: string[]
+  missing?: string | null
+}
+
+export interface GroundingEvent {
+  type: "grounding"
+  status: "complete" | "skipped" | "failed"
+  coherent: boolean | null
+  why: string
+  triples: GroundingTriple[]
+  premises: GroundingPremise[]
+  knowledge_graph: string
+  hypotheses: GroundingHypothesis[]
+}
+
 export type SseEvent =
   | { type: "start"; run_id: string; question: string }
   | { type: "phase"; phase: string }
+  | GroundingEvent
   | { type: "assistant_text"; text: string }
   | { type: "tool_call"; tool: string; args: Record<string, unknown>; step: number }
   | {
@@ -105,4 +151,5 @@ export interface RunRecord {
   cost?: CostSummary
   evidence?: Record<string, EvidenceItem>
   hypotheses?: RankedHypothesis[]
+  grounding?: GroundingEvent
 }

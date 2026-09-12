@@ -14,3 +14,6 @@ frontend/.env
 frontend/.env.local
 create_vm.sh
 secret_*.txt
+
+# grounding knowledge base / run archives (local cache, regenerated on demand)
+runs/

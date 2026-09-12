@@ -19,7 +19,9 @@ import re
 import sys
 from pathlib import Path
 
-CITATION_RE = re.compile(r"\[([A-Za-z0-9_:.\-]+)\]")
+# One bracket may carry several ids: [PMID:1, PMID:2]. Each id resolves alone.
+CITATION_RE = re.compile(r"\[([A-Za-z0-9_:.\-]+(?:\s*[,;]\s*[A-Za-z0-9_:.\-]+)*)\]")
+ID_SPLIT_RE = re.compile(r"\s*[,;]\s*")
 HEADER_RE = re.compile(r"^#{1,6}\s")
 
 # Sections that are meta (not evidentiary claims) and excluded from the
@@ -49,7 +51,9 @@ def analyze_report(report_text: str, evidence_ids: set[str]) -> dict:
     cited = [s for s in claim_sentences if CITATION_RE.search(s)]
     uncited = [s for s in claim_sentences if not CITATION_RE.search(s)]
 
-    all_markers = set(CITATION_RE.findall(report_text))
+    all_markers = {
+        marker for group in CITATION_RE.findall(report_text) for marker in ID_SPLIT_RE.split(group)
+    }
     unresolved = sorted(m for m in all_markers if m not in evidence_ids)
 
     coverage = len(cited) / len(claim_sentences) if claim_sentences else 1.0

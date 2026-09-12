@@ -1,6 +1,8 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { CostPanel } from "@/components/CostPanel"
 import { EvidencePanel } from "@/components/EvidencePanel"
+import { GroundingTrace } from "@/components/GroundingTrace"
+import { API_BASE } from "@/lib/api"
 import { HypothesisList } from "@/components/HypothesisCard"
 import { ReportView } from "@/components/ReportView"
 import { TraceTimeline } from "@/components/TraceTimeline"
@@ -38,6 +40,26 @@ export function ResultsView({
       <ReportView report={report} evidence={evidence} />
 
       <Accordion type="multiple" className="border rounded-xl bg-card px-4">
+        {run.grounding && (
+          <AccordionItem value="grounding">
+            <AccordionTrigger>Premise grounding trace</AccordionTrigger>
+            <AccordionContent>
+              <GroundingTrace grounding={run.grounding} question={run.question} embedded />
+            </AccordionContent>
+          </AccordionItem>
+        )}
+        {run.grounding?.status === "complete" && run.grounding.coherent && (
+          <AccordionItem value="trajectory">
+            <AccordionTrigger>Knowledge trajectory</AccordionTrigger>
+            <AccordionContent>
+              <iframe
+                title="Knowledge trajectory"
+                src={`${API_BASE}/api/trajectory/view?question=${encodeURIComponent(run.question)}`}
+                className="h-[520px] w-full rounded-lg border bg-background"
+              />
+            </AccordionContent>
+          </AccordionItem>
+        )}
         <AccordionItem value="evidence">
           <AccordionTrigger>Evidence ({Object.keys(evidence).length})</AccordionTrigger>
           <AccordionContent>

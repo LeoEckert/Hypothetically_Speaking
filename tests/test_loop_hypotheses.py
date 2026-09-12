@@ -5,12 +5,21 @@ lifecycle that the frontend's progress/results views depend on.
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
-from backend.agent.loop import _extract_hypotheses, _normalize_hypotheses, _parse_hypotheses  # noqa: E402
+from backend.agent.loop import (  # noqa: E402
+    _extract_hypotheses,
+    _grounding_payload,
+    _grounding_text,
+    _normalize_hypotheses,
+    _parse_hypotheses,
+    _plan_message,
+)
+from backend.agent.prompts import plan_prompt  # noqa: E402
 
 
 def _fence(payload: str) -> str:
@@ -105,6 +114,59 @@ def test_normalize_filters_unknown_evidence_ids():
 def test_normalize_malformed_fence_returns_empty_without_raising():
     assert _normalize_hypotheses("not a list", "revise", {"h1": {}}, set()) == []
     assert _normalize_hypotheses(None, "final", {"h1": {}}, set()) == []
+
+
+def test_plan_message_puts_grounding_before_schema():
+    text = _plan_message('{"novel_claims": []}')
+    assert text.index('{"novel_claims": []}') < text.index(plan_prompt())
+    assert "```json" in text
+
+
+def test_grounding_text_skips_without_keys(monkeypatch):
+    for name in ("ANTHROPIC_API_KEY", "AMASS_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    payload = _grounding_payload("does SIRT1 matter?")
+    assert payload["status"] == "skipped"
+    assert payload["triples"] == []
+    assert _grounding_text(payload).startswith("(grounding skipped:")
+
+
+def test_grounding_payload_preserves_the_l0_trace(monkeypatch):
+    class Dumpable:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def model_dump(self, mode):
+            assert mode == "json"
+            return self.payload
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AMASS_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "scripts.run_grounding.ground",
+        lambda _: SimpleNamespace(
+            coherent=True,
+            why="coherent",
+            triples=[Dumpable({"subject": "A", "verb": "causes", "object": "B"})],
+            premises=[
+                Dumpable(
+                    {
+                        "subject": "A",
+                        "verb": "causes",
+                        "object": "B",
+                        "status": "UNVERIFIED",
+                    }
+                )
+            ],
+            knowledge_graph="A -causes-> B",
+            hypotheses=[],
+        ),
+    )
+
+    payload = _grounding_payload("Does A cause B?")
+    assert payload["status"] == "complete"
+    assert payload["triples"] == [{"subject": "A", "verb": "causes", "object": "B"}]
+    assert "UNVERIFIED" in _grounding_text(payload)
 
 
 def test_normalize_recovers_when_known_roster_is_empty():

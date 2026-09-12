@@ -38,6 +38,9 @@ def main() -> None:
         t = event.get("type")
         if t == "phase":
             print(f"\n=== PHASE: {event['phase']} ===")
+        elif t == "grounding":
+            body = event.get("knowledge_graph") or event.get("why", "")
+            print(f"  [grounding {event.get('status', '')}] {body[:1500]}")
         elif t == "tool_call":
             print(f"  -> CALL {event['tool']}({event['args']})")
         elif t == "tool_result":

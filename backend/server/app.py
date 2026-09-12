@@ -15,19 +15,24 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
 
 from backend.agent.loop import HARD_MAX_TOOL_CALLS, run_agent  # noqa: E402
+from backend.kgviz.graph import snapshot as trajectory_snapshot  # noqa: E402
+from backend.kgviz.render import render_html as render_trajectory  # noqa: E402
 from backend.tools import registry  # noqa: E402
 from backend.tools.registry import all_specs, enabled_tool_names  # noqa: E402
 
 app = FastAPI(title="Hypothetically Speaking — Longevity AI Scientist")
 
-_default_origins = "http://localhost:5173,http://localhost:4173"
+_default_origins = "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:4173"
 _allowed_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",") if o.strip()]
+for _loopback in ("http://127.0.0.1:5173", "http://127.0.0.1:4173"):
+    if _loopback not in _allowed_origins:
+        _allowed_origins.append(_loopback)
 _allowed_origin_regex = os.environ.get("ALLOWED_ORIGIN_REGEX", r"https://.*\.vercel\.app$")
 
 app.add_middleware(
@@ -187,3 +192,26 @@ def stream_run(run_id: str):
 @app.get("/api/run/{run_id}/result")
 def get_result(run_id: str):
     return _results.get(run_id, {"status": "not_ready"})
+
+
+def _trajectory(question: str | None, walk: str, depth: int, records: bool) -> dict:
+    """Read-only view over runs/knowledge.db (GROUNDING_KB): the premises,
+    verdicts and hypotheses a question activated, plus the reasoning log."""
+    try:
+        return trajectory_snapshot(question=question, mode=walk, depth=depth, include_records=records)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/api/trajectory")
+def get_trajectory(question: str | None = None, walk: str = "bfs", depth: int = 3, records: bool = False):
+    return _trajectory(question, walk, depth, records)
+
+
+@app.get("/api/trajectory/view", response_class=HTMLResponse)
+def view_trajectory(question: str | None = None, walk: str = "bfs", depth: int = 3, records: bool = False):
+    """The knowledge-trajectory viewer as a page, for the frontend to embed."""
+    from urllib.parse import urlencode
+
+    query = urlencode({k: v for k, v in {"question": question, "walk": walk, "depth": depth, "records": int(records)}.items() if v is not None})
+    return render_trajectory(_trajectory(question, walk, depth, records), reload_url=f"/api/trajectory?{query}")

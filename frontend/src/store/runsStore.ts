@@ -1,4 +1,4 @@
-import type { RunRecord, SseEvent } from "@/types"
+import type { GroundingEvent, RunRecord, SseEvent } from "@/types"
 
 const STORAGE_KEY = "hs_history_v3"
 const PREV_STORAGE_KEY = "hs_history_v2"
@@ -20,14 +20,27 @@ function migrateHypothesis(h: Record<string, unknown>, index: number): Record<st
 }
 
 function migrateRun(run: RunRecord): RunRecord {
-  if (!run.hypotheses?.length) return run
-  return { ...run, hypotheses: run.hypotheses.map((h, i) => migrateHypothesis(h as unknown as Record<string, unknown>, i) as never) }
+  const storedGrounding =
+    run.grounding ??
+    run.events.find((event): event is GroundingEvent => event.type === "grounding")
+  const grounding = storedGrounding
+    ? { ...storedGrounding, hypotheses: storedGrounding.hypotheses ?? [] }
+    : undefined
+  const hypotheses = run.hypotheses?.map(
+    (hypothesis, index) =>
+      migrateHypothesis(hypothesis as unknown as Record<string, unknown>, index) as never
+  )
+  return {
+    ...run,
+    ...(grounding ? { grounding } : {}),
+    ...(hypotheses ? { hypotheses } : {}),
+  }
 }
 
 function load(): RunRecord[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw) as RunRecord[]
+    if (raw) return (JSON.parse(raw) as RunRecord[]).map(migrateRun)
 
     const prevRaw = localStorage.getItem(PREV_STORAGE_KEY)
     if (!prevRaw) return []
@@ -105,6 +118,8 @@ export function appendEvent(runId: string, event: SseEvent) {
     // revise stages; the `done` branch above overwrites this again with
     // the final stage's list, which is emitted right before `done` anyway.
     updated.hypotheses = event.hypotheses
+  } else if (event.type === "grounding") {
+    updated.grounding = { ...event, hypotheses: event.hypotheses ?? [] }
   } else if (event.type === "error") {
     // An "error" event means the run is failing, but a `done` event still
     // follows it in this codebase's loop (it always finalizes) — don't
