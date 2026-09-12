@@ -2,6 +2,8 @@
 // configuration — set VITE_API_BASE_URL as a project env var to override
 // this (e.g. after moving the backend to a new host), no code change needed
 // either way since the env var always takes precedence when set.
+import type { EvaluationResult } from "@/types"
+
 const PROD_API_BASE_FALLBACK = "https://api-185-175-110-142.sslip.io"
 
 export const API_BASE =
@@ -52,4 +54,17 @@ export async function cancelRun(runId: string): Promise<void> {
 
 export function runStreamUrl(runId: string): string {
   return `${API_BASE}/api/run/${runId}/stream`
+}
+
+export async function evaluateHypothesis(runId: string, comment: string): Promise<EvaluationResult> {
+  const res = await fetch(`${API_BASE}/api/run/${runId}/evaluate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ comment }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `evaluate failed (${res.status})`)
+  }
+  return res.json()
 }

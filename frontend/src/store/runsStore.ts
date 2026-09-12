@@ -1,4 +1,4 @@
-import type { GroundingEvent, RunRecord, SseEvent } from "@/types"
+import type { EvaluationResult, GroundingEvent, RunRecord, SseEvent } from "@/types"
 
 const STORAGE_KEY = "hs_history_v3"
 const PREV_STORAGE_KEY = "hs_history_v2"
@@ -126,6 +126,24 @@ export function appendEvent(runId: string, event: SseEvent) {
     // downgrade status here, `done` is authoritative for the final state.
   }
   runs = [...runs.slice(0, idx), updated, ...runs.slice(idx + 1)]
+  save()
+  notify()
+}
+
+export function appendEvaluation(runId: string, evaluation: EvaluationResult) {
+  const idx = runs.findIndex((r) => r.id === runId)
+  if (idx === -1) return
+  const run = runs[idx]
+  const updated: RunRecord = { ...run, evaluations: [...(run.evaluations ?? []), evaluation] }
+  runs = [...runs.slice(0, idx), updated, ...runs.slice(idx + 1)]
+  save()
+  notify()
+}
+
+export function deleteRun(runId: string) {
+  const idx = runs.findIndex((r) => r.id === runId)
+  if (idx === -1) return
+  runs = [...runs.slice(0, idx), ...runs.slice(idx + 1)]
   save()
   notify()
 }

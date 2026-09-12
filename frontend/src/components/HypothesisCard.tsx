@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ChevronRightIcon } from "lucide-react"
+import { ChevronRightIcon, FileTextIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { withCitations } from "@/lib/citations"
@@ -11,7 +11,7 @@ const CONFIDENCE_STYLES: Record<string, string> = {
   low: "border-muted-foreground/30 bg-muted text-muted-foreground",
 }
 
-function ConfidenceBadge({ confidence }: { confidence: RankedHypothesis["confidence"] }) {
+export function ConfidenceBadge({ confidence }: { confidence: RankedHypothesis["confidence"] }) {
   if (!confidence) {
     return (
       <Badge variant="outline" className="text-[10px] border-dashed text-muted-foreground">
@@ -64,37 +64,49 @@ function HypothesisCard({
   expanded,
   onToggle,
   onIterate,
+  onOpenDetails,
 }: {
   hypothesis: RankedHypothesis
   evidence: Record<string, EvidenceItem>
   expanded: boolean
   onToggle: () => void
   onIterate?: (seedQuestion: string) => void
+  onOpenDetails?: () => void
 }) {
   const h = hypothesis
   return (
     <div className={`border rounded-lg ${h.selected ? "border-primary/40 bg-primary/[0.02]" : ""}`}>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="w-full flex items-start gap-2 p-3 text-left cursor-pointer"
-      >
-        <ChevronRightIcon
-          className={`size-4 mt-0.5 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`}
-        />
-        <span className="font-mono text-xs text-muted-foreground mt-0.5">#{h.rank}</span>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className={`text-sm ${h.selected ? "font-semibold" : ""}`}>{h.statement}</span>
-            {h.selected && (
-              <Badge variant="outline" className="text-[10px] align-middle">
-                selected
-              </Badge>
-            )}
+      <div className="flex items-start gap-2 p-3">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-start gap-2 text-left cursor-pointer"
+        >
+          <ChevronRightIcon
+            className={`size-4 mt-0.5 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`}
+          />
+          <span className="font-mono text-xs text-muted-foreground mt-0.5">#{h.rank}</span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`text-sm ${h.selected ? "font-semibold" : ""}`}>{h.statement}</span>
+              {h.selected && (
+                <Badge variant="outline" className="text-[10px] align-middle">
+                  selected
+                </Badge>
+              )}
+            </div>
           </div>
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {h.selected && onOpenDetails && (
+            <Button size="sm" onClick={onOpenDetails}>
+              <FileTextIcon className="size-3.5" />
+              Full report
+            </Button>
+          )}
+          <ConfidenceBadge confidence={h.confidence} />
         </div>
-        <ConfidenceBadge confidence={h.confidence} />
-      </button>
+      </div>
 
       {expanded && (
         <div className="px-3 pb-3 pl-9 space-y-3">
@@ -117,7 +129,7 @@ function HypothesisCard({
               />
             </div>
           </div>
-          {onIterate && h.seed_question && (
+          {!h.selected && onIterate && h.seed_question && (
             <Button size="sm" variant="outline" onClick={() => onIterate(h.seed_question)}>
               Iterate on this hypothesis
             </Button>
@@ -132,16 +144,14 @@ export function HypothesisList({
   hypotheses,
   evidence,
   onIterate,
-  autoExpandSelected = false,
+  onOpenDetails,
 }: {
   hypotheses: RankedHypothesis[]
   evidence: Record<string, EvidenceItem>
   onIterate?: (seedQuestion: string) => void
-  autoExpandSelected?: boolean
+  onOpenDetails?: () => void
 }) {
-  const [expandedId, setExpandedId] = useState<string | null>(() =>
-    autoExpandSelected ? hypotheses.find((h) => h.selected)?.id ?? hypotheses[0]?.id ?? null : null
-  )
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const sorted = [...hypotheses].sort((a, b) => a.rank - b.rank)
 
@@ -155,6 +165,7 @@ export function HypothesisList({
           expanded={expandedId === h.id}
           onToggle={() => setExpandedId((cur) => (cur === h.id ? null : h.id))}
           onIterate={onIterate}
+          onOpenDetails={h.selected ? onOpenDetails : undefined}
         />
       ))}
     </div>

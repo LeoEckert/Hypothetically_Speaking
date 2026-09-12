@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from "react"
-import { ComposeBox, type ComposeVariant } from "@/components/ComposeBox"
+import { AppHeader } from "@/components/AppHeader"
+import { ComposeDialog } from "@/components/ComposeDialog"
+import { HistoryPanel } from "@/components/HistoryPanel"
+import { HypothesisDetailsView } from "@/components/HypothesisDetailsView"
+import { LiveRunBar } from "@/components/LiveRunBar"
 import { ProgressView } from "@/components/ProgressView"
 import { ResultsView } from "@/components/ResultsView"
-import { Sidebar } from "@/components/Sidebar"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useConfig } from "@/hooks/useConfig"
 import { useRunsStore } from "@/hooks/useRunsStore"
-import { cancelRun, startRun } from "@/lib/api"
+import { cancelRun, evaluateHypothesis, startRun } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
 import { currentLiveRunId, ensureStream, onStreamFinished } from "@/lib/runStream"
-import { createRun, getRun, markCancelling } from "@/store/runsStore"
+import { appendEvaluation, createRun, deleteRun, getRun, markCancelling } from "@/store/runsStore"
 import type { SseEvent } from "@/types"
 
 function App() {
@@ -18,6 +21,9 @@ function App() {
 
   const [liveRunId, setLiveRunId] = useState<string | null>(currentLiveRunId())
   const [viewedRunId, setViewedRunId] = useState<string | null>(null)
+  const [showDetails, setShowDetails] = useState(false)
+  const [composeOpen, setComposeOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [question, setQuestion] = useState("")
   const [maxToolCalls, setMaxToolCalls] = useState(30)
   const prefilledRef = useRef(false)
@@ -49,16 +55,18 @@ function App() {
   const doneEvent = viewedRun?.events.find(
     (e): e is Extract<SseEvent, { type: "done" }> => e.type === "done"
   )
+  const selectedHypothesis = doneEvent?.hypotheses?.find((h) => h.selected)
 
   function handleNewRequest() {
-    setViewedRunId(null)
     setQuestion(config?.dev_mode ? config.demo_question : "")
+    setComposeOpen(true)
   }
 
   function handleSelectHistory(id: string) {
     const run = getRun(id)
     if (!run) return
     setViewedRunId(id)
+    setShowDetails(false)
     setQuestion(run.question)
   }
 
@@ -75,6 +83,8 @@ function App() {
     createRun(run_id, trimmed, forkedFrom)
     setLiveRunId(run_id)
     setViewedRunId(run_id)
+    setShowDetails(false)
+    setComposeOpen(false)
     ensureStream(run_id)
   }
 
@@ -84,8 +94,27 @@ function App() {
     cancelRun(liveRunId)
   }
 
+  function handleDeleteHistory(id: string) {
+    if (id === liveRunId) {
+      cancelRun(id)
+      setLiveRunId(null)
+    }
+    if (id === viewedRunId) {
+      setViewedRunId(null)
+      setShowDetails(false)
+    }
+    deleteRun(id)
+  }
+
   function handleIterate(seedQuestion: string) {
     setQuestion(seedQuestion)
+    setComposeOpen(true)
+  }
+
+  async function handleEvaluate(comment: string) {
+    if (!viewedRunId) return
+    const result = await evaluateHypothesis(viewedRunId, comment)
+    appendEvaluation(viewedRunId, result)
   }
 
   const isViewingLive = liveRunId !== null && viewedRunId === liveRunId
@@ -103,64 +132,82 @@ function App() {
 
   const forkNote =
     viewedRunId && viewedRunId !== liveRunId
-      ? "Viewing a past run — edit the question above and hit Run to create a new hypothesis based on it."
+      ? "Basing the new question on the run you're viewing — edit it below and hit Run to branch a new hypothesis."
       : null
 
-  const composeVariant: ComposeVariant = isRunning ? "running" : doneEvent ? "results" : "prominent"
+  const showLiveBanner = liveRunId !== null && viewedRunId !== liveRunId
 
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-muted/20">
         <div className="max-w-6xl mx-auto p-4 sm:p-6">
-          <div className="mb-6 pb-4 border-b">
-            <h1 className="text-2xl font-bold tracking-tight">Hypothetically Speaking</h1>
-            <p className="text-muted-foreground mt-1">
-              A Longevity AI Scientist — ask an ageing/longevity research question, watch it plan, retrieve,
-              compute, and cite.
-            </p>
-          </div>
+          <AppHeader
+            runsCount={runs.length}
+            onOpenHistory={() => setHistoryOpen(true)}
+            onNewRequest={handleNewRequest}
+          />
 
-          <div className="flex flex-col md:flex-row gap-6 items-start">
-            <Sidebar
-              runs={runs}
-              liveRunId={liveRunId}
-              viewedRunId={viewedRunId}
-              onNewRequest={handleNewRequest}
-              onSelectHistory={handleSelectHistory}
+          <HistoryPanel
+            runs={runs}
+            viewedRunId={viewedRunId}
+            onSelect={handleSelectHistory}
+            onDelete={handleDeleteHistory}
+            open={historyOpen}
+            onOpenChange={setHistoryOpen}
+          />
+
+          <ComposeDialog
+            open={composeOpen}
+            onOpenChange={setComposeOpen}
+            question={question}
+            onQuestionChange={setQuestion}
+            onRun={handleRun}
+            runDisabled={liveRunId !== null}
+            isRunLive={liveRunId !== null}
+            forkNote={forkNote}
+            maxToolCalls={maxToolCalls}
+            onMaxToolCallsChange={setMaxToolCalls}
+            maxToolCallsCeiling={config?.max_tool_calls_ceiling ?? 40}
+          />
+
+          <main>
+            <LiveRunBar
+              isRunning={isRunning}
+              question={viewedRun?.question ?? ""}
+              statusText={statusText}
+              onCancel={handleCancel}
+              showLiveBanner={showLiveBanner}
+              onViewLive={handleViewLive}
             />
 
-            <main className="flex-1 min-w-0">
-              <ComposeBox
-                question={question}
-                onQuestionChange={setQuestion}
-                onRun={handleRun}
-                onCancel={handleCancel}
-                runDisabled={liveRunId !== null}
-                isRunning={isRunning}
-                statusText={statusText}
-                forkNote={forkNote}
-                showLiveBanner={liveRunId !== null && viewedRunId !== liveRunId}
-                onViewLive={handleViewLive}
-                maxToolCalls={maxToolCalls}
-                onMaxToolCallsChange={setMaxToolCalls}
-                maxToolCallsCeiling={config?.max_tool_calls_ceiling ?? 40}
-                variant={composeVariant}
+            {showDetails && doneEvent && viewedRun && selectedHypothesis ? (
+              <HypothesisDetailsView
+                hypothesis={selectedHypothesis}
+                report={doneEvent.report}
+                evidence={doneEvent.evidence}
+                evaluations={viewedRun.evaluations}
+                onIterate={handleIterate}
+                onEvaluate={handleEvaluate}
+                onBack={() => setShowDetails(false)}
               />
-
-              {doneEvent && viewedRun ? (
-                <ResultsView
-                  run={viewedRun}
-                  report={doneEvent.report}
-                  evidence={doneEvent.evidence}
-                  hypotheses={doneEvent.hypotheses ?? []}
-                  cost={doneEvent.cost}
-                  onIterate={handleIterate}
-                />
-              ) : (
-                viewedRun && <ProgressView run={viewedRun} />
-              )}
-            </main>
-          </div>
+            ) : doneEvent && viewedRun ? (
+              <ResultsView
+                run={viewedRun}
+                report={doneEvent.report}
+                evidence={doneEvent.evidence}
+                hypotheses={doneEvent.hypotheses ?? []}
+                cost={doneEvent.cost}
+                onIterate={handleIterate}
+                onOpenDetails={() => setShowDetails(true)}
+              />
+            ) : viewedRun ? (
+              <ProgressView run={viewedRun} />
+            ) : (
+              <p className="text-sm text-muted-foreground italic py-8 text-center">
+                Ask a research question to get started — use "+ New Hypothesis" above.
+              </p>
+            )}
+          </main>
         </div>
       </div>
     </TooltipProvider>

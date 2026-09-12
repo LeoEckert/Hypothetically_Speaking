@@ -184,6 +184,18 @@ cache Claude may pick a different L1 chain (observed: PGC-1alpha/oxidative
 stress vs a senescence route), so treat the knowledge base as part of the
 result — archive it with the run, do not delete it to "refresh".
 
+**Hypotheses (L4) — the frame.** Follows `docs/reference` "What is a good
+hypothesis": the question is a ladder of claims, each needing its own kind
+of evidence and carrying a grade; the hypothesis is the weakest *causal*
+link restated as an interventional prediction, with a falsification
+criterion, and a "why it exists" block made of the established links above
+it, the contested ones beside it, and the recorded absence it fills. There
+is little creative room by design: the generator may choose only the verb,
+wording, intervention, readout, model system and falsification — subject
+and object are the weak link's own, and one hypothesis per link survives.
+`supported_by` / `conflicts_with` / `missing` are computed from the graph,
+never written by the model.
+
 **Hypotheses (L4) — the seam for the other team.**
 `backend/grounding/hypotheses.py::HypothesisGenerator` is one method,
 `generate(grounding) -> list[Hypothesis]`. Ours is
@@ -200,6 +212,20 @@ one reason, on the question node.
 cold run is ~1 min instead of ~4.5; a warm run is under a second. The
 remaining cost is the agent loop itself (PLAN → tools → REVISE → REPORT,
 ~2 min), which the grounding does not touch.
+
+**Trajectory in the app.** `GET /api/trajectory?question=` returns the
+graph + walk + reasoning log; `GET /api/trajectory/view?question=` is the
+viewer page, embedded as an iframe under "Knowledge trajectory" in the
+results view. The sidecar `python -m scripts.run_trajectory --serve` still
+works for standalone use. The viewer's right-hand "Activation path" is
+stage-ordered from the reasoning log (L0 split, L1 links, L2 verdict per
+link with rationale, L4 hypotheses with falsification), not BFS order.
+
+**Clean-room check.** `GROUNDING_KB=runs/clean_N.db python scripts/run_demo.py`
+runs against a fresh base; `python -m scripts.check_trajectory <report.json>...`
+confirms every final hypothesis is a knowledge-base hypothesis node whose
+target premise lies on the question's walk, and reports how many statements
+all runs share.
 
 **Audit.** Every question, link, verdict, evidence record and hypothesis is a node in the
 knowledge base; `verify` steps append per run, never overwrite.

@@ -15,6 +15,7 @@ export function ResultsView({
   hypotheses,
   cost,
   onIterate,
+  onOpenDetails,
 }: {
   run: RunRecord
   report: string
@@ -22,7 +23,10 @@ export function ResultsView({
   hypotheses: RankedHypothesis[]
   cost: CostSummary
   onIterate: (seedQuestion: string) => void
+  onOpenDetails?: () => void
 }) {
+  const hasSelected = hypotheses.some((h) => h.selected)
+
   return (
     <div className="mt-4 space-y-4">
       {hypotheses.length > 0 && (
@@ -32,12 +36,14 @@ export function ResultsView({
             hypotheses={hypotheses}
             evidence={evidence}
             onIterate={onIterate}
-            autoExpandSelected
+            onOpenDetails={onOpenDetails}
           />
         </div>
       )}
 
-      <ReportView report={report} evidence={evidence} />
+      {/* A run with no selected hypothesis (error/empty run) has no details
+          view to send the report to — show it inline so it's never hidden. */}
+      {!hasSelected && <ReportView report={report} evidence={evidence} />}
 
       <Accordion type="multiple" className="border rounded-xl bg-card px-4">
         {run.grounding && (

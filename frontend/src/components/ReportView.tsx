@@ -1,35 +1,55 @@
-import type { JSX, ReactNode } from "react"
-import ReactMarkdown, { type Components } from "react-markdown"
+import { ChevronDownIcon } from "lucide-react"
+import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { withCitations } from "@/lib/citations"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { buildComponents } from "@/lib/markdownComponents"
+import { splitReportSections, teaser } from "@/lib/reportSections"
 import type { EvidenceItem } from "@/types"
 
-function buildComponents(evidence: Record<string, EvidenceItem>): Components {
-  let counter = 0
-  const cited =
-    (Tag: keyof JSX.IntrinsicElements, className?: string) =>
-    ({ children }: { children?: ReactNode }) => {
-      const key = `md-${counter++}`
-      return <Tag className={className}>{withCitations(children, evidence, key)}</Tag>
-    }
+function Section({
+  heading,
+  body,
+  evidence,
+}: {
+  heading: string
+  body: string
+  evidence: Record<string, EvidenceItem>
+}) {
+  return (
+    <div className="border-b pb-4 last:border-b-0 last:pb-0">
+      <h2 className="mb-1.5 text-lg font-semibold">{heading}</h2>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildComponents(evidence)}>
+        {body}
+      </ReactMarkdown>
+    </div>
+  )
+}
 
-  return {
-    h2: cited("h2", "text-lg font-semibold mt-5 mb-1.5 pb-1 border-b first:mt-0"),
-    h3: cited("h3", "text-base font-semibold mt-4 mb-1"),
-    p: cited("p", "text-sm leading-relaxed mb-2"),
-    li: cited("li", "text-sm leading-relaxed"),
-    strong: cited("strong", "font-semibold"),
-    em: cited("em", "italic"),
-    ul: ({ children }) => <ul className="list-disc pl-5 space-y-0.5 mb-2">{children}</ul>,
-    ol: ({ children }) => <ol className="list-decimal pl-5 space-y-0.5 mb-2">{children}</ol>,
-    blockquote: ({ children }) => (
-      <blockquote className="border-l-2 border-muted-foreground/30 pl-3 italic text-muted-foreground">
-        {children}
-      </blockquote>
-    ),
-    code: ({ children }) => <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">{children}</code>,
-    hr: () => <hr className="my-3 border-border" />,
-  }
+function CollapsibleSection({
+  heading,
+  body,
+  evidence,
+}: {
+  heading: string
+  body: string
+  evidence: Record<string, EvidenceItem>
+}) {
+  return (
+    <Collapsible className="border-b pb-3 last:border-b-0 last:pb-0">
+      <h2 className="text-lg font-semibold">{heading}</h2>
+      <p className="mt-0.5 text-sm text-muted-foreground">{teaser(body)}</p>
+      <CollapsibleTrigger className="group mt-1 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+        <span className="group-data-[state=open]:hidden">More</span>
+        <span className="hidden group-data-[state=open]:inline">Less</span>
+        <ChevronDownIcon className="size-3 transition-transform group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildComponents(evidence)}>
+          {body}
+        </ReactMarkdown>
+      </CollapsibleContent>
+    </Collapsible>
+  )
 }
 
 export function ReportView({
@@ -39,11 +59,17 @@ export function ReportView({
   report: string
   evidence: Record<string, EvidenceItem>
 }) {
+  const sections = splitReportSections(report)
+
   return (
-    <div className="mt-4 p-6 border rounded-xl shadow-md bg-card">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={buildComponents(evidence)}>
-        {report}
-      </ReactMarkdown>
+    <div className="mt-4 space-y-4 rounded-xl border bg-card p-6 shadow-md">
+      {sections.map((s, i) =>
+        i === 0 ? (
+          <Section key={s.heading} heading={s.heading} body={s.body} evidence={evidence} />
+        ) : (
+          <CollapsibleSection key={s.heading} heading={s.heading} body={s.body} evidence={evidence} />
+        )
+      )}
     </div>
   )
 }

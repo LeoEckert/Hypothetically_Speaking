@@ -20,6 +20,9 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+from anthropic import Anthropic  # noqa: E402
+
+from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
 from backend.agent.loop import HARD_MAX_TOOL_CALLS, run_agent  # noqa: E402
 from backend.kgviz.graph import snapshot as trajectory_snapshot  # noqa: E402
 from backend.kgviz.render import render_html as render_trajectory  # noqa: E402
@@ -73,6 +76,10 @@ class RunRequest(BaseModel):
 
 class ToolToggleRequest(BaseModel):
     enabled: bool
+
+
+class EvaluateRequest(BaseModel):
+    comment: str = ""
 
 
 @app.get("/")
@@ -215,3 +222,22 @@ def view_trajectory(question: str | None = None, walk: str = "bfs", depth: int =
 
     query = urlencode({k: v for k, v in {"question": question, "walk": walk, "depth": depth, "records": int(records)}.items() if v is not None})
     return render_trajectory(_trajectory(question, walk, depth, records), reload_url=f"/api/trajectory?{query}")
+
+
+@app.post("/api/run/{run_id}/evaluate")
+def evaluate_run(run_id: str, req: EvaluateRequest):
+    """Critique + revise the run's selected hypothesis via a fresh, one-off
+    LLM judge+revise pass (see backend/agent/evaluate.py). Only reachable
+    once the run has finished: _results is populated at the very end of
+    the background worker in POST /api/run, so a still-running run simply
+    has nothing here yet."""
+    run_result = _results.get(run_id)
+    if run_result is None:
+        raise HTTPException(status_code=404, detail="run not found or not finished yet")
+
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+    client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    try:
+        return evaluate_hypothesis(run_result, req.comment, client, model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
