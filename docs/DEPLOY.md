@@ -162,9 +162,30 @@ openssl rand -hex 32   # -> ADMIN_TOKEN value
 ```
 
 Set `ADMIN_TOKEN=<value>` in the VM's `.env`, then
-`ssh ubuntu@<vm-ip> 'cd /opt/app/repo && sudo docker compose restart app'`.
-The dashboard fails **closed**, not open: every `/api/admin/*` route returns
-503 while `ADMIN_TOKEN` is unset, rather than being reachable with no auth.
+`ssh ubuntu@<vm-ip> 'cd /opt/app/repo && sudo docker compose up -d app'`
+(`up -d`, not `restart` — `restart` reuses the existing container without
+re-reading `env_file`, so a `.env` change alone has no effect until the
+container is recreated). The dashboard fails **closed**, not open: every
+`/api/admin/*` route returns 503 while `ADMIN_TOKEN` is unset, rather than
+being reachable with no auth.
+
+**Rotating the admin token itself**: once you're in, the "Rotate admin
+token" button (top of the dashboard) generates a new one server-side —
+never a value you type in, since this is our own high-entropy bearer
+secret, not a provider key from an external console. It takes effect
+immediately (no restart) and is shown exactly once, so save it before
+closing the dialog. Rotating invalidates the old token everywhere at once:
+this browser tab keeps working (it gets the new value automatically), but
+any other open admin tab or saved `#token=...` link stops working and needs
+the new token re-entered.
+
+**Lost the admin token and can't reach the dashboard to rotate it?** Once
+you've rotated at least once through the dashboard, `ADMIN_TOKEN` lives in
+`admin_overrides.env` on the VM, which wins over `.env` (`override=True`,
+loaded after `.env` — see below) — so editing `.env` no longer recovers
+access. Recovery: `ssh` in, remove the `ADMIN_TOKEN=...` line from
+`admin_overrides.env` (or delete the file), set a fresh value in `.env`
+instead, then `sudo docker compose up -d app`.
 
 **`ANTHROPIC_ADMIN_KEY`** (optional) is a separate, org-level Admin API key —
 **not** `ANTHROPIC_API_KEY` — used for two things: the live "Anthropic spend,

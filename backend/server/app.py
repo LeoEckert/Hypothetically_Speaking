@@ -277,3 +277,8 @@ def get_admin_keys():
 @app.post("/api/admin/keys/{name}", dependencies=[Depends(admin.check_admin_token)])
 def set_admin_key(name: str, req: KeyRotateRequest):
     return admin.set_key(name, req.value)
+
+
+@app.post("/api/admin/token/rotate", dependencies=[Depends(admin.check_admin_token)])
+def rotate_admin_token():
+    return admin.rotate_admin_token()

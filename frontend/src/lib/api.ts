@@ -110,3 +110,7 @@ export async function rotateAdminKey(
     body: JSON.stringify({ value }),
   })
 }
+
+export async function rotateAdminToken(token: string): Promise<{ token: string }> {
+  return adminJson("/api/admin/token/rotate", token, { method: "POST" })
+}

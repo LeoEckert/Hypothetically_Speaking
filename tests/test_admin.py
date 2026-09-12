@@ -251,6 +251,51 @@ def test_route_accepts_correct_token(client):
     assert len(body["series"]) == 7
 
 
+def test_rotate_admin_token_generates_new_value_and_persists(tmp_path, monkeypatch):
+    overrides_path = tmp_path / "admin_overrides.env"
+    monkeypatch.setattr(admin, "ADMIN_OVERRIDES_PATH", overrides_path)
+    monkeypatch.setenv("ADMIN_TOKEN", "old-token")
+
+    result = admin.rotate_admin_token()
+
+    new_token = result["token"]
+    assert new_token != "old-token"
+    assert len(new_token) == 64  # secrets.token_hex(32)
+    assert os.environ["ADMIN_TOKEN"] == new_token  # live effect, no restart needed
+    assert f"ADMIN_TOKEN={new_token}" in overrides_path.read_text()
+
+
+def test_rotate_admin_token_clears_lockout(tmp_path, monkeypatch):
+    overrides_path = tmp_path / "admin_overrides.env"
+    monkeypatch.setattr(admin, "ADMIN_OVERRIDES_PATH", overrides_path)
+    monkeypatch.setenv("ADMIN_TOKEN", "old-token")
+    admin._failed_attempts["1.2.3.4"] = (5, 9999999999.0)
+
+    admin.rotate_admin_token()
+
+    assert admin._failed_attempts == {}
+
+
+def test_route_rotate_admin_token_updates_live_auth(tmp_path, monkeypatch, client):
+    overrides_path = tmp_path / "admin_overrides.env"
+    monkeypatch.setattr(admin, "ADMIN_OVERRIDES_PATH", overrides_path)
+
+    resp = client.post("/api/admin/token/rotate", headers={"X-Admin-Token": "test-token"})
+    assert resp.status_code == 200
+    new_token = resp.json()["token"]
+    assert new_token != "test-token"
+
+    # the old token is now rejected...
+    assert client.get("/api/admin/keys", headers={"X-Admin-Token": "test-token"}).status_code == 401
+    # ...and the new one works immediately, no restart.
+    assert client.get("/api/admin/keys", headers={"X-Admin-Token": new_token}).status_code == 200
+
+
+def test_route_rotate_admin_token_requires_current_token(client):
+    resp = client.post("/api/admin/token/rotate", headers={"X-Admin-Token": "wrong"})
+    assert resp.status_code == 401
+
+
 def test_route_hour_granularity(client):
     resp = client.get("/api/admin/usage/history?granularity=hour&hours=24", headers={"X-Admin-Token": "test-token"})
     assert resp.status_code == 200

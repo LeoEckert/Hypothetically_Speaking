@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { UsageHistoryChart } from "@/components/UsageHistoryChart"
-import { fetchAdminKeys, fetchAdminUsage, fetchAdminUsageHistory, rotateAdminKey } from "@/lib/api"
+import { fetchAdminKeys, fetchAdminUsage, fetchAdminUsageHistory, rotateAdminKey, rotateAdminToken } from "@/lib/api"
 import type { AdminKeyInfo, AdminUsageHistory, AdminUsageSnapshot } from "@/types"
 
 const ADMIN_TOKEN_KEY = "admin_token"
@@ -272,17 +272,107 @@ function UsageHistorySection({ token }: { token: string }) {
   )
 }
 
-export function AdminPage({ token, onSignOut }: { token: string; onSignOut?: () => void }) {
+function RotateTokenDialog({ token, onRotated }: { token: string; onRotated: (newToken: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [newToken, setNewToken] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const rotate = useCallback(async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await rotateAdminToken(token)
+      setNewToken(res.token)
+      onRotated(res.token)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "rotation failed")
+    } finally {
+      setSaving(false)
+    }
+  }, [token, onRotated])
+
+  const copy = useCallback(() => {
+    if (!newToken) return
+    navigator.clipboard?.writeText(newToken).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [newToken])
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o)
+        if (!o) {
+          setNewToken(null)
+          setError(null)
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          Rotate admin token
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Rotate admin token</DialogTitle>
+        </DialogHeader>
+        {!newToken ? (
+          <>
+            <p className="text-xs text-muted-foreground">
+              This immediately invalidates the current admin token everywhere — this tab keeps working with the new
+              one, but any other open admin tab and any saved <code>#token=</code> link will need it re-entered.
+            </p>
+            {error && <p className="text-xs text-destructive">{error}</p>}
+            <div className="flex justify-end">
+              <Button onClick={rotate} disabled={saving}>
+                {saving ? "Rotating…" : "Rotate now"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-xs text-muted-foreground">Save this now — it will not be shown again.</p>
+            <Textarea readOnly value={newToken} rows={2} className="font-mono text-xs" onFocus={(e) => e.target.select()} />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={copy}>
+                {copied ? "Copied" : "Copy"}
+              </Button>
+              <Button onClick={() => setOpen(false)}>Done</Button>
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export function AdminPage({
+  token,
+  onSignOut,
+  onTokenRotated,
+}: {
+  token: string
+  onSignOut?: () => void
+  onTokenRotated?: (newToken: string) => void
+}) {
   return (
     <div className="min-h-screen bg-muted/20">
       <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h1 className="text-lg font-semibold">Admin</h1>
-          {onSignOut && (
-            <Button variant="ghost" size="sm" onClick={onSignOut}>
-              Sign out
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {onTokenRotated && <RotateTokenDialog token={token} onRotated={onTokenRotated} />}
+            {onSignOut && (
+              <Button variant="ghost" size="sm" onClick={onSignOut}>
+                Sign out
+              </Button>
+            )}
+          </div>
         </div>
         <UsageHistorySection token={token} />
         <UsageSection token={token} />
@@ -337,6 +427,10 @@ export function AdminGate() {
       onSignOut={() => {
         sessionStorage.removeItem(ADMIN_TOKEN_KEY)
         setToken(null)
+      }}
+      onTokenRotated={(newToken) => {
+        sessionStorage.setItem(ADMIN_TOKEN_KEY, newToken)
+        setToken(newToken)
       }}
     />
   )

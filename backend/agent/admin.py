@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from hmac import compare_digest
@@ -102,13 +103,10 @@ def list_keys() -> list[dict]:
     return out
 
 
-def set_key(name: str, value: str) -> dict:
-    if name not in ROTATABLE_KEYS:
-        raise HTTPException(status_code=400, detail=f"'{name}' is not a rotatable key. Rotatable: {sorted(ROTATABLE_KEYS)}")
-    value = (value or "").strip()
-    if not value:
-        raise HTTPException(status_code=400, detail="value must not be empty")
-
+def _write_override(name: str, value: str) -> None:
+    """Set an env var's live value and persist it to ADMIN_OVERRIDES_PATH so
+    it survives a container rebuild. Shared by set_key() (provider keys) and
+    rotate_admin_token() (our own dashboard secret)."""
     os.environ[name] = value
 
     ADMIN_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +124,35 @@ def set_key(name: str, value: str) -> dict:
     # would detach the mount from the file docker-compose is watching).
     ADMIN_OVERRIDES_PATH.write_text("\n".join(lines) + "\n")
 
+
+def set_key(name: str, value: str) -> dict:
+    if name not in ROTATABLE_KEYS:
+        raise HTTPException(status_code=400, detail=f"'{name}' is not a rotatable key. Rotatable: {sorted(ROTATABLE_KEYS)}")
+    value = (value or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="value must not be empty")
+
+    _write_override(name, value)
     return {"name": name, "updated": True, "masked": _mask(value)}
+
+
+def rotate_admin_token() -> dict:
+    """Generate a brand-new ADMIN_TOKEN server-side (never user-supplied —
+    this is our own high-entropy bearer secret, not a provider key pasted in
+    from an external console) and make it take effect immediately. Gated by
+    check_admin_token like every other /api/admin/* route, so rotating
+    requires already holding a currently-valid token.
+
+    Clears the failed-attempt lockout: a rotation predictably produces a
+    burst of stale-token 401s from any other open admin tab (each one
+    refetches usage/keys with the old token on its next render), and
+    _client_key is keyed on request.client.host, which behind Caddy is the
+    proxy's IP — one shared lockout bucket for every visitor. Without this,
+    that burst could 429-lock the very tab that just rotated."""
+    new_token = secrets.token_hex(32)
+    _write_override("ADMIN_TOKEN", new_token)
+    _failed_attempts.clear()
+    return {"token": new_token}
 
 
 def _amass_usage() -> dict:
