@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import httpx
@@ -20,6 +21,7 @@ from anthropic import Anthropic
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from backend.grounding.domain import (
+    TRIPLE_FIELDS,
     BiologicalEntity,
     Decomposition,
     Evidence,
@@ -35,6 +37,7 @@ from backend.grounding.domain import (
     ScientificQuestion,
     Triple,
     WebSnippet,
+    keep_valid_items,
     premise_id,
     prompt_hash,
 )
@@ -136,13 +139,24 @@ def _claude(
             return schema.model_validate_json(stored), digest
 
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    response = client.messages.create(
-        model=model,
-        max_tokens=MAX_TOKENS,
-        messages=[{"role": "user", "content": instructed}],
-    )
-    text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
-    result = _parse_fence(text, schema)
+
+    def ask():
+        response = client.messages.create(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            messages=[{"role": "user", "content": instructed}],
+        )
+        text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
+        return response, _parse_fence(text, schema)
+
+    try:
+        response, result = ask()
+    except ValueError as exc:
+        # A reply that does not fit the schema is a bad sample, not a bad
+        # prompt; one fresh answer usually fits. Nothing was cached, so this
+        # is a genuine re-ask.
+        print(f"grounding {stage or model}: unparseable reply, asking once more ({str(exc)[:160]})", file=sys.stderr)
+        response, result = ask()
 
     if cache is not None:
         cache.store_response(digest, model, result.model_dump_json())
@@ -202,6 +216,15 @@ class _Ranking(BaseModel):
 
 class _TripleList(BaseModel):
     triples: list[Triple] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair_triples(cls, data):
+        if isinstance(data, dict):
+            # The list sometimes arrives under the name the prompt used for it.
+            raw = data.get("triples", data.get("links", data.get("premises")))
+            data = {**data, "triples": keep_valid_items(raw, TRIPLE_FIELDS)}
+        return data
 
 
 _AMASS_ID_ALIASES = ("amass_id", "amassId", "amba_id", "amassid", "record_id", "id")
@@ -271,8 +294,18 @@ class _Proposed(BaseModel):
     rationale: str = ""
 
 
+_PROPOSED_FIELDS = ("targets", "verb", "statement", "intervention", "readout", "model_system", "falsification")
+
+
 class _Proposals(BaseModel):
     hypotheses: list[_Proposed] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair_proposals(cls, data):
+        if isinstance(data, dict):
+            data = {**data, "hypotheses": keep_valid_items(data.get("hypotheses"), _PROPOSED_FIELDS)}
+        return data
 
 
 # --- live adapters ---------------------------------------------------------

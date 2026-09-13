@@ -184,7 +184,14 @@ def extract(
         _log(f"L0: {Premise.render(triple)}")
     _log(f"L0: destination = {decomposition.destination or '(none named)'}")
 
-    probes = prober.probe(decomposition.triples)
+    try:
+        probes = prober.probe(decomposition.triples)
+    except ValueError as exc:
+        # The chain still stands on the question's own links; it is just
+        # not elaborated. Say so rather than lose the whole grounding.
+        _log(f"L1: probe reply unusable, checking the L0 links alone ({exc})")
+        remember("probe", "error", str(exc), prober)
+        probes = []
     candidates = _dedupe(decomposition.triples + probes)
     links, cut = candidates[:max_links], candidates[max_links:]
     progress({"stage": "L1", "links": [t.model_dump() for t in links], "cut": len(cut)})
@@ -246,7 +253,14 @@ def extract(
     if generator is None:
         return grounding
 
-    kept, dropped = select(generator.generate(grounding), grounding)
+    try:
+        proposals = generator.generate(grounding)
+    except Exception as exc:  # noqa: BLE001 — the premises are already worth handing to PLAN
+        _log(f"L4: hypothesis generation failed, PLAN gets the graph without candidates ({exc})")
+        remember("hypothesize", "error", str(exc), generator)
+        progress({"stage": "L4", "kept": 0, "rejected": 0, "error": str(exc)})
+        return grounding
+    kept, dropped = select(proposals, grounding)
     for hypothesis in kept:
         _log(f"L4: {hypothesis.id} {hypothesis.statement}")
         if knowledge_base is not None:
