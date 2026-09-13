@@ -7,11 +7,15 @@ import type { EvaluationResult, EvidenceItem, RankedHypothesis } from "@/types"
 
 export function EvaluateBlock({
   hypothesis,
+  report,
   evidence,
   evaluations,
   onEvaluate,
 }: {
   hypothesis: RankedHypothesis
+  /** The run's report markdown — the evaluation panel diffs its revised
+   * sections against these originals. */
+  report: string
   evidence: Record<string, EvidenceItem>
   evaluations: EvaluationResult[]
   onEvaluate: (comment: string) => Promise<void>
@@ -40,7 +44,13 @@ export function EvaluateBlock({
       <div className="space-y-3">
         <p className="text-xs font-semibold text-muted-foreground">AI Evaluation</p>
         {evaluations.map((ev, i) => (
-          <EvaluationPanel key={`${ev.created_at}-${i}`} evaluation={ev} evidence={evidence} original={hypothesis} />
+          <EvaluationPanel
+            key={`${ev.created_at}-${i}`}
+            evaluation={ev}
+            evidence={evidence}
+            original={hypothesis}
+            report={report}
+          />
         ))}
       </div>
     )

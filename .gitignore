@@ -22,3 +22,6 @@ runs/
 frontend/.vercel
 .env*
 admin_overrides.env
+
+# local dev fixture for the evaluation diff preview (?evalpreview)
+frontend/public/eval-fixture.json

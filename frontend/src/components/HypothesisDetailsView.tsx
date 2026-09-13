@@ -49,6 +49,7 @@ export function HypothesisDetailsView({
         <CardContent>
           <EvaluateBlock
             hypothesis={h}
+            report={report}
             evidence={evidence}
             evaluations={evaluations ?? []}
             onEvaluate={onEvaluate}

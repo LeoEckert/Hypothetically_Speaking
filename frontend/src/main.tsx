@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { AdminGate } from './components/AdminPage.tsx'
+import { EvalPreview } from './dev/EvalPreview.tsx'
 
 // Admin dashboard gate: reached via the `#admin` hash fragment (a login form
 // prompts for the token there), or `#token=...` as a shortcut that auto-fills
@@ -17,8 +18,14 @@ if (hashMatch) {
 }
 const wantsAdmin = hashMatch !== null || window.location.hash === '#admin'
 
+// `?evalpreview` renders the evaluation diff view against a saved fixture,
+// with no backend and no run required. Dev builds only — the constant folds
+// to false in production, so the preview and its fixture drop out.
+const previewEval =
+  import.meta.env.DEV && new URLSearchParams(window.location.search).has('evalpreview')
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {wantsAdmin ? <AdminGate /> : <App />}
+    {wantsAdmin ? <AdminGate /> : previewEval ? <EvalPreview /> : <App />}
   </StrictMode>,
 )
