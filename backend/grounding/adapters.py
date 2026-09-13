@@ -13,13 +13,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import httpx
 from anthropic import Anthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from backend.grounding.domain import (
+    TRIPLE_FIELDS,
     BiologicalEntity,
     Decomposition,
     Evidence,
@@ -35,6 +37,7 @@ from backend.grounding.domain import (
     ScientificQuestion,
     Triple,
     WebSnippet,
+    keep_valid_items,
     premise_id,
     prompt_hash,
 )
@@ -88,7 +91,7 @@ def _parse_fence(text: str, schema: type[BaseModel]) -> BaseModel:
         payload = text[start : end + 1] if start != -1 and end > start else text.strip()
     try:
         return schema.model_validate(json.loads(payload))
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValidationError) as exc:
         raise ValueError(f"unparseable model reply ({exc}): {text[:300]!r}") from exc
 
 
@@ -136,13 +139,24 @@ def _claude(
             return schema.model_validate_json(stored), digest
 
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    response = client.messages.create(
-        model=model,
-        max_tokens=MAX_TOKENS,
-        messages=[{"role": "user", "content": instructed}],
-    )
-    text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
-    result = _parse_fence(text, schema)
+
+    def ask():
+        response = client.messages.create(
+            model=model,
+            max_tokens=MAX_TOKENS,
+            messages=[{"role": "user", "content": instructed}],
+        )
+        text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
+        return response, _parse_fence(text, schema)
+
+    try:
+        response, result = ask()
+    except ValueError as exc:
+        # A reply that does not fit the schema is a bad sample, not a bad
+        # prompt; one fresh answer usually fits. Nothing was cached, so this
+        # is a genuine re-ask.
+        print(f"grounding {stage or model}: unparseable reply, asking once more ({str(exc)[:160]})", file=sys.stderr)
+        response, result = ask()
 
     if cache is not None:
         cache.store_response(digest, model, result.model_dump_json())
@@ -203,16 +217,63 @@ class _Ranking(BaseModel):
 class _TripleList(BaseModel):
     triples: list[Triple] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _repair_triples(cls, data):
+        if isinstance(data, dict):
+            # The list sometimes arrives under the name the prompt used for it.
+            raw = data.get("triples", data.get("links", data.get("premises")))
+            data = {**data, "triples": keep_valid_items(raw, TRIPLE_FIELDS)}
+        return data
+
+
+_AMASS_ID_ALIASES = ("amass_id", "amassId", "amba_id", "amassid", "record_id", "id")
+_AMASS_ID_RE = re.compile(r"^AM[A-Z]{2}_\w+$")
+
+
+def _amass_id_of(item: dict) -> str | None:
+    """The model sometimes misspells the key it was shown ('amba_id',
+    'amassId'); the value is still the record id it was given, so recover it
+    by any of the usual names, else by shape."""
+    for key in _AMASS_ID_ALIASES:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for value in item.values():
+        if isinstance(value, str) and _AMASS_ID_RE.match(value.strip()):
+            return value.strip()
+    return None
+
 
 class _CitedHow(BaseModel):
     amass_id: str
     how: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _recover_id(cls, data):
+        if isinstance(data, dict) and not data.get("amass_id"):
+            recovered = _amass_id_of(data)
+            if recovered:
+                data = {**data, "amass_id": recovered}
+        return data
 
 
 class _Verdict(BaseModel):
     status: PremiseStatus
     why: str
     evidence: list[_CitedHow] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_unusable_citations(cls, data):
+        # One malformed citation must cost that citation, not the whole
+        # verdict — the status and rationale are still worth keeping.
+        if isinstance(data, dict):
+            raw = data.get("evidence")
+            items = raw if isinstance(raw, list) else []
+            data = {**data, "evidence": [e for e in items if isinstance(e, dict) and _amass_id_of(e)]}
+        return data
 
 
 class Verification(BaseModel):
@@ -233,8 +294,18 @@ class _Proposed(BaseModel):
     rationale: str = ""
 
 
+_PROPOSED_FIELDS = ("targets", "verb", "statement", "intervention", "readout", "model_system", "falsification")
+
+
 class _Proposals(BaseModel):
     hypotheses: list[_Proposed] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair_proposals(cls, data):
+        if isinstance(data, dict):
+            data = {**data, "hypotheses": keep_valid_items(data.get("hypotheses"), _PROPOSED_FIELDS)}
+        return data
 
 
 # --- live adapters ---------------------------------------------------------

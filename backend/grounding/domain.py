@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # --- tunables --------------------------------------------------------------
 
@@ -65,6 +65,48 @@ class BiologicalEntity(BaseModel):
     kind: EntityKind
 
 
+def _fold(key: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", key.lower())
+
+
+def recover_keys(item: object, fields: tuple[str, ...]) -> object:
+    """Fill each missing `field` from a key the model spelled differently —
+    case, spaces, camelCase, a stray suffix ('falsification_criterion') —
+    and leave a dict that already has the field untouched. The validator
+    itself still decides whether the item is usable; this only stops a
+    spelling from being the reason it is not."""
+    if not isinstance(item, dict):
+        return item
+    missing = [f for f in fields if not item.get(f)]
+    if not missing:
+        return item
+    folded = {_fold(k): k for k in item if isinstance(k, str)}
+    fixed = dict(item)
+    for field in missing:
+        want = _fold(field)
+        key = folded.get(want) or next((k for f, k in folded.items() if f.startswith(want)), None)
+        if key is not None and key not in fields:
+            fixed[field] = item[key]
+    return fixed
+
+
+def keep_valid_items(items: object, fields: tuple[str, ...]) -> list:
+    """A list of model-written items, spelling repaired, with anything that
+    still lacks a required field dropped — one bad row must never sink the
+    rest of a reply."""
+    if not isinstance(items, list):
+        return []
+    kept = []
+    for item in items:
+        if isinstance(item, BaseModel):
+            kept.append(item)  # built in code, not written by the model
+            continue
+        fixed = recover_keys(item, fields)
+        if isinstance(fixed, dict) and all(isinstance(fixed.get(f), str) and fixed[f].strip() for f in fields):
+            kept.append(fixed)
+    return kept
+
+
 class Triple(BaseModel):
     """One `A -verb-> B` premise lifted verbatim from the question (L0)."""
 
@@ -79,6 +121,9 @@ class Triple(BaseModel):
         return value.strip().strip("-<>→ ").strip()
 
 
+TRIPLE_FIELDS = ("subject", "verb", "object")
+
+
 class Decomposition(BaseModel):
     """L0 output. An incoherent question carries `why` and no triples.
 
@@ -90,6 +135,13 @@ class Decomposition(BaseModel):
     why: str
     triples: list[Triple] = Field(default_factory=list)
     destination: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair_triples(cls, data):
+        if isinstance(data, dict) and "triples" in data:
+            data = {**data, "triples": keep_valid_items(data["triples"], TRIPLE_FIELDS)}
+        return data
 
 
 class PremiseStatus(str, Enum):

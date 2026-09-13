@@ -345,6 +345,7 @@ from backend.grounding.adapters import Verification  # noqa: E402
 from backend.grounding.domain import (  # noqa: E402
     Decomposition as _Decomposition,
     Evidence,
+    Premise,
     PremiseStatus,
     Triple,
     premise_id,
@@ -662,3 +663,206 @@ def test_ledger_streams_every_external_call():
     ledger = Ledger(seen.append)
     ledger.append({"tool": "amass", "args": {"core": "biomedcore", "query": "q"}, "summary": "3 records", "usage": None, "cached": False})
     assert seen == list(ledger) and seen[0]["tool"] == "amass"
+
+
+# --- a malformed citation must cost that citation, not the grounding ---------
+
+
+def test_verdict_recovers_misspelled_citation_keys_and_drops_unusable_ones():
+    from backend.grounding.adapters import _Verdict
+
+    reply = """```json
+{"status": "CONTESTED", "why": "trials conflict", "evidence": [
+  {"amass_id": "AMBC_1", "how": "human RCT"},
+  {"amba_id": "AMBC_2uvZxx7", "how": "review"},
+  {"amassId": "AMTC_3", "how": "registered trial, no results"},
+  {"how": "no id at all"},
+  "not even a dict"
+]}
+```"""
+    verdict = _parse_fence(reply, _Verdict)
+    assert verdict.status is PremiseStatus.CONTESTED and verdict.why == "trials conflict"
+    assert [e.amass_id for e in verdict.evidence] == ["AMBC_1", "AMBC_2uvZxx7", "AMTC_3"]
+
+
+def test_parse_fence_turns_a_schema_violation_into_a_value_error():
+    import pytest
+
+    from backend.grounding.adapters import _Verdict
+
+    with pytest.raises(ValueError, match="unparseable model reply"):
+        _parse_fence('{"why": "status is missing"}', _Verdict)
+
+
+class _FlakyVerifier(_StubVerifier):
+    """Unparseable on the first call for a given link, fine afterwards."""
+
+    def __init__(self, fail_times: int):
+        self.fail_times = fail_times
+        self.calls: dict[str, int] = {}
+
+    def verify(self, link, papers):
+        key = Premise.render(link)
+        self.calls[key] = self.calls.get(key, 0) + 1
+        if self.calls[key] <= self.fail_times:
+            raise ValueError("unparseable model reply (evidence.2.amass_id missing)")
+        return super().verify(link, papers)
+
+
+def _ground_with(verifier, knowledge_base=None):
+    return premises.extract(
+        "sirt1?",
+        triplifier=_StubTriplifier(_Decomposition(coherent=True, why="named cause and outcome", triples=[_SIRT1, _HEALTH])),
+        prober=_StubProber(),
+        sources=[_StubLinkRepo()],
+        verifier=verifier,
+        knowledge_base=knowledge_base,
+        run_id="r-flaky",
+    )
+
+
+def test_one_unparseable_verdict_is_retried_and_the_grounding_completes():
+    verifier = _FlakyVerifier(fail_times=1)
+    grounding = _ground_with(verifier)
+    assert grounding.coherent and len(grounding.premises) == 3
+    statuses = {p.statement: p.status for p in grounding.premises}
+    assert statuses["activating SIRT1 improves mitochondrial biogenesis"] is PremiseStatus.ESTABLISHED
+    assert verifier.calls["activating SIRT1 improves mitochondrial biogenesis"] == 2
+
+
+def test_a_link_that_never_parses_is_left_out_not_turned_into_a_gap():
+    knowledge_base = SqliteKnowledgeBase(":memory:")
+    grounding = _ground_with(_FlakyVerifier(fail_times=99), knowledge_base)
+    assert grounding.coherent, "one bad link must not fail the whole grounding"
+    statements = [p.statement for p in grounding.premises]
+    # the two links with papers could not be judged and are absent; the one
+    # with no literature never reached the verifier and is still UNVERIFIED
+    assert statements == ["mitochondrial biogenesis extends human healthspan"]
+    assert "activating SIRT1 improves mitochondrial biogenesis" not in grounding.knowledge_graph
+    errors = [s for s in knowledge_base.steps_for(question_id("sirt1?")) if s.stage == "verify" and s.verdict == "error"]
+    assert len(errors) == 2 and all("unparseable" in s.rationale for s in errors)
+
+
+def test_every_link_failing_fails_loudly_instead_of_an_empty_graph():
+    import pytest
+
+    class _AlwaysPapers(_StubLinkRepo):
+        def find(self, query):
+            return [Paper(amass_id="AMBC_9", title="topical", pmid="999")]
+
+    with pytest.raises(ValueError, match="no link could be verified"):
+        premises.extract(
+            "sirt1?",
+            triplifier=_StubTriplifier(_Decomposition(coherent=True, why="ok", triples=[_SIRT1, _HEALTH])),
+            prober=_StubProber(),
+            sources=[_AlwaysPapers()],
+            verifier=_FlakyVerifier(fail_times=99),
+            run_id="r-all-fail",
+        )
+
+
+# --- misspelled keys anywhere in a reply cost the row, never the reply ---------
+
+
+def test_proposals_recover_misspelled_keys_and_drop_hopeless_rows():
+    from backend.grounding.adapters import _Proposals
+
+    reply = """```json
+{"hypotheses": [
+  {"targets": "P1", "verb": "extends", "statement": "s1", "intervention": "i", "readout": "r",
+   "model system": "older adults", "falsification_criterion": "no change at 12 months"},
+  {"Targets": "P2", "verb": "extends", "statement": "s2", "intervention": "i", "readout": "r",
+   "modelSystem": "human fibroblasts", "falsification": "f"},
+  {"verb": "extends", "statement": "no target, no intervention"},
+  42
+]}
+```"""
+    proposals = _parse_fence(reply, _Proposals)
+    assert [p.targets for p in proposals.hypotheses] == ["P1", "P2"]
+    assert proposals.hypotheses[0].model_system == "older adults"
+    assert proposals.hypotheses[0].falsification == "no change at 12 months"
+    assert proposals.hypotheses[1].model_system == "human fibroblasts"
+
+
+def test_triple_list_accepts_the_prompts_name_for_the_list_and_drops_broken_rows():
+    from backend.grounding.adapters import _TripleList
+
+    reply = '{"links": [{"Subject": "SIRT1", "verb": "deacetylates", "Object": "PGC-1alpha"}, {"subject": "x", "verb": "y"}]}'
+    assert [(t.subject, t.object) for t in _parse_fence(reply, _TripleList).triples] == [("SIRT1", "PGC-1alpha")]
+    assert _parse_fence('{"triples": "not a list"}', _TripleList).triples == []
+
+
+def test_decomposition_drops_a_broken_triple_but_keeps_the_rest():
+    reply = '{"coherent": true, "why": "ok", "triples": [{"subject": "A", "verb": "raises", "object": "B"}, {"subject": "A", "object": "C"}], "destination": "B"}'
+    decomposition = _parse_fence(reply, _Decomposition)
+    assert [t.object for t in decomposition.triples] == ["B"]
+
+
+def test_claude_asks_once_more_when_the_first_reply_does_not_fit(monkeypatch):
+    from backend.grounding import adapters
+
+    replies = iter(['```json\n{"why": "no status"}\n```', '```json\n{"status": "ESTABLISHED", "why": "fine", "evidence": []}\n```'])
+    calls = []
+
+    class _Block:
+        type = "text"
+
+        def __init__(self, text):
+            self.text = text
+
+    class _Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return type("R", (), {"content": [_Block(next(replies))], "usage": None})()
+
+    class _FakeAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = _Messages()
+
+    monkeypatch.setattr(adapters, "Anthropic", _FakeAnthropic)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    knowledge_base = SqliteKnowledgeBase(":memory:")
+    verdict, digest = adapters._claude("judge this", adapters._Verdict, knowledge_base, stage="t")
+    assert verdict.status is PremiseStatus.ESTABLISHED and len(calls) == 2
+    assert knowledge_base.cached_response(digest) is not None, "the reply that fit is what gets cached"
+
+
+def test_an_unusable_probe_reply_falls_back_to_the_question_links():
+    class _BrokenProber:
+        def probe(self, triples):
+            raise ValueError("unparseable model reply")
+
+    knowledge_base = SqliteKnowledgeBase(":memory:")
+    grounding = premises.extract(
+        "sirt1?",
+        triplifier=_StubTriplifier(_Decomposition(coherent=True, why="ok", triples=[_SIRT1, _HEALTH])),
+        prober=_BrokenProber(),
+        sources=[_StubLinkRepo()],
+        verifier=_StubVerifier(),
+        knowledge_base=knowledge_base,
+        run_id="r-probe",
+    )
+    assert [p.statement for p in grounding.premises] == [Premise.render(_SIRT1), Premise.render(_HEALTH)]
+    assert any(s.stage == "probe" and s.verdict == "error" for s in knowledge_base.steps_for(question_id("sirt1?")))
+
+
+def test_a_failed_hypothesis_generator_still_hands_plan_the_premises():
+    class _BrokenGenerator:
+        def generate(self, grounding):
+            raise ValueError("unparseable model reply")
+
+    knowledge_base = SqliteKnowledgeBase(":memory:")
+    grounding = premises.extract(
+        "sirt1?",
+        triplifier=_StubTriplifier(_Decomposition(coherent=True, why="ok", triples=[_SIRT1, _HEALTH])),
+        prober=_StubProber(),
+        sources=[_StubLinkRepo()],
+        verifier=_StubVerifier(),
+        generator=_BrokenGenerator(),
+        knowledge_base=knowledge_base,
+        run_id="r-gen",
+    )
+    assert grounding.coherent and len(grounding.premises) == 3
+    assert grounding.hypotheses == [] and grounding.rejected == []
+    assert "Weakest links:" in grounding.knowledge_graph
+    assert any(s.stage == "hypothesize" and s.verdict == "error" for s in knowledge_base.steps_for(question_id("sirt1?")))

@@ -169,7 +169,7 @@ export interface GroundingStepEvent {
   links?: GroundingTriple[]
   cut?: number
   link?: GroundingTriple
-  status?: GroundingPremise["status"]
+  status?: GroundingPremise["status"] | "error"
   kept?: number
   rejected?: number
 }
