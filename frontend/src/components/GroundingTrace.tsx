@@ -8,12 +8,17 @@ import type {
   RunStatus,
 } from "@/types"
 
-const STATUS_STYLES: Record<GroundingPremise["status"], string> = {
+/** A premise verdict, or the L2 step outcome when the verifier's reply could
+ * not be parsed twice — that link is left out of the graph, not marked as a gap. */
+type LinkVerdict = GroundingPremise["status"] | "error"
+
+const STATUS_STYLES: Record<LinkVerdict, string> = {
   ESTABLISHED:
     "border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/40 dark:text-green-300",
   CONTESTED:
     "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
   UNVERIFIED: "border-primary/40 bg-primary/5 text-primary",
+  error: "border-destructive/40 bg-destructive/5 text-destructive",
 }
 
 const STAGES: Array<[GroundingStepEvent["stage"] | "L3", string]> = [
@@ -79,10 +84,10 @@ export function TripleGraph({ triple, destination }: { triple: GroundingTriple; 
   )
 }
 
-function StatusBadge({ status }: { status: GroundingPremise["status"] }) {
+function StatusBadge({ status }: { status: LinkVerdict }) {
   return (
     <Badge variant="outline" className={`text-[10px] ${STATUS_STYLES[status]}`}>
-      {status.toLowerCase()}
+      {status === "error" ? "no verdict" : status.toLowerCase()}
     </Badge>
   )
 }
@@ -187,7 +192,7 @@ export function GroundingLive({
   const l0 = steps.find((step) => step.stage === "L0")
   const l1 = steps.find((step) => step.stage === "L1")
   const l4 = steps.find((step) => step.stage === "L4")
-  const verdicts = new Map<string, GroundingPremise["status"]>()
+  const verdicts = new Map<string, LinkVerdict>()
   for (const step of steps) {
     if (step.stage === "L2" && step.link && step.status) {
       verdicts.set(`${step.link.subject}|${step.link.object}`.toLowerCase(), step.status)

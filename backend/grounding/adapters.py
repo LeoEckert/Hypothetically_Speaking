@@ -17,7 +17,7 @@ from pathlib import Path
 
 import httpx
 from anthropic import Anthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from backend.grounding.domain import (
     BiologicalEntity,
@@ -88,7 +88,7 @@ def _parse_fence(text: str, schema: type[BaseModel]) -> BaseModel:
         payload = text[start : end + 1] if start != -1 and end > start else text.strip()
     try:
         return schema.model_validate(json.loads(payload))
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValidationError) as exc:
         raise ValueError(f"unparseable model reply ({exc}): {text[:300]!r}") from exc
 
 
@@ -204,15 +204,53 @@ class _TripleList(BaseModel):
     triples: list[Triple] = Field(default_factory=list)
 
 
+_AMASS_ID_ALIASES = ("amass_id", "amassId", "amba_id", "amassid", "record_id", "id")
+_AMASS_ID_RE = re.compile(r"^AM[A-Z]{2}_\w+$")
+
+
+def _amass_id_of(item: dict) -> str | None:
+    """The model sometimes misspells the key it was shown ('amba_id',
+    'amassId'); the value is still the record id it was given, so recover it
+    by any of the usual names, else by shape."""
+    for key in _AMASS_ID_ALIASES:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for value in item.values():
+        if isinstance(value, str) and _AMASS_ID_RE.match(value.strip()):
+            return value.strip()
+    return None
+
+
 class _CitedHow(BaseModel):
     amass_id: str
     how: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _recover_id(cls, data):
+        if isinstance(data, dict) and not data.get("amass_id"):
+            recovered = _amass_id_of(data)
+            if recovered:
+                data = {**data, "amass_id": recovered}
+        return data
 
 
 class _Verdict(BaseModel):
     status: PremiseStatus
     why: str
     evidence: list[_CitedHow] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_unusable_citations(cls, data):
+        # One malformed citation must cost that citation, not the whole
+        # verdict — the status and rationale are still worth keeping.
+        if isinstance(data, dict):
+            raw = data.get("evidence")
+            items = raw if isinstance(raw, list) else []
+            data = {**data, "evidence": [e for e in items if isinstance(e, dict) and _amass_id_of(e)]}
+        return data
 
 
 class Verification(BaseModel):

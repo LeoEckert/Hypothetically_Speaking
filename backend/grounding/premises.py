@@ -87,17 +87,27 @@ def second_look_queries(link: Triple) -> list[str]:
     return queries
 
 
+def _verify(verifier, link: Triple, papers: list[Paper]):
+    """One verdict, with a single retry on an unparseable reply. A failed
+    parse is never cached, so the retry is a genuinely fresh answer."""
+    try:
+        return verifier.verify(link, papers)
+    except ValueError as exc:
+        _log(f"L2: verifier reply unparseable for {Premise.render(link)}, retrying once ({exc})")
+        return verifier.verify(link, papers)
+
+
 def activate(link: Triple, sources: list, verifier, second_look: bool = True) -> tuple[PremiseStatus, list, str | None, str, str | None]:
     """L2 for one link. Returns (status, evidence, absence_checked, why, prompt_hash)."""
     seen: dict[str, Paper] = {}
     retrieve([f"{link.subject} {link.object}"], sources, seen)
-    verification = verifier.verify(link, list(seen.values())) if seen else None
+    verification = _verify(verifier, link, list(seen.values())) if seen else None
     rounds = 1
     if second_look and (verification is None or verification.status is PremiseStatus.UNVERIFIED):
         fresh = retrieve(second_look_queries(link), sources, seen)
         rounds = 2
         if fresh:
-            verification = verifier.verify(link, list(seen.values()))
+            verification = _verify(verifier, link, list(seen.values()))
     searches = f"{rounds} search{'es' if rounds > 1 else ''}"
     if verification is None:
         return PremiseStatus.UNVERIFIED, [], f"{SOURCES}, 0 records over {searches}", "no literature retrieved", None
@@ -190,15 +200,34 @@ def extract(
     # announced as it lands; the results are then assembled in link order, so
     # the output is the same as the sequential one.
     verdicts: list = [None] * len(links)
+    failed: list[tuple[Triple, str]] = []
     with ThreadPoolExecutor(max_workers=MAX_LINKS) as pool:
         futures = {pool.submit(activate, link, sources, verifier, not fast): i for i, link in enumerate(links)}
         for future in as_completed(futures):
             i = futures[future]
-            verdicts[i] = future.result()
+            try:
+                verdicts[i] = future.result()
+            except Exception as exc:  # noqa: BLE001 — one link must not sink the others
+                # No verdict is not the same as UNVERIFIED: the link is left
+                # out of the graph rather than turned into a false gap for a
+                # hypothesis to aim at.
+                failed.append((links[i], str(exc)))
+                progress({"stage": "L2", "link": links[i].model_dump(), "status": "error", "why": str(exc)})
+                continue
             progress({"stage": "L2", "link": links[i].model_dump(), "status": verdicts[i][0].value, "why": verdicts[i][3]})
+    for link, error in failed:
+        _log(f"L2: {Premise.render(link)} -> no verdict ({error})")
+        remember("verify", "error", f"{Premise.render(link)}: {error}")
+    if failed and len(failed) == len(links):
+        # Every link failing is not bad luck with one reply, it is a broken
+        # source or key — fail loudly rather than hand PLAN an empty graph.
+        raise ValueError(f"no link could be verified; first error: {failed[0][1]}")
 
     premises: list[Premise] = []
-    for link, (status, evidence, absence, why, digest) in zip(links, verdicts):
+    for link, verdict in zip(links, verdicts):
+        if verdict is None:
+            continue
+        status, evidence, absence, why, digest = verdict
         _log(f"L2: {Premise.render(link)} -> {status.value} ({why})")
         premise = Premise(
             subject=link.subject, verb=link.verb, object=link.object,

@@ -345,6 +345,7 @@ from backend.grounding.adapters import Verification  # noqa: E402
 from backend.grounding.domain import (  # noqa: E402
     Decomposition as _Decomposition,
     Evidence,
+    Premise,
     PremiseStatus,
     Triple,
     premise_id,
@@ -662,3 +663,99 @@ def test_ledger_streams_every_external_call():
     ledger = Ledger(seen.append)
     ledger.append({"tool": "amass", "args": {"core": "biomedcore", "query": "q"}, "summary": "3 records", "usage": None, "cached": False})
     assert seen == list(ledger) and seen[0]["tool"] == "amass"
+
+
+# --- a malformed citation must cost that citation, not the grounding ---------
+
+
+def test_verdict_recovers_misspelled_citation_keys_and_drops_unusable_ones():
+    from backend.grounding.adapters import _Verdict
+
+    reply = """```json
+{"status": "CONTESTED", "why": "trials conflict", "evidence": [
+  {"amass_id": "AMBC_1", "how": "human RCT"},
+  {"amba_id": "AMBC_2uvZxx7", "how": "review"},
+  {"amassId": "AMTC_3", "how": "registered trial, no results"},
+  {"how": "no id at all"},
+  "not even a dict"
+]}
+```"""
+    verdict = _parse_fence(reply, _Verdict)
+    assert verdict.status is PremiseStatus.CONTESTED and verdict.why == "trials conflict"
+    assert [e.amass_id for e in verdict.evidence] == ["AMBC_1", "AMBC_2uvZxx7", "AMTC_3"]
+
+
+def test_parse_fence_turns_a_schema_violation_into_a_value_error():
+    import pytest
+
+    from backend.grounding.adapters import _Verdict
+
+    with pytest.raises(ValueError, match="unparseable model reply"):
+        _parse_fence('{"why": "status is missing"}', _Verdict)
+
+
+class _FlakyVerifier(_StubVerifier):
+    """Unparseable on the first call for a given link, fine afterwards."""
+
+    def __init__(self, fail_times: int):
+        self.fail_times = fail_times
+        self.calls: dict[str, int] = {}
+
+    def verify(self, link, papers):
+        key = Premise.render(link)
+        self.calls[key] = self.calls.get(key, 0) + 1
+        if self.calls[key] <= self.fail_times:
+            raise ValueError("unparseable model reply (evidence.2.amass_id missing)")
+        return super().verify(link, papers)
+
+
+def _ground_with(verifier, knowledge_base=None):
+    return premises.extract(
+        "sirt1?",
+        triplifier=_StubTriplifier(_Decomposition(coherent=True, why="named cause and outcome", triples=[_SIRT1, _HEALTH])),
+        prober=_StubProber(),
+        sources=[_StubLinkRepo()],
+        verifier=verifier,
+        knowledge_base=knowledge_base,
+        run_id="r-flaky",
+    )
+
+
+def test_one_unparseable_verdict_is_retried_and_the_grounding_completes():
+    verifier = _FlakyVerifier(fail_times=1)
+    grounding = _ground_with(verifier)
+    assert grounding.coherent and len(grounding.premises) == 3
+    statuses = {p.statement: p.status for p in grounding.premises}
+    assert statuses["activating SIRT1 improves mitochondrial biogenesis"] is PremiseStatus.ESTABLISHED
+    assert verifier.calls["activating SIRT1 improves mitochondrial biogenesis"] == 2
+
+
+def test_a_link_that_never_parses_is_left_out_not_turned_into_a_gap():
+    knowledge_base = SqliteKnowledgeBase(":memory:")
+    grounding = _ground_with(_FlakyVerifier(fail_times=99), knowledge_base)
+    assert grounding.coherent, "one bad link must not fail the whole grounding"
+    statements = [p.statement for p in grounding.premises]
+    # the two links with papers could not be judged and are absent; the one
+    # with no literature never reached the verifier and is still UNVERIFIED
+    assert statements == ["mitochondrial biogenesis extends human healthspan"]
+    assert "activating SIRT1 improves mitochondrial biogenesis" not in grounding.knowledge_graph
+    errors = [s for s in knowledge_base.steps_for(question_id("sirt1?")) if s.stage == "verify" and s.verdict == "error"]
+    assert len(errors) == 2 and all("unparseable" in s.rationale for s in errors)
+
+
+def test_every_link_failing_fails_loudly_instead_of_an_empty_graph():
+    import pytest
+
+    class _AlwaysPapers(_StubLinkRepo):
+        def find(self, query):
+            return [Paper(amass_id="AMBC_9", title="topical", pmid="999")]
+
+    with pytest.raises(ValueError, match="no link could be verified"):
+        premises.extract(
+            "sirt1?",
+            triplifier=_StubTriplifier(_Decomposition(coherent=True, why="ok", triples=[_SIRT1, _HEALTH])),
+            prober=_StubProber(),
+            sources=[_AlwaysPapers()],
+            verifier=_FlakyVerifier(fail_times=99),
+            run_id="r-all-fail",
+        )
