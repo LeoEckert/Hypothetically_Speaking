@@ -8,7 +8,7 @@ openai>=1.40.0
 # Vercel's native FastAPI/ASGI auto-detection is broken on the account this
 # deploys to (confirmed: a bare dependency-free FastAPI app 100%-crashes
 # with FUNCTION_INVOCATION_FAILED there, while a legacy WSGI-style function
-# works fine) — .github/workflows/deploy-backend-vercel.yml bridges the app
+# works fine) — .github/workflows/deploy-frontend.yml bridges the app
 # through a2wsgi's ASGIMiddleware onto that working WSGI pathway instead.
 # Not used anywhere outside that deploy.
 a2wsgi>=1.10.0

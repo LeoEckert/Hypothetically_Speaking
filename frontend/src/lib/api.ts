@@ -1,5 +1,5 @@
 // The backend is a Python serverless function inside this same Vercel
-// project (frontend/api/index.py, staged at deploy time — see
+// project (frontend/api/[...path].py, staged at deploy time — see
 // .github/workflows/deploy-frontend.yml) — production calls are
 // same-origin, so no base URL at all is the right default.
 // VITE_API_BASE_URL still overrides this if the backend is ever split back

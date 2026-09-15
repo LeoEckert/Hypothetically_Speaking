@@ -12,10 +12,11 @@ name: Deploy to Vercel
 # One Vercel project serves both: the static Vite build and a Python
 # serverless function for the backend. This project's Root Directory is
 # "frontend" (set in the Vercel dashboard), so the function has to live at
-# frontend/api/index.py to be auto-detected alongside the static build, and
-# backend/ must be staged as api/index.py's *sibling* — frontend/backend/,
-# not nested inside frontend/api/ — matching the exact layout confirmed
-# working during development (nesting it under api/ instead produces
+# frontend/api/[...path].py (Vercel's catch-all filename convention — see
+# below) to be auto-detected alongside the static build, and backend/ must
+# be staged as that function file's *sibling* — frontend/backend/, not
+# nested inside frontend/api/ — matching the exact layout confirmed working
+# during development (nesting it under api/ instead produces
 # `ModuleNotFoundError: No module named 'backend'` at runtime; Vercel's
 # Python function root ends up being the deploy root, not api/'s own
 # directory). backend/ itself stays at the repo root otherwise (same layout
@@ -32,9 +33,9 @@ name: Deploy to Vercel
 # unlike a from-scratch Python-only project) — a vercel.json `rewrites`
 # entry forwarding /api/:path* to it did not fix this (confirmed: still a
 # platform-level 404 for any sub-path, only the literal /api reached the
-# function). The catch-all filename convention (api/[...path].py) is
-# Vercel's own file-based mechanism for "one function owns everything under
-# this prefix" and works natively, no rewrite needed.
+# function). The catch-all filename convention (api/[...path].py, used
+# below) is Vercel's own file-based mechanism for "one function owns
+# everything under this prefix" and works natively, no rewrite needed.
 on:
   push:
     branches: [main]

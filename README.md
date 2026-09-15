@@ -49,10 +49,10 @@ scripts/             run_demo.py (canonical run + saved transcript), validate_ci
 docs/                architecture notes, deploy guide, demo script, judge instructions
 ```
 
-`frontend/` and `backend/` are deployed separately (see `docs/DEPLOY.md`) —
-the frontend is a static build (Vercel-friendly), the backend is a standalone
-API the frontend talks to cross-origin. Locally, run both at once (see Setup
-below).
+In production, `frontend/` and `backend/` ship as **one Vercel project**:
+the static Vite build plus a Python serverless function serving `/api/*`
+(see `docs/DEPLOY.md`). Locally they're still two independent processes on
+`localhost` — run both at once (see Setup below).
 
 ## Tools wired into the loop
 
@@ -95,8 +95,8 @@ Open `http://localhost:5173`, type a longevity question, watch it run.
 **This local setup is fully self-contained** — it never talks to any
 deployed service. The frontend's backend URL (`VITE_API_BASE_URL`) only
 matters for a deployed build; in `vite dev` it always falls back to
-`http://localhost:8000`. For deploying both as independent Vercel projects
-instead, see `docs/DEPLOY.md`.
+`http://localhost:8000`. In production this same frontend calls same-origin
+`/api/*`, served by a single Vercel project — see `docs/DEPLOY.md`.
 
 ## Recorded fallback
 
@@ -107,10 +107,13 @@ during judging. See [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
 
 ## Status
 
-Deployed: frontend and backend as two independent Vercel projects (see
-`docs/DEPLOY.md` for the current URLs and the full setup, including a
-Vercel-account-specific gotcha in how the backend's Python function is
-bridged). See `docs/ARCHITECTURE.md` for open TODOs — notably that
-`NEBIUS_API_KEY` is unset by default, so `extract_genes` runs on its
-regex-heuristic fallback rather than the real Nebius-hosted NER model
-unless a user brings their own key.
+Deployed: one Vercel project serving both the static frontend and the
+backend as a Python serverless function (see `docs/DEPLOY.md` for the
+current URL and the full setup, including a Vercel-account-specific gotcha
+in how the backend's Python function is bridged). No LLM key is
+platform-held — every visitor brings their own free OpenRouter key (or an
+Anthropic key) via a required onboarding popup; see `docs/DEPLOY.md`. See
+`docs/ARCHITECTURE.md` for open TODOs — notably that `NEBIUS_API_KEY` is
+unset by default, so `extract_genes` runs on its regex-heuristic fallback
+rather than the real Nebius-hosted NER model unless a user brings their own
+key.

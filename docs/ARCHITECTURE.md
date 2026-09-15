@@ -15,24 +15,22 @@ two-stage progress/results UX, and the full SSE event inventory.
 
 ## System diagram
 
-Frontend and backend are deployed independently and never share a process —
-the frontend is a static build with no server-side code at all, and the
-backend is a plain JSON/SSE API with no knowledge of how it's being served.
-Both are Vercel projects; locally they both collapse to `localhost` (see
-[`docs/DEPLOY.md`](DEPLOY.md) for the full split-deployment story,
-including a Vercel-account-specific gotcha in how the backend's Python
-function is actually wired up).
+In production, frontend and backend ship inside **one Vercel project**: the
+frontend is a static Vite build with no server-side code, and the backend
+is a plain JSON/SSE API packaged as a Python serverless function serving
+`/api/*` in that same project — they don't share a process, but they do
+share a deployment. Locally they're still two independent processes that
+both collapse to `localhost` (see [`docs/DEPLOY.md`](DEPLOY.md) for the
+full deployment story, including a Vercel-account-specific gotcha in how
+the backend's Python function is actually wired up).
 
 ```mermaid
 flowchart TB
     UI["Browser: React + shadcn/ui SPA<br/>localStorage-backed run history<br/>+ BYOK keys, apiKeysStore"]
 
-    subgraph VercelFE["Vercel project: frontend"]
-        FE["frontend/ Vite build"]
-    end
-
-    subgraph VercelBE["Vercel project: backend (serverless function)"]
-        API["FastAPI, bridged via a2wsgi<br/>backend/server/app.py"]
+    subgraph Vercel["One Vercel project"]
+        FE["frontend/ Vite build (static)"]
+        API["api/[...path].py: FastAPI,<br/>bridged via a2wsgi<br/>backend/server/app.py"]
     end
 
     subgraph Loop["backend/agent/loop.py"]
