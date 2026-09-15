@@ -54,20 +54,13 @@ jobs:
           # Point [tool.vercel].entrypoint back at "backend.server.app:app"
           # directly once the underlying crash is fixed.
           cat > /tmp/backend-deploy/_diag.py <<'EOF'
-          import traceback
+          from fastapi import FastAPI
 
-          try:
-              from backend.server.app import app  # noqa: F401
-          except Exception:
-              _tb = traceback.format_exc()
-              from fastapi import FastAPI
-              from fastapi.responses import PlainTextResponse
+          app = FastAPI()
 
-              app = FastAPI()
-
-              @app.get("/{path:path}")
-              def _err(path: str):
-                  return PlainTextResponse(_tb, status_code=500)
+          @app.get("/{path:path}")
+          def _ok(path: str):
+              return {"ok": True, "path": path}
           EOF
           cat > /tmp/backend-deploy/vercel.json <<'EOF'
           {
