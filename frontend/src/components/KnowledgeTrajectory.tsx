@@ -2,8 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import type { GroundingEvent, GroundingStepEvent } from "@/types"
 import {
   buildGraph,
+  inputFromGrounding,
+  inputFromSteps,
   layout,
   walk,
+  type LinkStatus,
   type NodeKind,
   type TrajectoryNode,
   type WalkMode,
@@ -15,14 +18,23 @@ const NODE_COLOR: Record<Exclude<NodeKind, "premise">, string> = {
   hypothesis: "text-violet-700 dark:text-violet-300",
   record: "text-muted-foreground",
 }
-const STATUS_COLOR = {
+const STATUS_COLOR: Record<LinkStatus, string> = {
   ESTABLISHED: "text-green-700 dark:text-green-300",
   CONTESTED: "text-amber-700 dark:text-amber-300",
   UNVERIFIED: "text-primary",
+  PENDING: "text-muted-foreground",
+  ERROR: "text-destructive",
+}
+const STATUS_LABEL: Record<LinkStatus, string> = {
+  ESTABLISHED: "established",
+  CONTESTED: "contested",
+  UNVERIFIED: "unverified",
+  PENDING: "checking…",
+  ERROR: "no verdict",
 }
 
 function colorOf(node: TrajectoryNode): string {
-  if (node.kind === "premise") return STATUS_COLOR[node.status ?? "UNVERIFIED"]
+  if (node.kind === "premise") return STATUS_COLOR[node.status ?? "PENDING"]
   return NODE_COLOR[node.kind]
 }
 
@@ -31,17 +43,21 @@ function clip(text: string | undefined | null, n: number): string {
   return text.length > n ? text.slice(0, n - 1) + "…" : text
 }
 
-const FIELD =
-  "rounded-md border bg-background px-2 py-1 text-xs text-foreground"
+const FIELD = "rounded-md border bg-background px-2 py-1 text-xs text-foreground"
 
+/** The trajectory graph and its stage-ordered activation path. Given the
+ * finished `grounding` event it is the complete picture; given only the
+ * `grounding_step` events so far it draws the chain as it is being checked —
+ * links appear at L1 as "checking…" and take their colour as each L2 verdict
+ * lands, hypotheses attach when the final event arrives. */
 export function KnowledgeTrajectory({
   grounding,
-  question,
   steps = [],
+  question,
 }: {
-  grounding: GroundingEvent
-  question: string
+  grounding?: GroundingEvent
   steps?: GroundingStepEvent[]
+  question: string
 }) {
   const [mode, setMode] = useState<WalkMode>("bfs")
   const [depth, setDepth] = useState(3)
@@ -58,16 +74,20 @@ export function KnowledgeTrajectory({
     return () => observer.disconnect()
   }, [])
 
-  const graph = useMemo(() => buildGraph(grounding, question), [grounding, question])
+  const input = useMemo(
+    () =>
+      grounding && grounding.status === "complete"
+        ? inputFromGrounding(grounding, question)
+        : inputFromSteps(steps, question),
+    [grounding, steps, question]
+  )
+  const graph = useMemo(() => buildGraph(input), [input])
   const activation = useMemo(() => walk(graph, mode, depth, showRecords), [graph, mode, depth, showRecords])
   const active = useMemo(() => new Set(activation.visited.map((v) => v.id)), [activation])
   const treeKeys = useMemo(() => new Set(activation.tree.map((e) => `${e.src}\t${e.dst}\t${e.kind}`)), [activation])
 
   const byId = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph])
-  const visible = useMemo(
-    () => graph.nodes.filter((node) => showRecords || node.kind !== "record"),
-    [graph, showRecords]
-  )
+  const visible = useMemo(() => graph.nodes.filter((node) => showRecords || node.kind !== "record"), [graph, showRecords])
   const visibleIds = useMemo(() => new Set(visible.map((node) => node.id)), [visible])
   const { positions, height } = useMemo(
     () => layout(graph, [...visibleIds], showRecords, width),
@@ -76,7 +96,6 @@ export function KnowledgeTrajectory({
   const edges = graph.edges.filter((e) => visibleIds.has(e.src) && visibleIds.has(e.dst))
   const destination = graph.destination.toLowerCase()
 
-  const l0 = steps.find((s) => s.stage === "L0")
   const l1 = steps.find((s) => s.stage === "L1")
   const verdictWhy = new Map<string, string>()
   for (const step of steps) {
@@ -86,9 +105,21 @@ export function KnowledgeTrajectory({
   }
 
   const premises = graph.nodes.filter((node) => node.kind === "premise")
+  const pending = premises.filter((p) => p.status === "PENDING").length
   const hypotheses = graph.nodes.filter((node) => node.kind === "hypothesis")
   const kept = hypotheses.filter((h) => !h.dropped)
   const rejected = hypotheses.filter((h) => h.dropped)
+
+  if (input.links.length === 0) {
+    return (
+      <p className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="size-2 animate-pulse rounded-full bg-primary/60" />
+        {input.coherent === false
+          ? `No trajectory — the question was judged not coherent: ${input.why}`
+          : "Waiting for the question to be split into claims…"}
+      </p>
+    )
+  }
 
   let n = 0
   const next = () => String(n++).padStart(2, "0")
@@ -97,7 +128,11 @@ export function KnowledgeTrajectory({
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-3 text-xs">
         <p className="mr-auto text-muted-foreground">
-          Activated walk over this run&apos;s premise graph. Same question, same path. Hover a step to find it in the graph.
+          {input.live
+            ? pending > 0
+              ? `Checking ${premises.length} links against the literature — ${premises.length - pending}/${premises.length} verdicts in. Hypotheses attach once the graph is complete.`
+              : "All links judged — assembling the premises and hypotheses…"
+            : "Activated walk over this run's premise graph. Same question, same path. Hover a step to find it in the graph."}
         </p>
         <label className="flex flex-col gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
           Walk
@@ -133,6 +168,7 @@ export function KnowledgeTrajectory({
         <LegendDot className={STATUS_COLOR.ESTABLISHED}>established link</LegendDot>
         <LegendDot className={STATUS_COLOR.CONTESTED}>contested link</LegendDot>
         <LegendDot className={STATUS_COLOR.UNVERIFIED}>unverified link</LegendDot>
+        {input.live && <LegendDot className={STATUS_COLOR.PENDING} dashed>link still being checked</LegendDot>}
         <LegendDot className={NODE_COLOR.hypothesis}>hypothesis kept</LegendDot>
         <LegendDot className={NODE_COLOR.hypothesis} dashed>hypothesis rejected</LegendDot>
         <LegendDot className="text-muted-foreground/50">outside this walk</LegendDot>
@@ -171,6 +207,7 @@ export function KnowledgeTrajectory({
               if (!p) return null
               const on = active.has(node.id)
               const isRejected = node.kind === "hypothesis" && Boolean(node.dropped)
+              const isPending = node.kind === "premise" && node.status === "PENDING"
               const isDestination = node.kind === "concept" && destination !== "" && node.name.toLowerCase() === destination
               const r = node.kind === "question" ? 9 : node.kind === "record" ? 4 : isDestination ? 9 : 7
               const raw = node.kind === "hypothesis" ? (isRejected ? `✕ ${node.name}` : node.label || node.name) : node.name
@@ -185,8 +222,8 @@ export function KnowledgeTrajectory({
                     r={r}
                     stroke="currentColor"
                     strokeWidth={focus === node.id || isDestination ? 4 : 2}
-                    strokeDasharray={isRejected ? "3 2" : undefined}
-                    className={isRejected ? "fill-background" : "fill-card"}
+                    strokeDasharray={isRejected || isPending ? "3 2" : undefined}
+                    className={`${isRejected ? "fill-background" : "fill-card"} ${isPending ? "animate-pulse" : ""}`}
                   />
                   <text
                     x={below ? p.x - r : p.x + 12}
@@ -204,20 +241,23 @@ export function KnowledgeTrajectory({
         <aside className="min-w-0 text-xs">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Activation path</p>
           <Stage>Question</Stage>
-          <Row index={next()} onFocus={setFocus} node={graph.seed} name={question} meta={grounding.destination ? `destination: ${grounding.destination}` : "seed"} />
+          <Row index={next()} onFocus={setFocus} node={graph.seed} name={question} meta={input.destination ? `destination: ${input.destination}` : "seed"} />
           <Stage>L0 · split into claims</Stage>
-          <Row index={next()} onFocus={setFocus} node={graph.seed}
-            name={l0 ? (l0.coherent ? "coherent" : "incoherent") : grounding.coherent ? "coherent" : "incoherent"}
+          <Row
+            index={next()}
+            onFocus={setFocus}
+            node={graph.seed}
+            name={input.coherent === false ? "incoherent" : "coherent"}
             meta="coherence"
-            why={clip(
-              [(l0?.why ?? grounding.why), ...grounding.triples.map((t) => `${t.subject} ${t.verb} ${t.object}`)].filter(Boolean).join(" | "),
-              260
-            )}
+            why={clip([input.why, ...input.triples.map((t) => `${t.subject} ${t.verb} ${t.object}`)].filter(Boolean).join(" | "), 260)}
           />
           {l1 && (
             <>
               <Stage>L1 · links to check</Stage>
-              <Row index={next()} onFocus={setFocus} node={graph.seed}
+              <Row
+                index={next()}
+                onFocus={setFocus}
+                node={graph.seed}
                 name={`${l1.links?.length ?? 0} links`}
                 meta="probe"
                 why={clip(
@@ -231,11 +271,16 @@ export function KnowledgeTrajectory({
           {premises.length > 0 && <Stage>L2 · verdict per link</Stage>}
           {premises.map((p) => (
             <Row
-              key={p.id} index={next()} onFocus={setFocus} node={p.id}
+              key={p.id}
+              index={next()}
+              onFocus={setFocus}
+              node={p.id}
               name={p.name}
               meta={
                 <>
-                  <span className={`font-semibold uppercase ${colorOf(p)}`}>{p.status}</span>
+                  <span className={`font-semibold uppercase ${colorOf(p)} ${p.status === "PENDING" ? "animate-pulse" : ""}`}>
+                    {STATUS_LABEL[p.status ?? "PENDING"]}
+                  </span>
                   {p.evidenceCount ? ` · ${p.evidenceCount} records` : p.absenceChecked ? ` · ${p.absenceChecked}` : ""}
                   {active.has(p.id) ? "" : " · outside walk"}
                 </>
@@ -243,10 +288,21 @@ export function KnowledgeTrajectory({
               why={clip(verdictWhy.get(`${p.subject}|${p.object}`.toLowerCase()), 260)}
             />
           ))}
+          {input.live && pending === 0 && premises.length > 0 && (
+            <>
+              <Stage>L4 · hypotheses</Stage>
+              <p className="flex items-center gap-2 py-1.5 text-[11px] text-muted-foreground">
+                <span className="size-2 animate-pulse rounded-full bg-primary/60" /> aiming one hypothesis at each weak link…
+              </p>
+            </>
+          )}
           {kept.length > 0 && <Stage>L4 · hypotheses aimed at the gaps</Stage>}
           {kept.map((h) => (
             <Row
-              key={h.id} index={next()} onFocus={setFocus} node={h.id}
+              key={h.id}
+              index={next()}
+              onFocus={setFocus}
+              node={h.id}
               name={h.name}
               meta={`${h.label ?? ""} → tests: ${byId.get(h.targets ?? "")?.name ?? h.targets}`}
               why={[
@@ -262,7 +318,10 @@ export function KnowledgeTrajectory({
           {rejected.length > 0 && <Stage>L4 · candidates rejected by the testability filter</Stage>}
           {rejected.map((h) => (
             <Row
-              key={h.id} index={next()} onFocus={setFocus} node={h.id}
+              key={h.id}
+              index={next()}
+              onFocus={setFocus}
+              node={h.id}
               name={h.name}
               meta={`tests: ${byId.get(h.targets ?? "")?.name ?? h.targets}`}
               why={`rejected: ${h.dropped}`}
@@ -309,9 +368,7 @@ function Row({
 }
 
 function Stage({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="mt-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{children}</p>
-  )
+  return <p className="mt-3 mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{children}</p>
 }
 
 function LegendDot({
@@ -327,9 +384,7 @@ function LegendDot({
 }) {
   return (
     <span className={`flex items-center gap-1.5 ${className}`}>
-      <span
-        className={`inline-block size-2.5 rounded-full border-current ${dashed ? "border-dashed border-2" : thick ? "border-[3px]" : "border-2"}`}
-      />
+      <span className={`inline-block size-2.5 rounded-full border-current ${dashed ? "border-2 border-dashed" : thick ? "border-[3px]" : "border-2"}`} />
       <span className="text-muted-foreground">{children}</span>
     </span>
   )

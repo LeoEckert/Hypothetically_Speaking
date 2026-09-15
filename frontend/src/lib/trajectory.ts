@@ -1,24 +1,36 @@
-import type { GroundingEvent, GroundingHypothesis, GroundingPremise, GroundingTriple } from "@/types"
+import type {
+  GroundingEvent,
+  GroundingHypothesis,
+  GroundingPremise,
+  GroundingStepEvent,
+  GroundingTriple,
+} from "@/types"
 
-/** The knowledge trajectory of one run, rebuilt in the browser from the
- * `grounding` event the backend already streams and the run store already
- * persists. This is the same graph `backend/kgviz/graph.py` loads from
- * `runs/knowledge.db` — same node ids (`backend/grounding/domain.py`'s
- * `premise_id`/`concept_id`/`hypothesis_id`), same edge kinds, same virtual
- * subject/object/tested_by links, same deterministic BFS/DFS walk — minus
- * what only a persistent database can hold: other runs of the same question
- * and each link's verdict history. On a stateless serverless deployment
- * that database never exists, so this is what can be shown there. */
+/** The knowledge trajectory of one run, rebuilt in the browser from what the
+ * backend already streams and the run store already persists — the
+ * `grounding_step` events while the grounding is still running, the final
+ * `grounding` event once it is done. This is the same graph
+ * `backend/kgviz/graph.py` loads from `runs/knowledge.db` — same node ids
+ * (`backend/grounding/domain.py`'s `premise_id`/`concept_id`/`hypothesis_id`),
+ * same edge kinds, same virtual subject/object/tested_by links, same
+ * deterministic BFS/DFS walk — minus what only a persistent database can
+ * hold: other runs of the same question and each link's verdict history. On
+ * a stateless serverless deployment that database never exists, so this is
+ * what can be shown there. */
 
 export type NodeKind = "question" | "premise" | "hypothesis" | "concept" | "record"
 export type WalkMode = "bfs" | "dfs"
+/** A verdict, or where a link stands before it has one: PENDING while L2 is
+ * still checking it, ERROR when the verifier's reply never parsed (the
+ * backend leaves such a link out of the graph, see premises.py). */
+export type LinkStatus = GroundingPremise["status"] | "PENDING" | "ERROR"
 
 export interface TrajectoryNode {
   id: string
   kind: NodeKind
   name: string
   label?: string
-  status?: GroundingPremise["status"]
+  status?: LinkStatus
   verb?: string
   subject?: string
   object?: string
@@ -57,10 +69,33 @@ export interface Walk {
   tree: Array<{ src: string; dst: string; kind: string }>
 }
 
+/** What the graph is built from — the finished `grounding` event, or the
+ * partial picture the `grounding_step` events give while it is running. */
+export interface TrajectoryLink extends GroundingTriple {
+  statement: string
+  status: LinkStatus
+  evidence: GroundingPremise["evidence"]
+  absence_checked: string | null
+}
+
+export interface TrajectoryInput {
+  question: string
+  destination: string
+  coherent: boolean | null
+  why: string
+  triples: GroundingTriple[]
+  links: TrajectoryLink[]
+  hypotheses: GroundingHypothesis[]
+  rejected: GroundingHypothesis[]
+  /** True until the final `grounding` event has landed. */
+  live: boolean
+}
+
 export const QUESTION_ID = "Q"
 export const KIND_RANK: Record<NodeKind, number> = { question: 0, premise: 1, hypothesis: 2, concept: 3, record: 4 }
 
 const fold = (value: string) => value.trim().toLowerCase()
+const render = (t: GroundingTriple) => `${t.subject} ${t.verb} ${t.object}`
 
 export function conceptId(name: string): string {
   return "C:" + name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
@@ -79,7 +114,56 @@ function recordLabel(evidence: GroundingPremise["evidence"][number]): string {
   return evidence.pmid ? `PMID:${evidence.pmid}` : evidence.nct_id ? `NCT:${evidence.nct_id}` : evidence.amass_id
 }
 
-export function buildGraph(grounding: GroundingEvent, question: string): TrajectoryGraph {
+export function inputFromGrounding(grounding: GroundingEvent, question: string): TrajectoryInput {
+  return {
+    question,
+    destination: grounding.destination ?? "",
+    coherent: grounding.coherent,
+    why: grounding.why,
+    triples: grounding.triples,
+    links: grounding.premises.map((p) => ({ ...p, evidence: p.evidence, absence_checked: p.absence_checked })),
+    hypotheses: grounding.hypotheses,
+    rejected: grounding.rejected ?? [],
+    live: false,
+  }
+}
+
+/** The graph as far as the stream has drawn it: L0 names the claims, L1 the
+ * links to check, each L2 event turns one link's status from PENDING into a
+ * verdict. Hypotheses only exist once the final event arrives. */
+export function inputFromSteps(steps: GroundingStepEvent[], question: string): TrajectoryInput {
+  const l0 = steps.find((s) => s.stage === "L0")
+  const l1 = steps.find((s) => s.stage === "L1")
+  const verdicts = new Map<string, LinkStatus>()
+  for (const step of steps) {
+    if (step.stage === "L2" && step.link && step.status) {
+      verdicts.set(`${step.link.subject}|${step.link.object}`.toLowerCase(), step.status === "error" ? "ERROR" : step.status)
+    }
+  }
+  const triples = l0?.triples ?? []
+  // Same dedupe as premises.py's _dedupe(): one link per (subject, object).
+  const seen = new Set<string>()
+  const links: TrajectoryLink[] = []
+  for (const t of [...triples, ...(l1?.links ?? [])]) {
+    const key = `${t.subject}|${t.object}`.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    links.push({ ...t, statement: render(t), status: verdicts.get(key) ?? "PENDING", evidence: [], absence_checked: null })
+  }
+  return {
+    question,
+    destination: l0?.destination ?? "",
+    coherent: l0?.coherent ?? null,
+    why: l0?.why ?? "",
+    triples,
+    links,
+    hypotheses: [],
+    rejected: [],
+    live: true,
+  }
+}
+
+export function buildGraph(input: TrajectoryInput): TrajectoryGraph {
   const nodes = new Map<string, TrajectoryNode>()
   const edges: TrajectoryEdge[] = []
   const seen = new Set<string>()
@@ -93,28 +177,28 @@ export function buildGraph(grounding: GroundingEvent, question: string): Traject
     if (!nodes.has(node.id)) nodes.set(node.id, node)
   }
 
-  put({ id: QUESTION_ID, kind: "question", name: question })
+  put({ id: QUESTION_ID, kind: "question", name: input.question })
 
-  for (const premise of grounding.premises) {
-    const id = premiseId(premise)
-    const subject = conceptId(premise.subject)
-    const object = conceptId(premise.object)
-    put({ id: subject, kind: "concept", name: premise.subject })
-    put({ id: object, kind: "concept", name: premise.object })
+  for (const link of input.links) {
+    const id = premiseId(link)
+    const subject = conceptId(link.subject)
+    const object = conceptId(link.object)
+    put({ id: subject, kind: "concept", name: link.subject })
+    put({ id: object, kind: "concept", name: link.object })
     put({
       id,
       kind: "premise",
-      name: premise.statement,
-      status: premise.status,
-      verb: premise.verb,
-      subject: premise.subject,
-      object: premise.object,
-      evidenceCount: premise.evidence.length,
-      absenceChecked: premise.absence_checked,
+      name: link.statement,
+      status: link.status,
+      verb: link.verb,
+      subject: link.subject,
+      object: link.object,
+      evidenceCount: link.evidence.length,
+      absenceChecked: link.absence_checked,
     })
-    edge(subject, object, premise.verb)
+    edge(subject, object, link.verb)
     edge(QUESTION_ID, id, "asks")
-    for (const record of premise.evidence) {
+    for (const record of link.evidence) {
       const recordId = `R:${record.amass_id}`
       put({ id: recordId, kind: "record", name: recordLabel(record) })
       edge(id, recordId, "evidence")
@@ -123,7 +207,7 @@ export function buildGraph(grounding: GroundingEvent, question: string): Traject
     edge(id, object, "object", true)
   }
 
-  for (const hypothesis of [...grounding.hypotheses, ...(grounding.rejected ?? [])]) {
+  for (const hypothesis of [...input.hypotheses, ...input.rejected]) {
     const id = hypothesisId(hypothesis)
     put({
       id,
@@ -143,7 +227,7 @@ export function buildGraph(grounding: GroundingEvent, question: string): Traject
     }
   }
 
-  return { seed: QUESTION_ID, destination: grounding.destination ?? "", nodes: [...nodes.values()], edges }
+  return { seed: QUESTION_ID, destination: input.destination, nodes: [...nodes.values()], edges }
 }
 
 function adjacency(graph: TrajectoryGraph, includeRecords: boolean): Map<string, Array<[string, string]>> {
