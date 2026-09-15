@@ -108,3 +108,10 @@ jobs:
         run: |
           sleep 3
           curl -s -w "\nHTTP:%{http_code}\n" "https://hypothetically-speaking-backend.vercel.app/" || true
+
+      # Deployment metadata (function list, runtime, size) rather than logs —
+      # to see whether _diag.py is even being registered as a function at all.
+      - name: Inspect deployment metadata
+        if: always()
+        run: |
+          vercel inspect "${{ steps.deploy.outputs.url }}" --token=${{ secrets.VERCEL_TOKEN }} 2>&1 || true
