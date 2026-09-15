@@ -45,7 +45,7 @@ from backend.agent import admin  # noqa: E402
 load_dotenv(admin.ADMIN_OVERRIDES_PATH, override=True)
 
 from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
-from backend.agent.loop import HARD_MAX_TOOL_CALLS, run_agent  # noqa: E402
+from backend.agent.loop import HARD_MAX_TOOL_CALLS, _env_int, run_agent  # noqa: E402
 from backend.agent.providers import get_provider  # noqa: E402
 from backend.kgviz.graph import snapshot as trajectory_snapshot  # noqa: E402
 from backend.kgviz.render import render_html as render_trajectory  # noqa: E402
@@ -83,7 +83,7 @@ DEMO_QUESTION = (
     "test that mechanism?"
 )
 IS_DEV_MODE = os.environ.get("APP_ENV", "development") != "production"
-DEFAULT_MAX_TOOL_CALLS = min(int(os.environ.get("MAX_TOOL_CALLS", 8)), HARD_MAX_TOOL_CALLS)
+DEFAULT_MAX_TOOL_CALLS = min(_env_int("MAX_TOOL_CALLS", 8), HARD_MAX_TOOL_CALLS)
 KEEPALIVE_SECONDS = 15.0  # module constant so tests can shrink it
 DISCONNECT_POLL_SECONDS = 1.0
 

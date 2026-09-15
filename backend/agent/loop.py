@@ -81,6 +81,15 @@ def _emit(on_event: EventCallback, event: dict) -> None:
         on_event(event)
 
 
+def _env_int(name: str, default: int) -> int:
+    """Like os.environ.get(name, default), but an env var that's *set to an
+    empty string* (confirmed to happen on Vercel — an env var declared with
+    no value in the dashboard still exists, it just reads as "") falls back
+    to the default too, instead of int("") raising ValueError."""
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw else default
+
+
 def _has_llm_key(api_keys: dict) -> bool:
     return bool(
         api_keys.get("ANTHROPIC_API_KEY")
@@ -445,13 +454,13 @@ def run_agent(
 ) -> dict:
     api_keys = api_keys or {}
 
-    requested_max = max_tool_calls if max_tool_calls is not None else int(os.environ.get("MAX_TOOL_CALLS", 8))
+    requested_max = max_tool_calls if max_tool_calls is not None else _env_int("MAX_TOOL_CALLS", 8)
     state = RunState(
         question=question,
         max_tool_calls=min(requested_max, HARD_MAX_TOOL_CALLS),
         # Default kept safely under Vercel Fluid Compute's hard 300s ceiling —
         # see REPORT_RESERVE_SECONDS above and CLAUDE.md.
-        max_run_seconds=int(os.environ.get("MAX_RUN_SECONDS", 260)),
+        max_run_seconds=_env_int("MAX_RUN_SECONDS", 260),
     )
     if run_id:
         state.run_id = run_id
