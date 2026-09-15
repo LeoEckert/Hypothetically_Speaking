@@ -81,7 +81,18 @@ jobs:
           echo "--- linked project ---"
           cat .vercel/project.json || true
 
-      - name: Smoke test
+      # Temporary while bringing this up (see CLAUDE.md's Open TODOs) — the
+      # per-deployment url output redirects to a Vercel Authentication gate,
+      # so this hits the stable production alias instead, and captures
+      # runtime logs (not build logs — `vercel inspect --logs` only shows
+      # those) via `vercel logs`.
+      - name: Smoke test + runtime logs
         if: always()
+        working-directory: /tmp/backend-deploy
         run: |
-          curl -s -w "\nHTTP:%{http_code}\n" "${{ steps.deploy.outputs.url }}/api/config" || true
+          (timeout 25 vercel logs "https://hypothetically-speaking-backend.vercel.app" --token=${{ secrets.VERCEL_TOKEN }} > vercel-logs.txt 2>&1 &)
+          sleep 5
+          curl -s -w "\nHTTP:%{http_code}\n" "https://hypothetically-speaking-backend.vercel.app/api/config" || true
+          sleep 15
+          echo "---runtime logs---"
+          cat vercel-logs.txt || true
