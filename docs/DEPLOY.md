@@ -37,7 +37,7 @@ serverless function at all.
 
 ## Current live deployment (example — yours will differ)
 
-- `https://frontend-azure-two-37.vercel.app` — one Vercel project, serving both the static frontend and `/api/*` as a Python serverless function.
+- `https://hypothetically-speaking.vercel.app` — one Vercel project, serving both the static frontend and `/api/*` as a Python serverless function. (`frontend-azure-two-37.vercel.app` is the same project/deployment — a leftover auto-generated alias from before the project was named — and still resolves too.)
 
 If this project is ever renamed, update `frontend/src/lib/api.ts`'s
 `PROD_API_BASE_FALLBACK` (empty string = same-origin; only needs a value if
