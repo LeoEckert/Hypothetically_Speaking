@@ -92,11 +92,11 @@ npm run dev   # http://localhost:5173 — talks to the backend above by default
 
 Open `http://localhost:5173`, type a longevity question, watch it run.
 
-**This local setup is fully self-contained** — it never talks to Vercel or
-Nebius. The frontend's backend URL (`VITE_API_BASE_URL`) only matters for a
-deployed build; in `vite dev` it always falls back to
-`http://localhost:8000`. For deploying the frontend on Vercel and the
-backend on a Nebius VM instead, see `docs/DEPLOY.md`.
+**This local setup is fully self-contained** — it never talks to any
+deployed service. The frontend's backend URL (`VITE_API_BASE_URL`) only
+matters for a deployed build; in `vite dev` it always falls back to
+`http://localhost:8000`. For deploying both as independent Vercel projects
+instead, see `docs/DEPLOY.md`.
 
 ## Recorded fallback
 
@@ -107,8 +107,10 @@ during judging. See [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md).
 
 ## Status
 
-Deployed: frontend on Vercel, backend on a Nebius VM (see `docs/DEPLOY.md`
-for the current URLs and the full setup). See `docs/ARCHITECTURE.md` for
-open TODOs — notably that `NEBIUS_API_KEY` has never been set, so
-`extract_genes` still runs on its regex-heuristic fallback rather than the
-real Nebius-hosted NER model (the Amass contract is confirmed and live).
+Deployed: frontend and backend as two independent Vercel projects (see
+`docs/DEPLOY.md` for the current URLs and the full setup, including a
+Vercel-account-specific gotcha in how the backend's Python function is
+bridged). See `docs/ARCHITECTURE.md` for open TODOs — notably that
+`NEBIUS_API_KEY` is unset by default, so `extract_genes` runs on its
+regex-heuristic fallback rather than the real Nebius-hosted NER model
+unless a user brings their own key.

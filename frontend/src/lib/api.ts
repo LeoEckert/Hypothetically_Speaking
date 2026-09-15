@@ -1,11 +1,11 @@
-// The backend is now a Python serverless function inside this same Vercel
-// project (frontend/api/index.py) rather than a separate host — production
-// calls are same-origin, so no base URL at all is the right default.
-// VITE_API_BASE_URL still overrides this if the backend is ever split back
-// out to its own host.
+// The backend is a Python serverless function on its own dedicated Vercel
+// project (.github/workflows/deploy-backend-vercel.yml) — co-locating it
+// with this frontend project never got the function invoked at all, so
+// it's a separate host, same as the old Nebius-VM-era split. VITE_API_BASE_URL
+// still overrides this if the backend URL ever changes.
 import type { AdminKeyInfo, AdminUsageHistory, AdminUsageSnapshot, EvaluationResult, ToolInfo } from "@/types"
 
-const PROD_API_BASE_FALLBACK = ""
+const PROD_API_BASE_FALLBACK = "https://hypothetically-speaking-backend.vercel.app"
 
 export const API_BASE =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ||

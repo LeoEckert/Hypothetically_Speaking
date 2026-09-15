@@ -1,8 +1,8 @@
-# Deploy: Vercel (frontend) + Nebius (backend) — being migrated to Vercel + Vercel
+# Deploy: two independent Vercel projects (frontend + backend)
 
-## Free-tier-by-default, BYOK, and the planned move off the Nebius VM
+## Free-tier-by-default, BYOK, no platform-held LLM key
 
-The platform now runs on free services with **no platform-held LLM key at
+The platform runs on free services with **no platform-held LLM key at
 all**: every visitor brings their own — a free OpenRouter key (real signup at
 openrouter.ai/keys, no card) or their own Anthropic key — guided by a
 required first-run onboarding popup in the frontend
@@ -16,175 +16,130 @@ already degrades to a mock/heuristic result without a key, and an operator
 *can* still optionally set any of these five (including the two LLM keys)
 as a platform fallback through the admin dashboard's key rotation
 (`backend/agent/admin.py`'s `ROTATABLE_KEYS`) if they want one — it's just
-not required or set by default. See `CLAUDE.md`'s "Tools wired into the
-loop" and "The agent loop" sections for the code-level detail.
+not required or set by default (and see the admin dashboard section below
+for a real caveat about that mechanism on serverless). See `CLAUDE.md`'s
+"Tools wired into the loop" and "The agent loop" sections for the
+code-level detail.
 
-As part of this, every run budget (`MAX_TOOL_CALLS`, `MAX_RUN_SECONDS`,
-grounding depth) was re-derived to fit inside a **hard 300-second-per-run
-ceiling** — the limit Vercel Fluid Compute imposes even on its free Hobby
-plan (standard functions cap at 60s; Fluid Compute raises that to 300s on
-Hobby, 800s on Pro — there is no way to raise it further, and no
-chunked/resumable workaround survives Vercel's 4.5MB request/response
-payload cap combined with this app's fully in-memory run state, so that path
-was considered and dropped, not overlooked). `backend/server/app.py` was
-also rewritten so `POST /api/run` runs the whole agent loop and streams its
-trace as SSE within **one** request/response — the old two-endpoint design
-(`POST /api/run` starts a background thread and returns a `run_id`; a
-separate `GET .../stream` tails an in-memory event list) depended on one
-long-lived process with shared memory across requests, which doesn't exist
-on stateless/serverless hosting.
-
-**What this means for this doc**: the "why split like this" reasoning below,
-and everything under "Backend: Nebius VM", describes the deployment as it
-exists *today* — a real, currently-live VM. The code changes above are
-what make a serverless backend possible; they do **not**, on their own,
-retire the VM. Actually doing that — decommissioning a live instance,
-standing up a new Vercel project for the backend (Python runtime, Fluid
-Compute, `maxDuration: 300`), updating `.github/workflows/deploy-backend.yml`
-and `VITE_API_BASE_URL` — touches real, currently-working infrastructure and
-CI/CD and needs the project owner's own Vercel/Nebius account access, so
-it's deliberately left as an explicit next step rather than something to
-execute automatically alongside a code refactor. Until that migration
-happens, follow the Nebius VM instructions below exactly as before; the only
-change is that neither `ANTHROPIC_API_KEY` nor `OPENROUTER_API_KEY` needs to
-be set there any more — the deployed backend doesn't need either (BYOK from
-each visitor is what actually supplies one per request); set either only if
-you deliberately want a local-dev-style fallback on that VM too.
-
-**Planned backend-migration checklist**, for whoever picks this up:
-1. New Vercel project, Python runtime (`@vercel/python` / the `frontend/DEPLOY`-style FastAPI preset), root pointed at the repo (backend has no separate subfolder today — may need `api/` restructuring depending on the preset chosen).
-2. `vercel.json` for that project: route everything to the FastAPI ASGI app, `"maxDuration": 300`, Fluid Compute enabled in Project Settings → Functions.
-3. Leave `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` **unset** in that project's Environment Variables by design — every request supplies its own via BYOK. Set any optional tool-key platform env vars (Tavily/Amass/Nebius) if desired.
-4. Verify SSE actually streams end-to-end through Vercel's Python runtime for a real run (not just locally) before cutting over — this wasn't verified against live Vercel infrastructure as part of this change, only against a local `uvicorn` process.
-5. Point the frontend's `VITE_API_BASE_URL` at the new backend URL, redeploy.
-6. Only once the new backend is confirmed working: decommission the Nebius VM and remove/retire `.github/workflows/deploy-backend.yml`, `Dockerfile`, `docker-compose.yml`, `Caddyfile`.
-
-## Why split like this (current, Nebius-VM deployment)
-
-Vercel Functions cap at 300 seconds max duration, even on paid tiers. A full
-agent run targets up to 18 minutes. So Vercel can only serve the built
-frontend as static assets — it cannot host the agent loop, and cannot even
-proxy the SSE stream (any Vercel function in that path would time out well
-before a run finishes). Everything that actually runs the agent lives on a
-Nebius VM instead, reachable directly from the browser (CORS-enabled), where
-Nebius compute credits cover the cost. See `docs/ARCHITECTURE.md`'s System
-diagram for the full picture.
+Every run budget (`MAX_TOOL_CALLS`, `MAX_RUN_SECONDS`, grounding depth) is
+sized to fit inside a **hard 300-second-per-run ceiling** — the limit
+Vercel Fluid Compute imposes even on its free Hobby plan (standard
+functions cap at 60s; Fluid Compute raises that to 300s on Hobby, 800s on
+Pro — there is no way to raise it further, and no chunked/resumable
+workaround survives Vercel's 4.5MB request/response payload cap combined
+with this app's fully in-memory run state, so that path was considered and
+dropped, not overlooked). `backend/server/app.py`'s `POST /api/run` runs
+the whole agent loop and streams its trace as SSE within **one**
+request/response — there is no separate start/stream/cancel endpoint and no
+server-side run cache, so this app has no state that needs to survive
+between requests, which is exactly what makes it deployable as a stateless
+serverless function at all.
 
 ## Current live deployment (example — yours will differ)
 
-- Backend: `https://api-185-175-110-142.sslip.io` (Nebius VM, `eu-west1`)
-- Frontend: `https://frontend-azure-two-37.vercel.app` (Vercel)
+- Frontend: `https://frontend-azure-two-37.vercel.app` (Vercel project `frontend`)
+- Backend: `https://hypothetically-speaking-backend.vercel.app` (Vercel project `hypothetically-speaking-backend`)
 
-Both hostnames are placeholders that change if the VM is recreated or the
-Vercel project is renamed — treat them as worked examples, not stable URLs.
+Both are Vercel projects under the same team, deployed independently by
+their own GitHub Actions workflow. Hostnames are worked examples, not
+guaranteed-stable — if a project is ever renamed, update
+`frontend/src/lib/api.ts`'s `PROD_API_BASE_FALLBACK` (or set
+`VITE_API_BASE_URL` in the frontend project's Environment Variables, which
+takes precedence).
 
-## The sslip.io placeholder
+## Why two separate projects, not one
 
-The backend's public hostname is `api-<vm-ip-with-dashes>.sslip.io` — a free
-wildcard DNS service that resolves any `<ip-with-dashes>.sslip.io` name to
-that literal IP, with zero domain purchase or DNS setup. Caddy uses it to get
-a real Let's Encrypt certificate automatically (confirmed: no `-k`/insecure
-flag needed, it's a real trusted cert).
+Co-locating the backend inside the frontend's own Vercel project (adding a
+Python function alongside the existing Vite static build, sharing one
+`vercel.json`) was tried first and never worked: across three different
+configurations (a hand-rolled `api/*.py` function two ways, then Vercel's
+documented native `pyproject.toml` FastAPI entrypoint) the Python function
+was never invoked for *any* request — consistently a platform-level
+`NOT_FOUND` with zero runtime logs, most likely because the project's
+existing Vite Framework Preset (a dashboard-only setting) prevented
+Vercel's Python/FastAPI detection from engaging. A brand-new, backend-only
+project immediately fixed that (confirmed: Vercel's build log explicitly
+said "Detected FastAPI" on the very first build) — so the backend lives in
+its own dedicated project, and the frontend calls it cross-origin (CORS via
+`ALLOWED_ORIGIN_REGEX`, unchanged from the old Nebius-VM-era setup).
 
-**Swapping in a real domain later:**
-1. Buy/point a domain's A record at the Nebius VM's reserved IP.
-2. Edit `Caddyfile`'s site block from the sslip.io hostname to the real domain.
-3. `sudo docker compose restart caddy` on the VM (issues a fresh cert automatically).
-4. Update the Vercel project's `VITE_API_BASE_URL` env var to the new URL, redeploy.
-5. `ALLOWED_ORIGIN_REGEX`'s default already matches any `*.vercel.app` origin, so the frontend side usually needs no backend change.
+## A second, unrelated problem: broken native ASGI support on this account
 
-## First-time setup
+Getting the dedicated project's Python function to actually *run* hit a
+second, completely separate issue: this Vercel account's native
+FastAPI/ASGI auto-detection consistently returns `FUNCTION_INVOCATION_FAILED`
+on every request, with no retrievable traceback (`vercel logs` reports none
+even seconds after a confirmed crash) — confirmed by elimination down to a
+bare, dependency-free `app = FastAPI()` with one `@app.get("/")` route,
+which still failed identically. A legacy `BaseHTTPRequestHandler`-style
+Python function (Vercel's oldest, most basic function format, unrelated to
+the FastAPI-specific integration) worked immediately on the same project.
 
-### 1. Backend: Nebius VM
+**The fix**: `backend/server/app.py`'s FastAPI `app` is never exposed
+directly to Vercel. The deploy stages a thin `api/index.py` that bridges it
+through [`a2wsgi`](https://pypi.org/project/a2wsgi/)'s `ASGIMiddleware` onto
+that working WSGI pathway instead:
 
-**Check vCPU quota before picking a region.** New Nebius accounts often get
-`0` for `compute.instance.non-gpu.vcpu` in some regions and `200` in others
-— region choice is not just about latency:
-
-```bash
-export PATH="$HOME/.nebius/bin:$PATH"
-nebius quotas quota-allowance list --parent-id <tenant-id> --format json \
-  | python3 -c "
-import json,sys
-for i in json.load(sys.stdin)['items']:
-    if i['metadata']['name'] == 'compute.instance.non-gpu.vcpu':
-        print(i['spec']['region'], i['spec']['limit'])
-"
-```
-Pick a region with a non-zero limit (e.g. `eu-west1` had 200 when this was
-written; `eu-north1` and `us-central1` had 0).
-
-**Images and platform IDs are region-scoped.** `computeplatform-*` and
-`computeimage-*` IDs from one project/region don't work in another — look
-them up fresh per region:
-
-```bash
-PROJECT=<the region's default project id>
-nebius compute platform list --parent-id $PROJECT --format json   # find the cpu-d3 platform id for this region
-nebius compute image list --parent-id project-e0<N>public-images --format json   # e00/e01/... prefix varies by region
+```python
+from a2wsgi import ASGIMiddleware
+from backend.server.app import app as _asgi_app
+app = ASGIMiddleware(_asgi_app)
 ```
 
-**Steps:**
-1. Reserve a **static** public IP first, not ephemeral (`nebius vpc allocation create --parent-id $PROJECT --name hs-backend-ip --ipv4-public-pool-id <pool-id>` — get the pool id from `nebius vpc network list`/`subnet list`). An ephemeral IP would silently change on VM stop/start, breaking both the frontend's configured backend URL and Caddy's certificate.
-2. The default security group already had an `ALLOW ANY` ingress/egress rule in testing — check with `nebius vpc security-rule list --parent-id <security-group-id>` before adding a redundant one.
-3. `nebius compute instance create` — **all of these flags are required**, several aren't obvious from the top-level `--help` and only surface as `InvalidArgument` errors if omitted or wrong:
-   - `--boot-disk-attach-mode read_write`
-   - `--boot-disk-managed-disk-name <any-name>` and `--boot-disk-managed-disk-type network_ssd` (both required, not just the size)
-   - `--boot-disk-managed-disk-source-image-id <region-specific image id>`
-   - `--boot-disk-managed-disk-size-gibibytes <N>` — **must meet the image's minimum** (the error message states the exact minimum in bytes if you get it wrong, e.g. 40 GiB for the Ubuntu 24.04 CUDA image used here — CUDA is preinstalled on every available Ubuntu image in this account, it's not something we opted into and isn't needed for this workload)
-   - `--network-interfaces '[{"name":"eth0","ip_address":{},"public_ip_address":{"allocation_id":"<allocation-id-from-step-1>","static":true},"subnet_id":"<subnet-id>"}]'`
-   - `--cloud-init-user-data "$(cat cloud-init.yaml)"` (see below)
-4. Cloud-init (a `#cloud-config` — installs Docker + Compose plugin, creates `/opt/app/repo`, injects an SSH key). **In testing, the `disable_root: false` + explicit `users: - name: root` approach did not actually enable root SSH login** — only the top-level `ssh_authorized_keys:` (which lands on the distro's default user, `ubuntu` on this image) worked. Use `ubuntu` + `sudo`, not `root`, unless you've separately confirmed root login works on your image:
-   ```yaml
-   #cloud-config
-   ssh_authorized_keys:
-     - ssh-ed25519 AAAA... your-key
-   package_update: true
-   packages: [ca-certificates, curl, rsync]
-   runcmd:
-     - install -m 0755 -d /etc/apt/keyrings
-     - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-     - chmod a+r /etc/apt/keyrings/docker.asc
-     - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
-     - apt-get update
-     - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-     - systemctl enable --now docker
-     - mkdir -p /opt/app/repo
-   ```
-5. Once the instance is `RUNNING` and `cloud-init status --wait` returns `done` over SSH as `ubuntu`:
-   ```bash
-   ssh ubuntu@<vm-ip> 'sudo chown -R ubuntu:ubuntu /opt/app'
-   rsync -az --delete \
-     --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
-     --exclude='frontend/node_modules' --exclude='frontend/dist' \
-     --exclude='backend/reports/*.json' --exclude='backend/reports/*.md' \
-     --exclude='.env' --exclude='.pytest_cache' --exclude='admin_overrides.env' \
-     ./ ubuntu@<vm-ip>:/opt/app/repo/
-   scp .env ubuntu@<vm-ip>:/opt/app/repo/.env
-   ```
-   `rsync` from the local machine directly, rather than `git clone` on the VM — this repo is private, and rsync avoids ever needing a GitHub credential (deploy key or PAT) on the VM at all. Re-run the same `rsync` command to push any future code change; it's idempotent (`--delete` keeps the VM's copy exactly in sync). `admin_overrides.env` is excluded deliberately — it doesn't exist locally (gitignored, VM-only) and `--delete` would otherwise erase any dashboard-rotated keys on every deploy.
-6. Edit `Caddyfile` on the VM to the real sslip.io hostname derived from the reserved IP (`api-<ip-with-dashes>.sslip.io`), then:
-   ```bash
-   ssh ubuntu@<vm-ip> 'cd /opt/app/repo && touch admin_overrides.env && sudo docker compose up -d --build'
-   ```
-   The `touch` matters on a fresh VM: `admin_overrides.env` is bind-mounted into the container (`docker-compose.yml`), and Docker silently creates a **directory** at that path instead of an empty file if nothing exists there yet — which then breaks the first key rotation from the admin dashboard.
-7. Verify: `curl -v https://api-<ip>.sslip.io/api/config` — should return real JSON over a trusted cert with no `-k` needed.
+Confirmed working end-to-end against the real deployment, including SSE:
+`POST /api/run` returns `content-type: text/event-stream` and streams
+correctly-framed `data: {...}` lines (start → phase/tool events → done →
+stream_end) all the way through the WSGI bridge. If a future Vercel
+platform update fixes native ASGI support on this account, `api/index.py`
+can go back to exporting `backend.server.app:app` directly — but re-run the
+elimination above against a real deployment before assuming it's fixed;
+this bridge cost real time to find and there was no dashboard-visible
+signal (build logs, deployment metadata) indicating anything was wrong.
 
-**Secrets are never baked into cloud-init/instance metadata** — metadata is
-retrievable indefinitely and rotating a key would mean recreating the VM.
-`.env` only ever reaches the VM via the `scp` step above. Rotating a key
-later: edit local `.env`, `scp` again, `ssh ... sudo docker compose restart app`.
+## Setup: backend (dedicated Vercel project)
 
-### 2. Frontend: Vercel
+Deployed by `.github/workflows/deploy-backend-vercel.yml` on every push to
+`main` (or manually via `workflow_dispatch`) — no manual first-time project
+creation needed, the workflow creates the project itself on its first run
+via `vercel deploy --yes` (naming it from `vercel.json`, or via
+`VERCEL_PROJECT_ID` once known). What the workflow does:
 
-**The programmatic path (Vercel MCP tools / API) had a persistent bug** when
-this was set up: `create_git_project` and `deploy_to_vercel` each report a
-successful project/deployment creation exactly once, but every subsequent
-call on that same project (`get_project`, `get_deployment`, a second
-deploy, `list_projects`) 404s or 403s, and the project never appears in
-`list_projects` at all — reproduced across 5+ attempts, different project
-names, both the git-linked and manual-file-upload flows. If you hit the
-same thing, don't keep retrying — use the dashboard instead:
+1. Stages a **clean, backend-only directory** (`/tmp/backend-deploy`) containing just `backend/` (copied, not symlinked — the codebase's `from backend.xxx import ...` absolute imports need `backend/` to actually be a subdirectory of the deploy root), a trimmed `requirements.txt` (pytest excluded), and the `api/index.py` a2wsgi bridge shown above.
+2. Deploys via the Vercel CLI with a personal access token (`vercel deploy --prod --token=...`) — **not** Vercel's native git integration, for the same reason as the frontend (see CI/CD below): this repo's git integration is fragile on this Hobby-plan team.
+3. `vercel.json` sets `"functions": {"api/index.py": {"maxDuration": 300}}` — Fluid Compute is on by default for FastAPI-shaped Vercel projects, so this maxDuration is actually honored rather than capped at 60s.
+
+**Environment variables**: leave `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`
+**unset** in this project's Environment Variables by design — every request
+supplies its own via BYOK (see above); there is no platform key for the
+LLM. Tool keys (`TAVILY_API_KEY`/`AMASS_API_KEY`/`NEBIUS_API_KEY`) are
+optional platform fallbacks — set them here only if you want the platform
+to fund those specific tools by default. `ADMIN_TOKEN` enables the admin
+dashboard (see below, with a serverless-specific caveat).
+
+**No manual dashboard configuration was needed** to get this working —
+Root Directory stays at the project's default (repo root: the deploy
+staging directory *is* the effective project root for this deploy, so
+there's no "frontend"-style subfolder complication here). This differs
+from the initial hope of co-locating with the frontend project, which
+would have needed Root Directory / Framework Preset changes this session
+had no access to check.
+
+## Setup: frontend (Vercel)
+
+**The programmatic path (Vercel MCP tools / API) had a persistent bug**
+when this was set up: `create_git_project` and `deploy_to_vercel` each
+report a successful project/deployment creation exactly once, but every
+subsequent call on that same project (`get_project`, `get_deployment`, a
+second deploy, `list_projects`) 404s or 403s, and the project never appears
+in `list_projects` at all — reproduced across 5+ attempts, different
+project names, both the git-linked and manual-file-upload flows. Separately
+(confirmed later, while setting up the backend project): **the Vercel MCP
+connector available in this environment can only see git-linked projects**
+— neither the frontend project (git-disconnected on purpose, see CI/CD
+below) nor the backend project (created via CLI, never git-linked) are
+visible through it, even by exact project ID. If you hit either of these,
+don't keep retrying against the API/MCP tools — use the dashboard directly,
+or the CLI-token deploy pattern both projects actually use in production:
 
 1. **vercel.com/new** → "Import Git Repository" → pick this repo. Vercel's
    import wizard auto-detects the Vite app inside `frontend/` and sets the
@@ -195,60 +150,57 @@ same thing, don't keep retrying — use the dashboard instead:
    `"cd frontend && npm run build"` / `"frontend/dist"`. (Vercel still reads
    `vercel.json` from the repo root even when Root Directory points at a
    subfolder; it just runs the configured commands with that subfolder as
-   the working directory. Getting this wrong fails the build with `cd:
-   frontend: No such file or directory` — the working directory is already
-   `frontend/`, so `cd frontend` doesn't exist relative to it.)
+   the working directory.)
 3. Project Settings → Environment Variables → add `VITE_API_BASE_URL` =
-   `https://api-<vm-ip-with-dashes>.sslip.io`, scoped to Production (and
-   Preview too, if you want preview deploys to hit the same backend).
-   Redeploy for it to take effect.
+   the backend project's URL, scoped to Production (and Preview too, if you
+   want preview deploys to hit the same backend). Redeploy for it to take
+   effect. Not required for a fresh deploy to work — `frontend/src/lib/api.ts`
+   hardcodes the same URL as `PROD_API_BASE_FALLBACK`.
 4. No CORS changes needed for the resulting `*.vercel.app` domain — it's
-   already covered by `ALLOWED_ORIGIN_REGEX`'s default
-   `https://.*\.vercel\.app$` (confirmed: a live `curl` with `Origin:
-   https://<project>.vercel.app` against the deployed backend returns the
-   matching `Access-Control-Allow-Origin` header with no extra config).
+   already covered by the backend's `ALLOWED_ORIGIN_REGEX` default
+   `https://.*\.vercel\.app$` (confirmed live: a CORS preflight with
+   `Origin: https://frontend-azure-two-37.vercel.app` against the deployed
+   backend returns the matching `Access-Control-Allow-Origin` header with
+   no extra config).
 
 ## Admin dashboard
 
 A `/api/admin/*` set of routes (`backend/agent/admin.py`) lets you monitor
-paid-service usage over time and rotate provider API keys without SSH-ing
-into the VM for routine key changes.
+paid-service usage over time and rotate provider API keys.
 
-**Enabling it**: generate a token and set it on the backend:
+**Serverless caveat (new, since the Nebius VM retired)**: `set_key()`/
+`rotate_admin_token()` persist a rotation by writing to
+`ADMIN_OVERRIDES_PATH` (a file), on the theory that it survives a rebuild
+because it's outside the main deploy artifact. On the old VM that file was
+a bind-mounted volume that genuinely persisted. **On Vercel's serverless
+functions, the filesystem is ephemeral per instance** — a rotation written
+during one invocation has no guaranteed way to reach the *next* invocation,
+which may be a completely fresh instance with no memory of that write. In
+practice a rotation may appear to work (the response looks successful) and
+then silently not be visible on a later request. This subsystem needs a
+real persistent store (a small free-tier KV/Postgres) to actually work
+here — not solved yet (see `CLAUDE.md`'s Open TODOs). Given Anthropic is
+now user-supplied-only and the platform's only potential held secret
+(`GROQ_API_KEY`/`OPENROUTER_API_KEY`) is a free-tier key with no billing
+risk, key *rotation* specifically may not be worth fixing properly; the
+dashboard's *usage monitoring* views (which just read `backend/reports/`
+and call provider usage APIs directly) are unaffected by this caveat.
+
+**Enabling it**: generate a token and set it as an Environment Variable on
+the **backend** Vercel project (Project Settings → Environment Variables,
+not a VM `.env` — there is no VM):
 
 ```bash
 openssl rand -hex 32   # -> ADMIN_TOKEN value
 ```
 
-Set `ADMIN_TOKEN=<value>` in the VM's `.env`, then
-`ssh ubuntu@<vm-ip> 'cd /opt/app/repo && sudo docker compose up -d app'`
-(`up -d`, not `restart` — `restart` reuses the existing container without
-re-reading `env_file`, so a `.env` change alone has no effect until the
-container is recreated). The dashboard fails **closed**, not open: every
-`/api/admin/*` route returns 503 while `ADMIN_TOKEN` is unset, rather than
-being reachable with no auth.
+The dashboard fails **closed**, not open: every `/api/admin/*` route
+returns 503 while `ADMIN_TOKEN` is unset, rather than being reachable with
+no auth.
 
-**Rotating the admin token itself**: once you're in, the "Rotate admin
-token" button (top of the dashboard) generates a new one server-side —
-never a value you type in, since this is our own high-entropy bearer
-secret, not a provider key from an external console. It takes effect
-immediately (no restart) and is shown exactly once, so save it before
-closing the dialog. Rotating invalidates the old token everywhere at once:
-this browser tab keeps working (it gets the new value automatically), but
-any other open admin tab or saved `#token=...` link stops working and needs
-the new token re-entered.
-
-**Lost the admin token and can't reach the dashboard to rotate it?** Once
-you've rotated at least once through the dashboard, `ADMIN_TOKEN` lives in
-`admin_overrides.env` on the VM, which wins over `.env` (`override=True`,
-loaded after `.env` — see below) — so editing `.env` no longer recovers
-access. Recovery: `ssh` in, remove the `ADMIN_TOKEN=...` line from
-`admin_overrides.env` (or delete the file), set a fresh value in `.env`
-instead, then `sudo docker compose up -d app`.
-
-**`ANTHROPIC_ADMIN_KEY`** (optional) is a separate, org-level Admin API key —
-**not** `ANTHROPIC_API_KEY` — used for two things: the live "Anthropic spend,
-last 7 days" figure in the usage snapshot, and the real hour-by-hour
+**`ANTHROPIC_ADMIN_KEY`** (optional) is a separate, org-level Admin API key
+— **not** `ANTHROPIC_API_KEY` — used for two things: the live "Anthropic
+spend, last 7 days" figure in the usage snapshot, and the real hour-by-hour
 Anthropic series in the usage-history graph's **24h** view (sourced from
 Anthropic's own Usage API, priced with our confirmed rate table — genuinely
 fetched, not locally estimated). It's unavailable on individual/non-org
@@ -263,20 +215,6 @@ endpoint for how much prepaid credit is left on the account. That figure is
 Console-UI-only (the billing page). This dashboard tracks usage/spend, not
 a balance, for that reason.
 
-**`ADMIN_OVERRIDES_PATH`** defaults to `<repo-root>/admin_overrides.env`,
-already bind-mounted into the `app` container by `docker-compose.yml` and
-already gitignored. It's created lazily the first time you rotate a key from
-the dashboard — nothing to set up in advance.
-
-**Interaction with manual key rotation** (see "Rotating a key later" under
-the Nebius VM section above): a key rotated through the dashboard is written
-to `admin_overrides.env` on the VM, which is loaded with `override=True`
-*after* `.env` at process start (`app.py`) — so a dashboard rotation wins
-over whatever is in `.env`, including a `.env` you `scp` up *after* the
-dashboard rotation, unless you also update/clear the corresponding line in
-`admin_overrides.env`. If you use both rotation paths, know that the
-dashboard's value wins by default.
-
 **Reaching it**: visit `https://<frontend-host>/#admin` — this opens a small
 login prompt where you paste the token once per browser tab (kept in
 `sessionStorage`, so a fresh tab or "Sign out" asks again). A
@@ -289,11 +227,8 @@ only over a secure channel.
 
 ## CI/CD
 
-**Frontend** — `.github/workflows/deploy-frontend.yml`: on every push to
-`main` (or manually via `workflow_dispatch`), a
-GitHub Actions job runs `vercel deploy --prod` against the existing Vercel
-project (`frontend`), authenticated with a personal access token rather
-than Vercel's native git integration.
+Both projects deploy via the Vercel CLI with a personal access token,
+**not** Vercel's native git integration.
 
 This exists because Vercel's GitHub App auto-files a "request to join the
 team" for any GitHub identity that pushes to a linked repo and isn't
@@ -301,58 +236,35 @@ already a team member — and the Hobby plan can neither add members nor
 resolve/dismiss that request, so the pending request alone blocks *all*
 deploys, even ones authored by the project owner (confirmed: this happened
 after an external contributor pushed to `main`, and persisted even after
-making the repo public — visibility isn't the trigger, the git integration
-itself is). The fix: the git integration is disconnected
-(`vercel git disconnect`, confirmed under Project Settings → Git in the
-dashboard, for both the `frontend` project and a stray duplicate project
-`hypothetically-speaking` that was also git-linked to this repo) and
-`vercel.json` sets `git.deploymentEnabled: false` as a backstop, so this
-workflow is now the only thing that deploys the frontend. A CLI/token
-deploy authenticates by the token's own project permissions, not by
-pushing GitHub identity, so it isn't subject to the same restriction —
-confirmed working directly against the `frontend` project.
+making the repo public). The fix, for the frontend project: git integration
+disconnected (`vercel git disconnect`) and `vercel.json` sets
+`git.deploymentEnabled: false` as a backstop. The backend project was
+never git-linked at all, for the same reason.
 
-Requires three repository secrets (Settings → Secrets and variables →
-Actions), obtained once by the project owner and not derivable by an
-agent: `VERCEL_TOKEN` (Account Settings → Tokens), `VERCEL_ORG_ID` and
+**Frontend** — `.github/workflows/deploy-frontend.yml`: `vercel deploy --prod`
+against the `frontend` project on every push to `main`. Requires
+`VERCEL_TOKEN` (Account Settings → Tokens), `VERCEL_ORG_ID` and
 `VERCEL_PROJECT_ID` (from `vercel link`'s `.vercel/project.json`, or
-Project Settings → General) — the same pattern as `NEBIUS_SSH_KEY`/
-`NEBIUS_VM_HOST` above. `frontend/src/lib/api.ts` also hardcodes a
-production fallback backend URL (`PROD_API_BASE_FALLBACK`), so a fresh
-deploy works even without `VITE_API_BASE_URL` set in the Vercel dashboard —
-that env var only needs setting if the backend URL ever changes, and it's
-still applied correctly since the workflow uses Vercel's remote build
-(`vercel deploy` uploads source and lets Vercel build it against the
-dashboard-configured project settings, rather than building locally in
-Actions where that dashboard-only env var wouldn't be visible).
+Project Settings → General).
 
-**Limitation:** since git deploys are fully disabled repo-wide, Preview
-deployments for PRs/other branches no longer happen automatically — only
-pushes to `main` deploy anything now. A manual
-`vercel deploy` (without `--prod`) can still produce an ad hoc preview if
-ever needed.
+**Backend** — `.github/workflows/deploy-backend-vercel.yml`: stages the
+clean backend-only directory described above and runs `vercel deploy --prod`
+against the `hypothetically-speaking-backend` project. Uses the same
+`VERCEL_TOKEN`/`VERCEL_ORG_ID` secrets plus its own
+`VERCEL_BACKEND_PROJECT_ID`. On a brand-new backend project (no
+`VERCEL_BACKEND_PROJECT_ID` secret yet), the workflow leaves both
+`VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` unset for that one run — the CLI errors
+if only one of the two is set — and `vercel deploy --yes` creates the
+project fresh; set `VERCEL_BACKEND_PROJECT_ID` from the printed project ID
+once, and every later run targets it explicitly.
 
-**Note:** a "sujoung requests to join your team" entry may still be
-visible in the Vercel dashboard from before this fix. It's a harmless
-leftover — once the git integration is disconnected it can't block
-anything or recur, and Hobby still doesn't expose a way to dismiss it.
-Ignore it, or clean it up later if Vercel ever adds that ability.
-
-**Backend** — `.github/workflows/deploy-backend.yml`: on every push to
-`main` (or manually via `workflow_dispatch`), a
-GitHub Actions job rsyncs the repo to the VM and runs `docker compose up -d
---build app` over SSH — the same two commands as the manual first-time
-setup above, just automated. It deliberately only rebuilds the `app`
-service, not `caddy` (whose config is static once set up), and `.env` is
-excluded from the rsync (secrets stay VM-only, CI never sees them).
-
-Requires two repository secrets (Settings → Secrets and variables →
-Actions): `NEBIUS_SSH_KEY` (a **dedicated** deploy keypair generated for
-CI — not any developer's personal key — with its public half appended to
-the VM's `ubuntu` user's `~/.ssh/authorized_keys`) and `NEBIUS_VM_HOST`
-(the VM's IP). Rotate by generating a new keypair, appending the new
-public key to the VM, replacing the `NEBIUS_SSH_KEY` secret, then removing
-the old public key from the VM's `authorized_keys`.
+**Limitation:** since git deploys are fully disabled for both projects,
+Preview deployments for PRs/other branches don't happen automatically —
+only pushes to `main` deploy anything. A manual `vercel deploy` (without
+`--prod`) can still produce an ad hoc preview if ever needed, though raw
+per-deployment preview URLs redirect to a Vercel Authentication gate on
+this team (hitting the stable production alias is the reliable way to
+smoke-test a deploy from CI).
 
 ## Local dev mode
 
@@ -360,18 +272,16 @@ the old public key from the VM's `authorized_keys`.
 and frontend (`vite dev`) together, Ctrl+C stops both. It's a convenience
 wrapper — nothing it does is required; running the two `uvicorn`/`npm run
 dev` commands from the Setup section in separate terminals is equivalent.
-Either way, local dev is **fully independent** of Vercel/Nebius: no
-network calls to either happen unless you explicitly point
-`VITE_API_BASE_URL` at a deployed backend.
+Either way, local dev is **fully independent** of Vercel: no network calls
+to either deployed project happen unless you explicitly point
+`VITE_API_BASE_URL` at one.
 
-## Known limitation (pre-existing, now resolved by the streaming rewrite)
+## Known limitation (pre-existing, resolved by the streaming rewrite)
 
 `_run_events`/`_waiters`/`_results` in `backend/server/app.py` used to be
-in-memory module-level dicts — a backend container restart mid-run lost all
-in-flight run state. That whole mechanism is gone: `POST /api/run` now runs
-a request entirely within its own single response (see "Free-tier-by-default,
-BYOK, and the planned move off the Nebius VM" above), so there's no
-cross-request state left to lose. A container restart still kills any run
-in flight at that moment (same as before), but no longer corrupts or loses
-state for any *other* run, because no state is shared across requests at all
-any more.
+in-memory module-level dicts — a backend restart mid-run lost all in-flight
+run state. That whole mechanism is gone: `POST /api/run` now runs a request
+entirely within its own single response, so there's no cross-request state
+left to lose. This is also what makes serverless hosting correct rather
+than just convenient — a fresh, memoryless instance per request is exactly
+what stateless serverless functions are.

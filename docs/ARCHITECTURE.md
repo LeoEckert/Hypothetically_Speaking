@@ -18,21 +18,21 @@ two-stage progress/results UX, and the full SSE event inventory.
 Frontend and backend are deployed independently and never share a process —
 the frontend is a static build with no server-side code at all, and the
 backend is a plain JSON/SSE API with no knowledge of how it's being served.
-Locally, "Vercel" and "Nebius VM" below both collapse to `localhost` (see
-[`docs/DEPLOY.md`](DEPLOY.md) for the full split-deployment story).
+Both are Vercel projects; locally they both collapse to `localhost` (see
+[`docs/DEPLOY.md`](DEPLOY.md) for the full split-deployment story,
+including a Vercel-account-specific gotcha in how the backend's Python
+function is actually wired up).
 
 ```mermaid
 flowchart TB
-    UI["Browser: React + shadcn/ui SPA<br/>localStorage-backed run history"]
+    UI["Browser: React + shadcn/ui SPA<br/>localStorage-backed run history<br/>+ BYOK keys, apiKeysStore"]
 
-    subgraph Vercel["Vercel — static hosting only"]
+    subgraph VercelFE["Vercel project: frontend"]
         FE["frontend/ Vite build"]
     end
 
-    subgraph VM["Nebius VM"]
-        Caddy["Caddy: TLS via sslip.io"]
-        API["FastAPI backend, Docker<br/>backend/server/app.py"]
-        Caddy --> API
+    subgraph VercelBE["Vercel project: backend (serverless function)"]
+        API["FastAPI, bridged via a2wsgi<br/>backend/server/app.py"]
     end
 
     subgraph Loop["backend/agent/loop.py"]
@@ -42,8 +42,8 @@ flowchart TB
         Revise --> Report
     end
 
-    subgraph Ext["External APIs, backend/tools/"]
-        Anthropic["Anthropic Messages API"]
+    subgraph Ext["External APIs, backend/tools/ + backend/agent/providers/"]
+        LLM["Anthropic or OpenRouter, BYOK<br/>get_provider()"]
         Tavily
         Amass["Amass Cores API"]
         OpenTargets["Open Targets"]
@@ -55,7 +55,7 @@ flowchart TB
     end
 
     FE -.->|"page load"| UI
-    UI -->|"fetch + SSE, CORS"| Caddy
+    UI -->|"fetch + SSE, CORS, api_keys in body"| API
     API --> Plan
     Act --> Tavily
     Act --> Amass
@@ -65,18 +65,20 @@ flowchart TB
     Act --> GenAge
     Compute --> NebiusAI
     Compute --> GProfiler
-    Plan --> Anthropic
-    Revise --> Anthropic
-    Report --> Anthropic
+    Plan --> LLM
+    Revise --> LLM
+    Report --> LLM
 ```
 
 ## Agent loop (`backend/agent/loop.py`)
 
-Implemented as a manual Anthropic Messages API tool-use loop (not the
-Claude Agent SDK) — chosen for transparency and low dependency risk within
-a 36-hour build: every step is inspectable state, not framework magic, and
-the whole loop is ~200 lines we fully control for the judge's "switch a
-tool off and watch it change" test.
+Implemented as a manual, provider-agnostic tool-use loop (not the Claude
+Agent SDK) — chosen for transparency and low dependency risk within a
+36-hour build: every step is inspectable state, not framework magic. Every
+LLM call goes through `backend/agent/providers/get_provider()`, which
+selects Anthropic or OpenRouter depending on which BYOK key was supplied
+(see `docs/DEPLOY.md`) — the loop itself never branches on which provider
+is in use.
 
 ```
 1. PLAN     A dedicated, tool-less Anthropic call (mirrors REVISE below):

@@ -1,18 +1,23 @@
 name: Deploy backend to Vercel (serverless)
 
 # A dedicated, backend-only Vercel project — deliberately NOT the same
-# project as the frontend (see docs/DEPLOY.md and CLAUDE.md's Open TODOs):
-# co-locating the Python FastAPI backend with the frontend's Vite framework
-# preset in one project hit unresolved routing issues (the function was
-# never invoked for any request). A clean, dedicated project gives Vercel's
-# native FastAPI auto-detection (frontend/pyproject.toml's sibling here,
-# backend/pyproject.toml) nothing to conflict with.
+# project as the frontend (see docs/DEPLOY.md and CLAUDE.md): co-locating
+# the Python FastAPI backend with the frontend's Vite framework preset in
+# one project never got the function invoked at all (100% 404, zero runtime
+# logs, across three different configurations). A clean, dedicated project
+# fixed that — but then hit a second, unrelated problem: this Vercel
+# account's native FastAPI/ASGI auto-detection is itself broken (confirmed
+# by elimination: a bare, dependency-free `app = FastAPI()` still
+# FUNCTION_INVOCATION_FAILED on every request, while a legacy WSGI-style
+# `BaseHTTPRequestHandler` function worked immediately). The fix: bridge the
+# real FastAPI app through a2wsgi's ASGIMiddleware onto that working WSGI
+# pathway (api/index.py below) instead of exposing it as a bare ASGI `app`.
 #
 # Deploys via the Vercel CLI with a token (same pattern as
 # deploy-frontend.yml, for the same reason: native git integration is
 # fragile on this account's Hobby plan). The staged directory keeps
-# backend/ nested under the deploy root (not flattened) because the
-# codebase uses absolute `from backend.xxx import ...` imports throughout —
+# backend/ nested under api/'s sibling (not flattened) because the codebase
+# uses absolute `from backend.xxx import ...` imports throughout —
 # flattening would break every one of them.
 on:
   push:
@@ -31,19 +36,9 @@ jobs:
 
       - name: Stage a clean backend-only deploy root
         run: |
-          mkdir -p /tmp/backend-deploy
+          mkdir -p /tmp/backend-deploy/api
           cp -r backend /tmp/backend-deploy/backend
           grep -v '^pytest' requirements.txt > /tmp/backend-deploy/requirements.txt
-          echo "a2wsgi" >> /tmp/backend-deploy/requirements.txt
-          # Vercel's native FastAPI/ASGI auto-detection is broken on this
-          # account (confirmed: a bare dependency-free FastAPI hello-world
-          # 100%-crashes with FUNCTION_INVOCATION_FAILED, while a legacy
-          # BaseHTTPRequestHandler function works fine — see CLAUDE.md's Open
-          # TODOs) — so the real app is bridged through the older, more
-          # battle-tested WSGI pathway instead (a2wsgi's ASGIMiddleware wraps
-          # the FastAPI/ASGI app as a WSGI callable) rather than exposed as
-          # a bare ASGI `app`.
-          mkdir -p /tmp/backend-deploy/api
           cat > /tmp/backend-deploy/api/index.py <<'EOF'
           from a2wsgi import ASGIMiddleware
 
@@ -54,7 +49,6 @@ jobs:
           cat > /tmp/backend-deploy/vercel.json <<'EOF'
           {
             "$schema": "https://openapi.vercel.sh/vercel.json",
-            "name": "hypothetically-speaking-backend",
             "functions": {
               "api/index.py": { "maxDuration": 300 }
             }
@@ -64,43 +58,9 @@ jobs:
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 
-      # First-ever run of this workflow has no VERCEL_BACKEND_PROJECT_ID secret
-      # yet, so VERCEL_PROJECT_ID is left unset (not passed as an empty
-      # string, which the CLI could treat as an invalid id) — `vercel deploy
-      # --yes` then creates the project fresh (named per vercel.json's
-      # "name") under the token's default team. Once the printed project ID
-      # is known, a VERCEL_BACKEND_PROJECT_ID secret should be added so
-      # every later run targets the same project explicitly.
       - name: Deploy to Vercel (production)
-        id: deploy
         working-directory: /tmp/backend-deploy
-        run: |
-          # The CLI errors if only one of VERCEL_ORG_ID/VERCEL_PROJECT_ID is
-          # set ("you need to specify both") — so both are only exported
-          # once VERCEL_BACKEND_PROJECT_ID exists (i.e. after the first,
-          # bootstrap run below has created the project).
-          if [ -n "${{ secrets.VERCEL_BACKEND_PROJECT_ID }}" ]; then
-            export VERCEL_ORG_ID="${{ secrets.VERCEL_ORG_ID }}"
-            export VERCEL_PROJECT_ID="${{ secrets.VERCEL_BACKEND_PROJECT_ID }}"
-          fi
-          url=$(vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes)
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "--- linked project ---"
-          cat .vercel/project.json || true
-
-      # Temporary while bringing this up (see CLAUDE.md's Open TODOs) — hits
-      # the stable production alias (the per-deployment url output redirects
-      # to a Vercel Authentication gate) and prints _diag.py's response,
-      # which is the real Python traceback if the actual app failed to import.
-      - name: Smoke test
-        if: always()
-        run: |
-          sleep 3
-          curl -s -w "\nHTTP:%{http_code}\n" "https://hypothetically-speaking-backend.vercel.app/api/config" || true
-
-      # Deployment metadata (function list, runtime, size) rather than logs —
-      # to see whether _diag.py is even being registered as a function at all.
-      - name: Inspect deployment metadata
-        if: always()
-        run: |
-          vercel inspect "${{ steps.deploy.outputs.url }}" --token=${{ secrets.VERCEL_TOKEN }} 2>&1 || true
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_BACKEND_PROJECT_ID }}
+        run: vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
