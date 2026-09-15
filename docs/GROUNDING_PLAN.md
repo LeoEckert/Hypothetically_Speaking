@@ -226,13 +226,24 @@ cold run is ~1 min instead of ~4.5; a warm run is under a second. The
 remaining cost is the agent loop itself (PLAN → tools → REVISE → REPORT,
 ~2 min), which the grounding does not touch.
 
-**Trajectory in the app.** `GET /api/trajectory?question=` returns the
-graph + walk + reasoning log; `GET /api/trajectory/view?question=` is the
-viewer page, embedded as an iframe under "Knowledge trajectory" in the
-results view. The sidecar `python -m scripts.run_trajectory --serve` still
-works for standalone use. The viewer's right-hand "Activation path" is
-stage-ordered from the reasoning log (L0 split, L1 links, L2 verdict per
-link with rationale, L4 hypotheses with falsification), not BFS order.
+**Trajectory in the app.** Rendered in the browser, not fetched:
+`frontend/src/lib/trajectory.ts` rebuilds this same graph — the node ids
+above, the `asks`/verb/`evidence`/`tests` edges, the virtual
+`subject`/`object`/`tested_by` links `kgviz/graph.py::load_graph` adds, and
+its sorted BFS/DFS walk (checked identical on the same fixture) — from the
+run's own `grounding_step` events while the grounding runs (links appear at
+L1 as "checking…" and take their verdict colour as each L2 lands) and from
+the final `grounding` event once it is done, so it works on the stateless
+Vercel deployment where `runs/knowledge.db` never persists.
+`frontend/src/components/KnowledgeTrajectory.tsx` is `kgviz/viewer.html`
+ported to React, shown in `ProgressView` during the run and in
+`ResultsView` afterwards. Its right-hand "Activation path" is stage-ordered
+(L0 split, L1 links, L2 verdict per link with rationale, L4 hypotheses with
+falsification), not BFS order. What the in-browser version cannot show is
+what only the database holds — other runs of the same question and each
+link's verdict history; `GET /api/trajectory?question=` (graph + walk +
+reasoning log) and the sidecar `python -m scripts.run_trajectory --serve`
+remain for local use, where the knowledge base does persist.
 
 **Clean-room check.** `GROUNDING_KB=runs/clean_N.db python scripts/run_demo.py`
 runs against a fresh base; `python -m scripts.check_trajectory <report.json>...`

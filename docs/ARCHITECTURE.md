@@ -205,6 +205,13 @@ to the real token/call/credit counts, never a guessed number.
   run so far, which is non-fatal but cruder than the real NER model. Set
   `NEBIUS_API_KEY`/`NEBIUS_BASE_URL`/`NEBIUS_MODEL` once real Token Factory
   credentials exist; no code change needed.
+- **Knowledge trajectory across runs**: the grounding's premise graph is
+  drawn in the browser from the run's own events
+  (`frontend/src/lib/trajectory.ts`, a port of `backend/kgviz/graph.py`),
+  so it works on the stateless deployment — but only for the current run.
+  The knowledge base that would let it show other runs of the same
+  question and each link's verdict history (`runs/knowledge.db`) needs a
+  persistent store on serverless; see CLAUDE.md's Open TODOs.
 - **GenAge/DrugAge**: HAGR does not expose a live query API; datasets are
   downloaded once via `scripts/fetch_datasets.py` from
   https://genomics.senescence.info/download and queried locally. Confirmed

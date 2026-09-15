@@ -72,7 +72,8 @@ such inventory existed before this doc).
 |---|---|---|
 | `start` | `run_id`, `question` | first event of every run |
 | `phase` | `phase: "grounding"\|"plan"\|"plan_and_gather"\|"revise"\|"report"` | `grounding` decomposes and checks premises before PLAN |
-| `grounding` | `status`, `coherent`, `why`, `triples`, `premises`, `knowledge_graph`, `hypotheses` | L0-L4 explainability payload rendered before PLAN |
+| `grounding_step` | `stage: "L0"\|"L1"\|"L2"\|"L4"` plus per-stage fields (`triples`/`destination` at L0, `links`/`cut` at L1, `link`/`status`/`why` per L2 verdict, `kept`/`rejected` at L4) | one per grounding stage, one per L2 verdict as it lands — what `GroundingLive` and the live `KnowledgeTrajectory` draw from |
+| `grounding` | `status`, `coherent`, `why`, `triples`, `premises`, `knowledge_graph`, `hypotheses`, `rejected` | L0-L4 explainability payload rendered before PLAN; the finished `KnowledgeTrajectory` is built from it |
 | `hypotheses` | `stage: "plan"\|"revise"\|"final"`, `hypotheses: RankedHypothesis[]` | **new** — the live-updating hypothesis roster; see lifecycle table above |
 | `assistant_text` | `text` | free-text reasoning during ACT/REVISE (not emitted for the REPORT turn itself) |
 | `tool_call` | `tool`, `args`, `step` | |
@@ -92,18 +93,24 @@ flowchart LR
 ```
 
 **ProgressView** (`frontend/src/components/ProgressView.tsx`): renders
-while a run has no `done` event yet. Shows the live-updating hypothesis
-card list (collapsed by default, click to expand any card) above the
-existing `TraceTimeline`. `ComposeBox` collapses to a compact status/cancel
-strip in this stage.
+while a run has no `done` event yet. Shows the grounding as it happens
+(`GroundingLive` — the stage rail and each link's verdict landing — and,
+from the first `grounding_step` on, the `KnowledgeTrajectory` graph
+drawing itself: pending links dashed, coloured as judged, hypotheses
+attached when the `grounding` event arrives), then the live-updating
+hypothesis card list (collapsed by default, click to expand any card)
+above the existing `TraceTimeline`. `ComposeBox` collapses to a compact
+status/cancel strip in this stage.
 
 **ResultsView** (`frontend/src/components/ResultsView.tsx`): renders once
 `done` arrives. Hypothesis cards are the primary surface — the selected
 hypothesis auto-expands, showing confidence, rationale (citation-linked),
 and two evidence-link sublists (support / contradict), each entry a real
-titled link, not a bare citation id. The full markdown report, an evidence
-browser, and the tool-call trace + cost panel live below in an accordion,
-as supporting detail rather than the primary reading surface. If
+titled link, not a bare citation id. The full markdown report, the premise
+grounding trace, the knowledge trajectory (the same client-side graph as
+in `ProgressView`, now complete), an evidence browser, and the tool-call
+trace + cost panel live below in an accordion, as supporting detail rather
+than the primary reading surface. If
 `hypotheses` is empty (an old saved run, or a run where PLAN parsing
 failed), the card section is simply omitted — the report/evidence/trace
 still render normally.

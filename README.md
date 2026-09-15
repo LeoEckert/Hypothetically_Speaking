@@ -25,12 +25,15 @@ Built for the "Build a Longevity AI Scientist" hackathon challenge.
    confidence, stated failure modes, and the next experiment to run, plus a
    full tool-call trace so every claim is traceable.
 
-The web UI (Vite + React + shadcn/ui) also shows, live: which tools were
-called and whether each call was live or mock, a running cost/usage
-breakdown per provider (Anthropic, Nebius, Amass, Tavily — real numbers
-only, never a guessed dollar figure), a `localStorage`-backed history of
-past runs you can revisit or fork into a new question, and per-tool
-enable/disable switches.
+The web UI (Vite + React + shadcn/ui) also shows, live: the grounding
+step that runs before PLAN — the question split into claims, each causal
+link checked against the literature, and a knowledge-trajectory graph that
+draws itself as the verdicts land — which tools were called and whether
+each call was live or mock, a running cost/usage breakdown per provider
+(Anthropic/OpenRouter, Nebius, Amass, Tavily — real numbers only, never a
+guessed dollar figure), a `localStorage`-backed history of past runs you
+can revisit or fork into a new question, and per-tool enable/disable
+switches.
 
 Target runtime: **under 20 minutes end-to-end**, re-runnable from a clean
 checkout in under 30.
