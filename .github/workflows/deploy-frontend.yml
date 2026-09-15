@@ -61,6 +61,13 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # GitHub-native deployment tracking (repo -> Environments): which branch
+    # deployed where, and when, with a clickable link — this is purely
+    # cosmetic/tracking, it doesn't gate anything (branch protection on main
+    # is the actual gate, see CLAUDE.md's Branching & workflow section).
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'dev-preview' }}
+      url: ${{ github.ref == 'refs/heads/main' && 'https://hypothetically-speaking.vercel.app' || 'https://hypothetically-speaking-dev.vercel.app' }}
     steps:
       - uses: actions/checkout@v4
 
