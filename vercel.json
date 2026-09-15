@@ -6,11 +6,8 @@
     "deploymentEnabled": false
   },
   "functions": {
-    "api/index.py": {
+    "api/[...path].py": {
       "maxDuration": 300
     }
-  },
-  "rewrites": [
-    { "source": "/api/:path*", "destination": "/api" }
-  ]
+  }
 }

@@ -26,11 +26,15 @@ name: Deploy to Vercel
 # The function bridges the real FastAPI app through a2wsgi's ASGIMiddleware
 # onto Vercel's WSGI pathway rather than exposing bare ASGI — this account's
 # native FastAPI/ASGI auto-detection is broken (confirmed by elimination;
-# see docs/DEPLOY.md), and api/index.py using the WSGI bridge is what
-# actually gets invoked correctly. Vercel's file-based routing for
-# api/index.py only maps to the literal /api path in this project (not the
-# whole /api/* prefix, unlike a from-scratch Python-only project) — the
-# rewrite below forwards every /api/* sub-path to it explicitly.
+# see docs/DEPLOY.md), and this WSGI bridge is what actually gets invoked
+# correctly. Vercel's file-based routing for a plain api/index.py only maps
+# to the literal /api path in this project (not the whole /api/* prefix,
+# unlike a from-scratch Python-only project) — a vercel.json `rewrites`
+# entry forwarding /api/:path* to it did not fix this (confirmed: still a
+# platform-level 404 for any sub-path, only the literal /api reached the
+# function). The catch-all filename convention (api/[...path].py) is
+# Vercel's own file-based mechanism for "one function owns everything under
+# this prefix" and works natively, no rewrite needed.
 on:
   push:
     branches: [main]
@@ -51,7 +55,7 @@ jobs:
           mkdir -p frontend/api
           cp -r backend frontend/backend
           grep -v '^pytest' requirements.txt > frontend/requirements.txt
-          cat > frontend/api/index.py <<'EOF'
+          cat > "frontend/api/[...path].py" <<'EOF'
           from a2wsgi import ASGIMiddleware
 
           from backend.server.app import app as _asgi_app
