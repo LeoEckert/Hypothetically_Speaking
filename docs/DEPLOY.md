@@ -37,7 +37,31 @@ serverless function at all.
 
 ## Current live deployment (example — yours will differ)
 
-- `https://hypothetically-speaking.vercel.app` — one Vercel project, serving both the static frontend and `/api/*` as a Python serverless function. (`frontend-azure-two-37.vercel.app` is the same project/deployment — a leftover auto-generated alias from before the project was named — and still resolves too.)
+One Vercel project, two URLs, matching the `main`/`dev` branches (see
+CLAUDE.md's "Branching & workflow" section):
+
+- **`https://hypothetically-speaking.vercel.app`** — the real Production
+  deployment, built from `main`. (`frontend-azure-two-37.vercel.app` is the
+  same project/deployment — a leftover auto-generated alias from before the
+  project was named — and still resolves too.)
+- **`https://hypothetically-speaking-dev.vercel.app`** — a stable alias
+  pointed at whatever `dev`'s latest Preview deployment is. `dev` deploys on
+  every push, same as `main`, but as a Preview deployment (not Production) —
+  a plain preview's own URL is a fresh unpredictable hash every time, so
+  `.github/workflows/deploy-frontend.yml`'s dev-branch step runs `vercel
+  alias set <fresh-preview-url> hypothetically-speaking-dev.vercel.app`
+  right after deploying, so there's one stable URL to bookmark/share
+  instead of chasing a new hash on every push.
+
+**Preview deployments are SSO-gated by default on this Vercel team**
+(Project Settings → Deployment Protection → "Vercel Authentication") — a
+raw preview URL, *and even a custom alias pointed at one*, 302-redirects to
+`vercel.com/sso-api` for anyone not logged into this Vercel team, confirmed
+live. The dev-branch deploy step works around this by running `vercel
+project protection disable --sso` before every deploy (idempotent — it's
+a no-op if already disabled, and self-heals if the dashboard setting ever
+gets flipped back on by hand). **Production deployments are not affected
+by this setting either way** — they were never gated to begin with.
 
 If this project is ever renamed, update `frontend/src/lib/api.ts`'s
 `PROD_API_BASE_FALLBACK` (empty string = same-origin; only needs a value if

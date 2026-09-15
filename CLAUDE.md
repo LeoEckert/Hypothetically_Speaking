@@ -63,10 +63,15 @@ protection (GitHub rulesets), not ad hoc pushes to `main`:
   branch off `dev` (`feature/<short-description>`, or the existing
   `claude/<description>` convention for agent-authored work), open a PR back
   into `dev` once it's ready. `dev` itself only has force-push/deletion
-  blocked — no PR requirement, no required CI check.
+  blocked — no PR requirement, no required CI check. `dev` also deploys on
+  every push, same as `main`, to its own stable URL
+  (`hypothetically-speaking-dev.vercel.app`) — see `docs/DEPLOY.md`'s
+  "Current live deployment" section for how that's wired up (a Preview
+  deployment behind a custom alias, plus working around Vercel's default
+  Preview SSO gate).
 - **Shipping to production** means promoting `dev` → `main` via a PR once
-  `dev` is in a state worth deploying — that PR is what actually triggers
-  `deploy-frontend.yml` once merged.
+  `dev` is in a state worth deploying — that PR is what actually triggers a
+  Production deploy (`hypothetically-speaking.vercel.app`) once merged.
 
 This replaced an earlier phase of this project where `main` was the single
 working+deploy branch with no protection at all and several long-lived,
