@@ -35,6 +35,12 @@ jobs:
           cp -r backend /tmp/backend-deploy/backend
           grep -v '^pytest' requirements.txt > /tmp/backend-deploy/requirements.txt
           cat > /tmp/backend-deploy/pyproject.toml <<'EOF'
+          [project]
+          name = "hypothetically-speaking-backend"
+          version = "0.1.0"
+          requires-python = ">=3.12"
+          dependencies = []
+
           [tool.vercel]
           entrypoint = "backend.server.app:app"
           EOF
