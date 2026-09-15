@@ -66,6 +66,10 @@ export interface ProviderCost {
 
 export interface CostSummary {
   anthropic: ProviderCost & {
+    // Still keyed "anthropic" for backend/report-JSON compatibility, but this
+    // row reports whichever LLM provider the run actually used — `provider`
+    // ("anthropic" | "openrouter" | null) is what actually distinguishes them.
+    provider: string | null
     model: string
     input_tokens: number
     output_tokens: number

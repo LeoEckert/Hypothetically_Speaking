@@ -12,6 +12,16 @@ function usd(value: number | null): string {
   return `$${value.toFixed(4)}`
 }
 
+// The LLM row is still keyed "anthropic" in the API/report JSON for backend
+// compatibility, but it reports whichever provider the run actually used —
+// labeling it "Anthropic" unconditionally was wrong whenever a run used
+// OpenRouter (the only LLM provider that needs no card and is the default).
+function llmLabel(provider: string | null | undefined): string {
+  if (provider === "openrouter") return "OpenRouter"
+  if (provider === "anthropic") return "Anthropic"
+  return "LLM"
+}
+
 function Row({ label, right, sub }: { label: string; right: React.ReactNode; sub?: string }) {
   return (
     <div className="flex items-center justify-between text-sm py-1">
@@ -30,7 +40,7 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
   const costRows = [
     {
       key: "anthropic",
-      label: "Anthropic",
+      label: llmLabel(cost.anthropic.provider),
       usd: cost.anthropic.usd,
       rateConfigured: cost.anthropic.rate_configured,
       tooltip: `${cost.anthropic.calls ?? 0} calls · ${cost.anthropic.input_tokens}/${cost.anthropic.output_tokens} in/out tokens`,
@@ -73,7 +83,7 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
   )
 
   const activityRows = [
-    { key: "anthropic", label: "Anthropic", calls: cost.anthropic.calls ?? 0 },
+    { key: "anthropic", label: llmLabel(cost.anthropic.provider), calls: cost.anthropic.calls ?? 0 },
     { key: "nebius", label: toolLabel("extract_genes"), calls: cost.nebius.calls ?? 0 },
     { key: "amass", label: "Amass", calls: cost.amass.calls ?? 0 },
     { key: "tavily", label: "Tavily", calls: cost.tavily.calls ?? 0 },
@@ -140,7 +150,7 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-1 pt-2">
             <Row
-              label="Anthropic"
+              label={llmLabel(cost.anthropic.provider)}
               sub={`${cost.anthropic.calls} calls · ${cost.anthropic.input_tokens}/${cost.anthropic.output_tokens} in/out tokens`}
               right={cost.anthropic.rate_configured ? usd(cost.anthropic.usd) : "rate not configured"}
             />

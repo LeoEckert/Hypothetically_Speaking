@@ -2,7 +2,6 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { CostPanel } from "@/components/CostPanel"
 import { EvidencePanel } from "@/components/EvidencePanel"
 import { GroundingTrace } from "@/components/GroundingTrace"
-import { API_BASE } from "@/lib/api"
 import { HypothesisList } from "@/components/HypothesisCard"
 import { ReportView } from "@/components/ReportView"
 import { TraceTimeline } from "@/components/TraceTimeline"
@@ -59,11 +58,19 @@ export function ResultsView({
           <AccordionItem value="trajectory">
             <AccordionTrigger>Knowledge trajectory</AccordionTrigger>
             <AccordionContent>
-              <iframe
-                title="Knowledge trajectory"
-                src={`${API_BASE}/api/trajectory/view?question=${encodeURIComponent(run.question)}`}
-                className="h-[520px] w-full rounded-lg border bg-background"
-              />
+              {/* Not available on this deployment, not a bug to chase: the
+                  trajectory view reads runs/knowledge.db, a graph that's
+                  meant to accumulate across many runs — but this app is a
+                  stateless Vercel serverless function with no persistent
+                  disk between requests (see docs/DEPLOY.md), so that file
+                  never has anything in it here. Works locally
+                  (`python -m scripts.run_grounding --kb`) where the
+                  filesystem actually persists between runs. */}
+              <p className="text-sm text-muted-foreground">
+                Not available on this deployment — the knowledge trajectory accumulates across many runs on a local
+                database file, and this app runs as a stateless serverless function with no persistent storage
+                between requests. Works when running the backend locally.
+              </p>
             </AccordionContent>
           </AccordionItem>
         )}
