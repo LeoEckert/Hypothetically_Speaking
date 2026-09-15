@@ -42,12 +42,20 @@ jobs:
           mkdir -p frontend/api
           cp -r backend frontend/api/backend
           grep -v '^pytest' requirements.txt > frontend/requirements.txt
+          # TEMPORARY diagnostic: does this project even invoke a legacy
+          # BaseHTTPRequestHandler function correctly? (see CLAUDE.md's Open
+          # TODOs) — testing whether the shared project forces ASGI-style
+          # invocation regardless of what `app`/`handler` actually is.
           cat > frontend/api/index.py <<'EOF'
-          from a2wsgi import ASGIMiddleware
+          from http.server import BaseHTTPRequestHandler
 
-          from backend.server.app import app as _asgi_app
-
-          app = ASGIMiddleware(_asgi_app)
+          class handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'Hello, world!')
+                  return
           EOF
 
       - name: Install Vercel CLI
