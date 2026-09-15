@@ -12,16 +12,25 @@ name: Deploy to Vercel
 # One Vercel project serves both: the static Vite build and a Python
 # serverless function for the backend. This project's Root Directory is
 # "frontend" (set in the Vercel dashboard), so the function has to live at
-# frontend/api/index.py to be auto-detected alongside the static build.
-# backend/ itself stays at the repo root (same layout as local dev, tests,
-# scripts/run_demo.py) — the staging step below copies it into
-# frontend/api/backend/ right before deploy rather than duplicating it
-# permanently in the repo. The function bridges the real FastAPI app
-# through a2wsgi's ASGIMiddleware onto Vercel's WSGI pathway rather than
-# exposing bare ASGI — this account's native FastAPI/ASGI auto-detection is
-# broken (confirmed by elimination against a dedicated project; see
-# docs/DEPLOY.md), and api/index.py using the WSGI bridge is what actually
-# gets invoked correctly.
+# frontend/api/index.py to be auto-detected alongside the static build, and
+# backend/ must be staged as api/index.py's *sibling* — frontend/backend/,
+# not nested inside frontend/api/ — matching the exact layout confirmed
+# working during development (nesting it under api/ instead produces
+# `ModuleNotFoundError: No module named 'backend'` at runtime; Vercel's
+# Python function root ends up being the deploy root, not api/'s own
+# directory). backend/ itself stays at the repo root otherwise (same layout
+# as local dev, tests, scripts/run_demo.py) — the staging step below copies
+# it into frontend/backend/ right before deploy rather than duplicating it
+# permanently in the repo.
+#
+# The function bridges the real FastAPI app through a2wsgi's ASGIMiddleware
+# onto Vercel's WSGI pathway rather than exposing bare ASGI — this account's
+# native FastAPI/ASGI auto-detection is broken (confirmed by elimination;
+# see docs/DEPLOY.md), and api/index.py using the WSGI bridge is what
+# actually gets invoked correctly. Vercel's file-based routing for
+# api/index.py only maps to the literal /api path in this project (not the
+# whole /api/* prefix, unlike a from-scratch Python-only project) — the
+# rewrite below forwards every /api/* sub-path to it explicitly.
 on:
   push:
     branches: [main]
@@ -40,34 +49,14 @@ jobs:
       - name: Stage backend for the Vercel function
         run: |
           mkdir -p frontend/api
-          cp -r backend frontend/api/backend
+          cp -r backend frontend/backend
           grep -v '^pytest' requirements.txt > frontend/requirements.txt
-          # TEMPORARY diagnostic (see CLAUDE.md's Open TODOs): the a2wsgi
-          # bridge that works perfectly in a dedicated Vercel project 500s
-          # on this shared one even at the literal /api path, while a
-          # trivial BaseHTTPRequestHandler succeeds here — so this wraps the
-          # real import+WSGI-bridge in a try/except inside that same proven
-          # handler format, to see the actual Python exception via a plain
-          # curl instead of another opaque FUNCTION_INVOCATION_FAILED.
           cat > frontend/api/index.py <<'EOF'
-          import traceback
-          from http.server import BaseHTTPRequestHandler
+          from a2wsgi import ASGIMiddleware
 
-          try:
-              from a2wsgi import ASGIMiddleware
-              from backend.server.app import app as _asgi_app
-              _wsgi_app = ASGIMiddleware(_asgi_app)
-              _error = None
-          except Exception:
-              _error = traceback.format_exc()
+          from backend.server.app import app as _asgi_app
 
-          class handler(BaseHTTPRequestHandler):
-              def do_GET(self):
-                  self.send_response(200 if _error is None else 500)
-                  self.send_header('Content-type', 'text/plain')
-                  self.end_headers()
-                  self.wfile.write((_error or "import ok").encode())
-                  return
+          app = ASGIMiddleware(_asgi_app)
           EOF
 
       - name: Install Vercel CLI
@@ -77,4 +66,4 @@ jobs:
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: vercel deploy --prod --force --token=${{ secrets.VERCEL_TOKEN }} --yes
+        run: vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
