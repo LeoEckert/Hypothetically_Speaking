@@ -42,19 +42,31 @@ jobs:
           mkdir -p frontend/api
           cp -r backend frontend/api/backend
           grep -v '^pytest' requirements.txt > frontend/requirements.txt
-          # TEMPORARY diagnostic: does this project even invoke a legacy
-          # BaseHTTPRequestHandler function correctly? (see CLAUDE.md's Open
-          # TODOs) — testing whether the shared project forces ASGI-style
-          # invocation regardless of what `app`/`handler` actually is.
+          # TEMPORARY diagnostic (see CLAUDE.md's Open TODOs): the a2wsgi
+          # bridge that works perfectly in a dedicated Vercel project 500s
+          # on this shared one even at the literal /api path, while a
+          # trivial BaseHTTPRequestHandler succeeds here — so this wraps the
+          # real import+WSGI-bridge in a try/except inside that same proven
+          # handler format, to see the actual Python exception via a plain
+          # curl instead of another opaque FUNCTION_INVOCATION_FAILED.
           cat > frontend/api/index.py <<'EOF'
+          import traceback
           from http.server import BaseHTTPRequestHandler
+
+          try:
+              from a2wsgi import ASGIMiddleware
+              from backend.server.app import app as _asgi_app
+              _wsgi_app = ASGIMiddleware(_asgi_app)
+              _error = None
+          except Exception:
+              _error = traceback.format_exc()
 
           class handler(BaseHTTPRequestHandler):
               def do_GET(self):
-                  self.send_response(200)
+                  self.send_response(200 if _error is None else 500)
                   self.send_header('Content-type', 'text/plain')
                   self.end_headers()
-                  self.wfile.write(b'Hello, world!')
+                  self.wfile.write((_error or "import ok").encode())
                   return
           EOF
 
