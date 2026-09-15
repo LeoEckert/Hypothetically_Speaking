@@ -58,9 +58,9 @@ jobs:
 
           app = FastAPI()
 
-          @app.get("/{path:path}")
-          def _ok(path: str):
-              return {"ok": True, "path": path}
+          @app.get("/")
+          def _ok():
+              return {"ok": True}
           EOF
           cat > /tmp/backend-deploy/vercel.json <<'EOF'
           {
@@ -107,4 +107,4 @@ jobs:
         if: always()
         run: |
           sleep 3
-          curl -s -w "\nHTTP:%{http_code}\n" "https://hypothetically-speaking-backend.vercel.app/api/config" || true
+          curl -s -w "\nHTTP:%{http_code}\n" "https://hypothetically-speaking-backend.vercel.app/" || true
