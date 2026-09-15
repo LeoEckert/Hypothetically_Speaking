@@ -143,7 +143,7 @@ def _grounding_payload(
         return {"status": "skipped", "why": "Missing an LLM provider key (Anthropic or OpenRouter, from Settings)", **empty}
     try:
         from backend.grounding.adapters import Ledger
-        from scripts.run_grounding import ground
+        from backend.grounding.runner import ground
 
         def record(entry: dict) -> None:
             if state is None:

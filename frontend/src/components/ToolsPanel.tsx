@@ -5,7 +5,7 @@ import { useTools } from "@/hooks/useTools"
 import { toolLabel } from "@/lib/toolLabels"
 
 export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
-  const { tools, loading, toggle } = useTools()
+  const { tools, loading, error, toggle } = useTools()
   const { keys } = useApiKeys()
 
   return (
@@ -16,6 +16,7 @@ export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
         </p>
       )}
       {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
+      {error && <p className="text-xs text-destructive">{error}</p>}
       {tools.map((tool) => {
         // "Enabled" only really means something if the tool can also do
         // something real: a keyed tool with neither a platform key nor the
@@ -41,16 +42,27 @@ export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
                 >
                   {usable ? "enabled" : "disabled"}
                 </Badge>
+                {tool.paid && (
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                  >
+                    paid
+                  </Badge>
+                )}
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">{tool.description}</p>
               {tool.enabled && !hasKey && (
                 <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
-                  Runs as a mock — bring your own key in Settings for live results.
+                  {tool.paid
+                    ? "Needs your own key in Settings to switch on — no free tier for this one."
+                    : "Runs as a mock — bring your own key in Settings for live results."}
                 </p>
               )}
             </div>
             <Switch
               checked={tool.enabled}
+              disabled={!hasKey}
               onCheckedChange={(checked) => toggle(tool.name, checked)}
               className="mt-1 shrink-0"
             />

@@ -27,6 +27,22 @@ export async function fetchConfig(): Promise<ConfigResponse> {
   return res.json()
 }
 
+export interface ModelInfo {
+  id: string
+  name: string
+  context_length: number | null
+}
+
+export interface ModelsResponse {
+  models: ModelInfo[]
+  recommended: string
+}
+
+export async function fetchModels(): Promise<ModelsResponse> {
+  const res = await fetch(`${API_BASE}/api/models`)
+  return res.json()
+}
+
 export async function fetchTools(): Promise<ToolInfo[]> {
   const res = await fetch(`${API_BASE}/api/tools`)
   return res.json()

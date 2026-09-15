@@ -68,10 +68,16 @@ def get_provider(api_keys: dict[str, str] | None = None, tier: str = "main") -> 
             "No LLM key configured — add a free OpenRouter key (no credit card, "
             "openrouter.ai/keys) or your own Anthropic key in Settings to run this."
         )
+    # A per-request override (frontend Settings model picker, see GET
+    # /api/models) rides the same api_keys dict as the API keys themselves —
+    # no new request field needed. It takes precedence over the server-side
+    # OPENROUTER_MODEL/OPENROUTER_FAST_MODEL env vars, which in turn beat the
+    # live-picked default.
+    user_model_override = api_keys.get("OPENROUTER_MODEL")
     model = (
-        os.environ.get("OPENROUTER_MODEL") or best_free_tool_model()
+        user_model_override or os.environ.get("OPENROUTER_MODEL") or best_free_tool_model()
         if tier == "main"
-        else os.environ.get("OPENROUTER_FAST_MODEL") or best_free_tool_model()
+        else user_model_override or os.environ.get("OPENROUTER_FAST_MODEL") or best_free_tool_model()
     )
     provider = OpenRouterProvider(api_key=openrouter_key, model=model)
     provider.key_source = "user" if user_openrouter_key else "platform"

@@ -85,6 +85,11 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
               partial estimate
             </Badge>
           )}
+          {cost.anthropic.model && (
+            <Badge variant="outline" className="text-xs font-mono font-normal">
+              model: {cost.anthropic.model}
+            </Badge>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">

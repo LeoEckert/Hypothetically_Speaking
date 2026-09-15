@@ -63,14 +63,30 @@ def _score(model: dict) -> tuple[float, float, float, int]:
     )
 
 
-def best_free_tool_model() -> str:
-    """The single best currently-free, tool-calling-capable OpenRouter model,
-    picked live from OpenRouter's own catalog. Never a hardcoded slug."""
-    candidates = [
+def _free_tool_candidates() -> list[dict]:
+    return [
         model
         for model in _fetch_models()
         if model.get("id", "").endswith(":free") and "tools" in (model.get("supported_parameters") or [])
     ]
+
+
+def list_free_tool_models() -> list[dict]:
+    """Every currently-free, tool-calling-capable OpenRouter model, best
+    first — the same filter+ranking `best_free_tool_model()` uses, exposed
+    for callers that want the whole list (e.g. GET /api/models) rather than
+    just the top pick. Each entry: {"id", "name", "context_length"}."""
+    candidates = sorted(_free_tool_candidates(), key=_score, reverse=True)
+    return [
+        {"id": model["id"], "name": model.get("name", model["id"]), "context_length": model.get("context_length")}
+        for model in candidates
+    ]
+
+
+def best_free_tool_model() -> str:
+    """The single best currently-free, tool-calling-capable OpenRouter model,
+    picked live from OpenRouter's own catalog. Never a hardcoded slug."""
+    candidates = _free_tool_candidates()
     if not candidates:
         return _FALLBACK_MODEL
     return max(candidates, key=_score)["id"]

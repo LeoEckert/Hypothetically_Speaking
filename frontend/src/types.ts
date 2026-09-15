@@ -4,6 +4,7 @@ export interface ToolInfo {
   enabled: boolean
   key_env_var: string | null
   key_configured: boolean
+  paid: boolean
 }
 
 export interface AdminKeyInfo {

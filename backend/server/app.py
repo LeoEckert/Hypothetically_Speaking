@@ -97,8 +97,10 @@ class RunRequest(BaseModel):
     # required in practice, since there's no platform-held LLM key (see
     # frontend's required onboarding popup). TAVILY_API_KEY/AMASS_API_KEY/
     # NEBIUS_API_KEY are optional per-request overrides of those tools' keys.
-    # Never persisted — used only to construct clients/inject into tool args
-    # for this one request.
+    # OPENROUTER_MODEL (not really a "key", but rides the same dict — see GET
+    # /api/models) optionally pins a specific free model instead of
+    # get_provider()'s live best-pick. Never persisted — used only to
+    # construct clients/inject into tool args for this one request.
     api_keys: dict[str, str] = {}
 
 
@@ -142,6 +144,17 @@ def get_config():
     }
 
 
+@app.get("/api/models")
+def get_models():
+    """Currently-available free, tool-calling-capable OpenRouter models
+    (best first), plus which one get_provider() would pick by default right
+    now — lets the frontend offer a model picker without ever hardcoding a
+    model name itself. No key needed: OpenRouter's catalog is public."""
+    from backend.agent.providers.openrouter_models import best_free_tool_model, list_free_tool_models
+
+    return {"models": list_free_tool_models(), "recommended": best_free_tool_model()}
+
+
 @app.get("/api/tools")
 def get_tools():
     """The full tool roster (name + description from each tool's SPEC), with
@@ -160,6 +173,7 @@ def get_tools():
                 if spec["name"] in registry.KEY_ENV_VAR
                 else True
             ),
+            "paid": spec["name"] in registry.PAID_TOOLS,
         }
         for spec in all_specs()
     ]

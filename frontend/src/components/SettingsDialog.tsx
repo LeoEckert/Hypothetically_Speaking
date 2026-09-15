@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { SettingsIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -12,7 +12,9 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { useApiKeys } from "@/hooks/useApiKeys"
 import { useConfig } from "@/hooks/useConfig"
+import { useModel } from "@/hooks/useModel"
 import { useTools } from "@/hooks/useTools"
+import { fetchModels, type ModelInfo } from "@/lib/api"
 import { API_KEY_NAMES, hasUsableLlmKey, type ApiKeyName } from "@/store/apiKeysStore"
 
 const KEY_LABELS: Record<ApiKeyName, string> = {
@@ -37,7 +39,22 @@ export function SettingsDialog() {
   const config = useConfig()
   const { tools } = useTools()
   const { keys, setKey, clearKey } = useApiKeys()
+  const { preferredModel, setModel } = useModel()
   const [drafts, setDrafts] = useState<Partial<Record<ApiKeyName, string>>>({})
+  const [models, setModels] = useState<ModelInfo[]>([])
+  const [recommended, setRecommended] = useState<string>("")
+
+  useEffect(() => {
+    fetchModels()
+      .then((res) => {
+        setModels(res.models)
+        setRecommended(res.recommended)
+      })
+      .catch(() => {
+        // Model picker just falls back to "Auto" — the backend still picks
+        // a free model on its own even if this listing call fails.
+      })
+  }, [])
 
   function platformConfigured(name: ApiKeyName): boolean {
     if (name === "ANTHROPIC_API_KEY") return config?.anthropic_key_configured ?? false
@@ -113,6 +130,34 @@ export function SettingsDialog() {
               </div>
             )
           })}
+        </div>
+
+        <Separator />
+
+        <div className="space-y-1">
+          <label htmlFor="model-select" className="text-sm font-medium">
+            OpenRouter model
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Only free models are listed — whichever one is picked, it never costs anything. "Auto" always uses
+            whatever currently ranks best (this list and the ranking both come live from OpenRouter, so it changes
+            as their free lineup does).
+          </p>
+          <select
+            id="model-select"
+            value={preferredModel}
+            onChange={(e) => setModel(e.target.value)}
+            className="w-full rounded-md border border-input bg-transparent px-2 py-1 text-sm"
+          >
+            <option value="">
+              Auto — currently {models.find((m) => m.id === recommended)?.name ?? (recommended || "best free model")}
+            </option>
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
         </div>
 
         <Separator />

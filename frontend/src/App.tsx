@@ -14,6 +14,7 @@ import { evaluateHypothesis } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
 import { cancelCurrentStream, currentLiveRunId, onStreamFinished, startAndStream } from "@/lib/runStream"
 import { getApiKeysSnapshot, hasUsableLlmKey, loadApiKeys } from "@/store/apiKeysStore"
+import { getPreferredModel } from "@/store/modelStore"
 import { appendEvaluation, createRun, deleteRun, getRun } from "@/store/runsStore"
 import type { SseEvent, RunMode } from "@/types"
 
@@ -78,6 +79,15 @@ function App() {
     if (liveRunId) setViewedRunId(liveRunId)
   }
 
+  // A preferred-model override (Settings) rides the same api_keys request
+  // field as the actual BYOK keys (see backend/agent/providers/__init__.py's
+  // get_provider()) — merged in here rather than inside apiKeysStore itself,
+  // since it isn't a secret and lives in its own store (modelStore.ts).
+  function apiKeysForRequest() {
+    const preferredModel = getPreferredModel()
+    return preferredModel ? { ...loadApiKeys(), OPENROUTER_MODEL: preferredModel } : loadApiKeys()
+  }
+
   async function handleRun() {
     const trimmed = question.trim()
     if (!trimmed || liveRunId) return
@@ -88,7 +98,7 @@ function App() {
     }
 
     const forkedFrom = viewedRunId && viewedRunId !== liveRunId ? viewedRunId : null
-    const runId = await startAndStream({ question: trimmed, maxToolCalls, mode, apiKeys: loadApiKeys() })
+    const runId = await startAndStream({ question: trimmed, maxToolCalls, mode, apiKeys: apiKeysForRequest() })
     createRun(runId, trimmed, forkedFrom)
     setLiveRunId(runId)
     setViewedRunId(runId)
@@ -124,7 +134,7 @@ function App() {
       viewedRunId,
       { report: doneEvent.report, hypotheses: doneEvent.hypotheses, evidence: doneEvent.evidence },
       comment,
-      loadApiKeys()
+      apiKeysForRequest()
     )
     appendEvaluation(viewedRunId, result)
   }

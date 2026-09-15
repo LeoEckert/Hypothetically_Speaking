@@ -7,10 +7,12 @@
     python -m scripts.run_grounding "<question>" --premises [--fast]   L0-L4: premises + graph + hypotheses
     python -m scripts.run_grounding --kb                     audit view of everything the knowledge base holds
 
-Live runs need TAVILY_API_KEY, AMASS_API_KEY and ANTHROPIC_API_KEY in the
-environment. How they get there is up to the caller — the code just reads
-os.environ with no fallback, so a plain export or `set -a; . .env; set +a`
-both work.
+`live`/`--triples`/`--kb` need TAVILY_API_KEY and ANTHROPIC_API_KEY (or
+OPENROUTER_API_KEY) in the environment; AMASS_API_KEY is optional for
+`--premises` (backend.grounding.runner.ground() falls back to keyless
+PubMed/ClinicalTrials.gov sources without one — Amass has no free tier).
+How they get there is up to the caller — the code just reads os.environ
+with no fallback, so a plain export or `set -a; . .env; set +a` both work.
 
 stdout is the JSON contract the hypothesis generator consumes; progress goes to
 stderr.
@@ -19,31 +21,18 @@ stderr.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
-from backend.grounding import premises, stages
+from backend.grounding import stages
 from backend.grounding.adapters import (
-    ABSTRACT_CHARS,
-    ABSTRACT_CHARS_FAST,
-    AMASS_LIMIT,
     FIXTURE_PATH,
     MODEL,
-    PROBE_MODEL,
-    TRIAL_LIMIT_FAST,
-    VERIFY_MODEL,
     AmassPaperRepository,
-    AmassTrialRepository,
     ClaudeEntityExtractor,
-    ClaudeHypothesisGenerator,
-    ClaudeProber,
     ClaudeQuestionFormalizer,
     ClaudeRelevanceRanker,
     ClaudeTriplifier,
-    ClaudeVerifier,
-    ClinicalTrialsRepository,
-    PubMedPaperRepository,
     RecordedRun,
     TavilyWebSearch,
 )
@@ -51,6 +40,7 @@ from backend.grounding.domain import (
     RunTrace,
 )
 from backend.grounding.knowledge_base import SqliteKnowledgeBase
+from backend.grounding.runner import ground  # noqa: F401 -- re-exported for this CLI's --premises flag
 
 
 def output(trace: RunTrace) -> dict:
@@ -139,58 +129,6 @@ def replay() -> RunTrace:
         ranker=recorded,
         knowledge_base=SqliteKnowledgeBase(":memory:"),
         run_id=recorded.trace.run_id,
-    )
-
-
-
-def ground(
-    question: str, ledger=None, fast: bool = False, on_progress=None, api_keys: dict | None = None
-) -> premises.Grounding:
-    """L0-L4 with live adapters; the knowledge base caches every LLM call and
-    Amass query. `ledger` (adapters.Ledger) receives every external call.
-    `api_keys` (env-var-name -> value) is a per-request BYOK override — an
-    Anthropic key selects Claude via backend.agent.providers.get_provider();
-    otherwise an OpenRouter key is used, same as the main agent loop. One of
-    the two is required — there's no platform-held key for either.
-
-    L0, L2 verdicts and L4 stay on the "main" tier in both modes (see the note
-    on Haiku verdicts in adapters.py); L1 probing runs on the "fast" tier.
-    normal: 8 links, whole abstracts, 20 trials per query, a second-look search
-            before a link is called unverified.
-    fast:   4 links, 1500-char abstracts, 10 trials per query, no second look."""
-    from backend.agent.providers import get_provider
-
-    knowledge_base = SqliteKnowledgeBase()
-    main_provider = get_provider(api_keys, tier="main")
-    fast_provider = get_provider(api_keys, tier="fast")
-    amass_key = (api_keys or {}).get("AMASS_API_KEY") or os.environ.get("AMASS_API_KEY")
-    # Amass (curated, single-call) when a key exists — BYOK or platform;
-    # otherwise the keyless PubMed/ClinicalTrials.gov equivalents, since Amass
-    # has no free tier and grounding must not require one. Same PaperRepository
-    # port either way (backend/grounding/domain.py) — this is the seam
-    # stages.py's own docstring describes.
-    sources = (
-        [
-            AmassPaperRepository(knowledge_base, ledger, amass_key),
-            AmassTrialRepository(knowledge_base, ledger, TRIAL_LIMIT_FAST if fast else AMASS_LIMIT, amass_key),
-        ]
-        if amass_key
-        else [
-            PubMedPaperRepository(TRIAL_LIMIT_FAST if fast else AMASS_LIMIT),
-            ClinicalTrialsRepository(TRIAL_LIMIT_FAST if fast else AMASS_LIMIT),
-        ]
-    )
-    return premises.extract(
-        question,
-        triplifier=ClaudeTriplifier(knowledge_base, ledger, main_provider),
-        prober=ClaudeProber(knowledge_base, ledger, fast_provider),
-        sources=sources,
-        verifier=ClaudeVerifier(knowledge_base, ledger, main_provider, ABSTRACT_CHARS_FAST if fast else ABSTRACT_CHARS),
-        # The seam: swap in any object with generate(grounding) -> list[Hypothesis].
-        generator=ClaudeHypothesisGenerator(knowledge_base, ledger, main_provider),
-        knowledge_base=knowledge_base,
-        fast=fast,
-        on_progress=on_progress,
     )
 
 

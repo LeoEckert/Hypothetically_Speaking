@@ -146,7 +146,7 @@ def test_grounding_does_not_skip_without_amass_key(monkeypatch):
         reached["called"] = True
         raise RuntimeError("stub — no real network call in this test")
 
-    monkeypatch.setattr("scripts.run_grounding.ground", fake_ground)
+    monkeypatch.setattr("backend.grounding.runner.ground", fake_ground)
     payload = _grounding_payload("does SIRT1 matter?")
     # Reaching ground() (and getting "failed" from the stub's raise) rather
     # than short-circuiting to "skipped" is exactly what a missing Amass key
@@ -167,7 +167,7 @@ def test_grounding_payload_preserves_the_l0_trace(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setenv("AMASS_API_KEY", "test-key")
     monkeypatch.setattr(
-        "scripts.run_grounding.ground",
+        "backend.grounding.runner.ground",
         lambda _question, **_options: SimpleNamespace(
             coherent=True,
             why="coherent",

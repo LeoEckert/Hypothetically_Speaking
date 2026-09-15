@@ -47,6 +47,12 @@ KEY_ENV_VAR = {
     "extract_genes": "NEBIUS_API_KEY",
 }
 
+# Keyed tools with genuinely no free tier (confirmed in CLAUDE.md) — surfaced
+# to the frontend (GET /api/tools) as a "paid" badge. tavily is keyed but has
+# a real free tier, so it's deliberately not in this set. A keyless tool is
+# never paid.
+PAID_TOOLS = {"amass", "extract_genes"}
+
 
 # Runtime, in-memory overrides layered on top of the ENABLED_TOOLS env var —
 # set via PUT /api/tools/{name} (backend/server/app.py). Intentionally not
@@ -55,7 +61,14 @@ _runtime_override: dict[str, bool] = {}
 
 
 def _env_enabled_set() -> set[str]:
-    raw = os.environ.get("ENABLED_TOOLS", ",".join(_ALL_TOOLS.keys()))
+    # A blank-but-set ENABLED_TOOLS (confirmed to happen on Vercel — an env
+    # var declared with no value still exists, it just reads as "") must mean
+    # the same thing as unset (everything enabled), not "nothing enabled" —
+    # os.environ.get(name, default)'s default only applies when the key is
+    # missing entirely. Same bug class as loop.py's _env_int().
+    raw = os.environ.get("ENABLED_TOOLS", "").strip()
+    if not raw:
+        return set(_ALL_TOOLS.keys())
     names = {n.strip() for n in raw.split(",") if n.strip()}
     return {n for n in names if n in _ALL_TOOLS}
 
