@@ -52,14 +52,20 @@ jobs:
 
       # Temporary diagnostic while bringing up the Python function on Vercel
       # (see CLAUDE.md's Open TODOs) — safe to remove once /api/config is
-      # confirmed working from a normal deploy.
+      # confirmed working from a normal deploy. Hitting the production alias,
+      # not steps.deploy.outputs.url: the raw per-deployment URL redirects to
+      # a Vercel Authentication gate (deployment protection), the alias
+      # doesn't. `vercel inspect --logs` only shows build logs; `vercel logs`
+      # is the runtime/request-log command.
       - name: Show function invocation logs
         if: always()
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          curl -s "${{ steps.deploy.outputs.url }}/api/config" || true
-          echo "---"
-          sleep 3
-          vercel inspect "${{ steps.deploy.outputs.url }}" --logs --token=${{ secrets.VERCEL_TOKEN }} || true
+          (timeout 25 vercel logs "${{ steps.deploy.outputs.url }}" --token=${{ secrets.VERCEL_TOKEN }} > vercel-logs.txt 2>&1 &)
+          sleep 5
+          curl -s -w "\nHTTP:%{http_code}\n" "https://frontend-azure-two-37.vercel.app/api/config" || true
+          sleep 15
+          echo "---runtime logs---"
+          cat vercel-logs.txt || true
