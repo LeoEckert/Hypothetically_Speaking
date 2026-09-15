@@ -104,7 +104,7 @@ jobs:
           # for anyone without a login on this Vercel team. Idempotent to
           # repeat every deploy, so it self-heals if the dashboard setting
           # ever gets flipped back on.
-          vercel project protection disable --sso --token="${{ secrets.VERCEL_TOKEN }}" --yes || true
+          vercel project protection disable --sso --token="${{ secrets.VERCEL_TOKEN }}"
 
           DEPLOY_URL=$(vercel deploy --token="${{ secrets.VERCEL_TOKEN }}" --yes)
           echo "Preview deployment: $DEPLOY_URL"
