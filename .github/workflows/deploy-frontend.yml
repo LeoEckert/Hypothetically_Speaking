@@ -42,7 +42,24 @@ jobs:
         run: npm install --global vercel@latest
 
       - name: Deploy to Vercel (production)
+        id: deploy
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
+        run: |
+          url=$(vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # Temporary diagnostic while bringing up the Python function on Vercel
+      # (see CLAUDE.md's Open TODOs) — safe to remove once /api/config is
+      # confirmed working from a normal deploy.
+      - name: Show function invocation logs
+        if: always()
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          curl -s "${{ steps.deploy.outputs.url }}/api/config" || true
+          echo "---"
+          sleep 3
+          vercel inspect "${{ steps.deploy.outputs.url }}" --logs --token=${{ secrets.VERCEL_TOKEN }} || true
