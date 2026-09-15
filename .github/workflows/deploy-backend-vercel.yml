@@ -34,41 +34,29 @@ jobs:
           mkdir -p /tmp/backend-deploy
           cp -r backend /tmp/backend-deploy/backend
           grep -v '^pytest' requirements.txt > /tmp/backend-deploy/requirements.txt
-          cat > /tmp/backend-deploy/pyproject.toml <<'EOF'
-          [project]
-          name = "hypothetically-speaking-backend"
-          version = "0.1.0"
-          requires-python = "==3.12.*"
-          dependencies = []
+          # Diagnostic: even a bare, dependency-free FastAPI hello-world
+          # crashes with FUNCTION_INVOCATION_FAILED on every request (see
+          # CLAUDE.md's Open TODOs) — this tests Vercel's oldest, most basic
+          # Python function format (BaseHTTPRequestHandler, not the newer
+          # FastAPI/ASGI auto-detection) to isolate whether Python functions
+          # work AT ALL on this account, or whether it's specifically the
+          # FastAPI integration that's broken.
+          mkdir -p /tmp/backend-deploy/api
+          cat > /tmp/backend-deploy/api/index.py <<'EOF'
+          from http.server import BaseHTTPRequestHandler
 
-          [tool.vercel]
-          entrypoint = "_diag:app"
-          EOF
-          # Temporary diagnostic entrypoint (see CLAUDE.md's Open TODOs):
-          # the real app has crashed at import time on every deploy so far
-          # with FUNCTION_INVOCATION_FAILED and no retrievable traceback
-          # (`vercel logs` consistently reports none, even moments after a
-          # confirmed invocation) — this wraps the real import in a
-          # try/except and serves the traceback as the HTTP response
-          # instead, so the actual exception is visible via a plain curl.
-          # Point [tool.vercel].entrypoint back at "backend.server.app:app"
-          # directly once the underlying crash is fixed.
-          cat > /tmp/backend-deploy/_diag.py <<'EOF'
-          from fastapi import FastAPI
-
-          app = FastAPI()
-
-          @app.get("/")
-          def _ok():
-              return {"ok": True}
+          class handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write(b'Hello, world!')
+                  return
           EOF
           cat > /tmp/backend-deploy/vercel.json <<'EOF'
           {
             "$schema": "https://openapi.vercel.sh/vercel.json",
-            "name": "hypothetically-speaking-backend",
-            "functions": {
-              "_diag.py": { "maxDuration": 300 }
-            }
+            "name": "hypothetically-speaking-backend"
           }
           EOF
 
@@ -107,7 +95,7 @@ jobs:
         if: always()
         run: |
           sleep 3
-          curl -s -w "\nHTTP:%{http_code}\n" "https://hypothetically-speaking-backend.vercel.app/" || true
+          curl -s -w "\nHTTP:%{http_code}\n" "https://hypothetically-speaking-backend.vercel.app/api" || true
 
       # Deployment metadata (function list, runtime, size) rather than logs —
       # to see whether _diag.py is even being registered as a function at all.
