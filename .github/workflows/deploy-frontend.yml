@@ -97,6 +97,15 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
+          # Vercel's default "Vercel Authentication" project setting SSO-gates
+          # every Preview deployment (production is unaffected/never was
+          # gated) — a custom alias on a preview deployment inherits that
+          # gate too, so the dev URL would just redirect to vercel.com/sso-api
+          # for anyone without a login on this Vercel team. Idempotent to
+          # repeat every deploy, so it self-heals if the dashboard setting
+          # ever gets flipped back on.
+          vercel project protection disable --sso --token="${{ secrets.VERCEL_TOKEN }}" --yes || true
+
           DEPLOY_URL=$(vercel deploy --token="${{ secrets.VERCEL_TOKEN }}" --yes)
           echo "Preview deployment: $DEPLOY_URL"
           vercel alias set "$DEPLOY_URL" hypothetically-speaking-dev.vercel.app --token="${{ secrets.VERCEL_TOKEN }}"
