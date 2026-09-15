@@ -7,6 +7,9 @@ Claude, and the knowledge base runs on `:memory:`.
 import sys
 from pathlib import Path
 
+import httpx
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.grounding import adapters, stages  # noqa: E402
@@ -870,9 +873,11 @@ def test_a_failed_hypothesis_generator_still_hands_plan_the_premises():
 
 
 class _FakeResponse:
-    def __init__(self, json_data=None, text=""):
+    def __init__(self, json_data=None, text="", status_code=200):
         self._json = json_data
         self.text = text
+        self.status_code = status_code
+        self.headers = {}
 
     def raise_for_status(self):
         pass
@@ -932,6 +937,39 @@ def test_pubmed_paper_repository_no_hits_returns_empty(monkeypatch):
         adapters.httpx, "get", lambda url, params=None, timeout=None: _FakeResponse(json_data={"esearchresult": {"idlist": []}})
     )
     assert PubMedPaperRepository().find(LiteratureQuery(text="nonsense query")) == []
+
+
+def test_ncbi_get_retries_once_on_429_then_succeeds(monkeypatch):
+    # Reproduces the live bug report: a plain 429 with no retry aborted the
+    # whole grounding run ("no link could be verified"). NCBI's rate limit
+    # without a key is a "slow down", not a permanent failure.
+    monkeypatch.setattr(adapters, "_ncbi_last_request_at", 0.0)
+    monkeypatch.setattr(adapters.time, "sleep", lambda _seconds: None)
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(1)
+        if len(calls) == 1:
+            return _FakeResponse(status_code=429)
+        return _FakeResponse(json_data={"esearchresult": {"idlist": ["1"]}}, status_code=200)
+
+    monkeypatch.setattr(adapters.httpx, "get", fake_get)
+    response = adapters._ncbi_get(adapters.PUBMED_ESEARCH_URL, {"db": "pubmed", "term": "x"})
+    assert len(calls) == 2
+    assert response.json()["esearchresult"]["idlist"] == ["1"]
+
+
+def test_ncbi_get_raises_if_still_429_after_retry(monkeypatch):
+    monkeypatch.setattr(adapters, "_ncbi_last_request_at", 0.0)
+    monkeypatch.setattr(adapters.time, "sleep", lambda _seconds: None)
+
+    class _Boom(_FakeResponse):
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("429", request=None, response=None)
+
+    monkeypatch.setattr(adapters.httpx, "get", lambda url, params=None, timeout=None: _Boom(status_code=429))
+    with pytest.raises(httpx.HTTPStatusError):
+        adapters._ncbi_get(adapters.PUBMED_ESEARCH_URL, {"db": "pubmed", "term": "x"})
 
 
 def test_pubmed_paper_repository_count_direct_reads_esearch_count(monkeypatch):

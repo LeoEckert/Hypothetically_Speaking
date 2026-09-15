@@ -18,6 +18,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -692,6 +694,50 @@ class AmassPaperRepository:
         return len(self.find(LiteratureQuery(text=f'"{a}" "{c}"')))
 
 
+# NCBI's E-utilities rate-limit fairly aggressively without an API key (3
+# req/s) — and grounding's L2 verification runs one thread per link, each
+# needing up to 3 of these calls (esearch/esummary/efetch), so concurrent
+# links can trivially burst past that limit even though each individual
+# caller is well-behaved. A global lock + minimum spacing serializes every
+# eutils.ncbi.nlm.nih.gov call across all threads in this process; a 429
+# that still gets through gets one Retry-After-respecting retry — same
+# "slow down, not broken" policy as backend/tools/pubmed_tool.py's own
+# tool-call path, just also closing the concurrency gap that path doesn't
+# have (a single tool call there is never run in parallel with itself).
+_ncbi_lock = threading.Lock()
+_ncbi_last_request_at = 0.0
+_NCBI_MIN_INTERVAL = 0.34
+
+
+def _ncbi_get(url: str, params: dict) -> httpx.Response:
+    global _ncbi_last_request_at
+    with _ncbi_lock:
+        wait = _NCBI_MIN_INTERVAL - (time.monotonic() - _ncbi_last_request_at)
+        if wait > 0:
+            time.sleep(wait)
+        response = httpx.get(url, params=params, timeout=HTTP_TIMEOUT)
+        _ncbi_last_request_at = time.monotonic()
+    if response.status_code == 429:
+        time.sleep(float(response.headers.get("Retry-After", 1)))
+        with _ncbi_lock:
+            response = httpx.get(url, params=params, timeout=HTTP_TIMEOUT)
+            _ncbi_last_request_at = time.monotonic()
+    response.raise_for_status()
+    return response
+
+
+def _get_with_retry(url: str, params: dict) -> httpx.Response:
+    """Same one-retry-on-429 policy as _ncbi_get, without the cross-thread
+    throttle — used for ClinicalTrials.gov, which hasn't been observed to
+    need it as aggressively as NCBI does."""
+    response = httpx.get(url, params=params, timeout=HTTP_TIMEOUT)
+    if response.status_code == 429:
+        time.sleep(float(response.headers.get("Retry-After", 1)))
+        response = httpx.get(url, params=params, timeout=HTTP_TIMEOUT)
+    response.raise_for_status()
+    return response
+
+
 def _pubmed_efetch_abstracts(pmids: list[str]) -> dict[str, dict]:
     """GET efetch for a batch of PMIDs at once, returning {pmid: {"abstract",
     "doi"}} — XML, not the plain-text rendering, because the text format
@@ -699,12 +745,10 @@ def _pubmed_efetch_abstracts(pmids: list[str]) -> dict[str, dict]:
     split back apart; the XML tree pairs each PMID with its own abstract."""
     if not pmids:
         return {}
-    response = httpx.get(
+    response = _ncbi_get(
         PUBMED_EFETCH_URL,
-        params={"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "xml"},
-        timeout=HTTP_TIMEOUT,
+        {"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "xml"},
     )
-    response.raise_for_status()
     root = ET.fromstring(response.text)
     found: dict[str, dict] = {}
     for article in root.findall(".//PubmedArticle"):
@@ -732,21 +776,17 @@ class PubMedPaperRepository:
         self.limit = limit
 
     def find(self, query: LiteratureQuery) -> list[Paper]:
-        search = httpx.get(
+        search = _ncbi_get(
             PUBMED_ESEARCH_URL,
-            params={"db": "pubmed", "term": query.text, "retmode": "json", "retmax": self.limit},
-            timeout=HTTP_TIMEOUT,
+            {"db": "pubmed", "term": query.text, "retmode": "json", "retmax": self.limit},
         )
-        search.raise_for_status()
         pmids = search.json().get("esearchresult", {}).get("idlist", [])
         if not pmids:
             return []
-        summary = httpx.get(
+        summary = _ncbi_get(
             PUBMED_ESUMMARY_URL,
-            params={"db": "pubmed", "id": ",".join(pmids), "retmode": "json"},
-            timeout=HTTP_TIMEOUT,
+            {"db": "pubmed", "id": ",".join(pmids), "retmode": "json"},
         )
-        summary.raise_for_status()
         docs = summary.json().get("result", {})
         extra = _pubmed_efetch_abstracts(pmids)
         return [
@@ -766,12 +806,10 @@ class PubMedPaperRepository:
     def count_direct(self, a: str, c: str) -> int:
         """Same measurement as AmassPaperRepository, cheaper: E-utilities
         reports the match count directly, no need to fetch any records."""
-        search = httpx.get(
+        search = _ncbi_get(
             PUBMED_ESEARCH_URL,
-            params={"db": "pubmed", "term": f'"{a}" AND "{c}"', "retmode": "json", "retmax": 0},
-            timeout=HTTP_TIMEOUT,
+            {"db": "pubmed", "term": f'"{a}" AND "{c}"', "retmode": "json", "retmax": 0},
         )
-        search.raise_for_status()
         return int(search.json().get("esearchresult", {}).get("count", 0))
 
 
@@ -782,12 +820,10 @@ class ClinicalTrialsRepository:
         self.limit = limit
 
     def find(self, query: LiteratureQuery) -> list[Paper]:
-        response = httpx.get(
+        response = _get_with_retry(
             CLINICALTRIALS_URL,
-            params={"query.term": query.text, "pageSize": self.limit, "format": "json"},
-            timeout=HTTP_TIMEOUT,
+            {"query.term": query.text, "pageSize": self.limit, "format": "json"},
         )
-        response.raise_for_status()
         return [self._to_paper(study) for study in response.json().get("studies", [])]
 
     @staticmethod
@@ -818,12 +854,10 @@ class ClinicalTrialsRepository:
         )
 
     def count_direct(self, a: str, c: str) -> int:
-        response = httpx.get(
+        response = _get_with_retry(
             CLINICALTRIALS_URL,
-            params={"query.term": f'"{a}" AND "{c}"', "pageSize": 1, "countTotal": "true", "format": "json"},
-            timeout=HTTP_TIMEOUT,
+            {"query.term": f'"{a}" AND "{c}"', "pageSize": 1, "countTotal": "true", "format": "json"},
         )
-        response.raise_for_status()
         return int(response.json().get("totalCount", 0))
 
 
