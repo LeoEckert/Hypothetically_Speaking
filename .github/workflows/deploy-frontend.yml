@@ -52,11 +52,24 @@ jobs:
           cp -r backend frontend/backend
           grep -v '^pytest' requirements.txt > frontend/requirements.txt
           cat > frontend/api/index.py <<'EOF'
-          from a2wsgi import ASGIMiddleware
+          import traceback
+          from http.server import BaseHTTPRequestHandler
 
-          from backend.server.app import app as _asgi_app
+          try:
+              from a2wsgi import ASGIMiddleware
+              from backend.server.app import app as _asgi_app
+              _wsgi_app = ASGIMiddleware(_asgi_app)
+              _error = None
+          except Exception:
+              _error = traceback.format_exc()
 
-          app = ASGIMiddleware(_asgi_app)
+          class handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200 if _error is None else 500)
+                  self.send_header('Content-type', 'text/plain')
+                  self.end_headers()
+                  self.wfile.write((_error or "import ok").encode())
+                  return
           EOF
 
       - name: Install Vercel CLI
