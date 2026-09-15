@@ -12,8 +12,8 @@ name: Deploy to Vercel
 # One Vercel project serves both: the static Vite build and a Python
 # serverless function for the backend. This project's Root Directory is
 # "frontend" (set in the Vercel dashboard), so the function has to live at
-# frontend/api/index.py to be auto-detected alongside the static build, and
-# backend/ must be staged as that function file's *sibling* —
+# frontend/api/[...path].py to be auto-detected alongside the static build,
+# and backend/ must be staged as that function file's *sibling* —
 # frontend/backend/, not nested inside frontend/api/ — matching the exact
 # layout confirmed working during development (nesting it under api/
 # instead produces `ModuleNotFoundError: No module named 'backend'` at
@@ -29,21 +29,22 @@ name: Deploy to Vercel
 # see docs/DEPLOY.md), and this WSGI bridge is what actually gets invoked
 # correctly.
 #
-# Routing: a plain api/index.py only auto-maps to the literal /api path in
-# this project, not the whole /api/* prefix — vercel.json's `rewrites`
-# (/api/:path* -> /api) forwards every sub-path to it; the rewrite changes
-# which function serves the request, not the path the function itself
-# sees, so FastAPI still routes on the real incoming path via a2wsgi's WSGI
-# environ. An earlier attempt at this exact rewrite appeared not to work,
-# and Vercel's catch-all filename convention (api/[...path].py) was used
-# instead — but that turned out to be a Next.js-specific file-system-routing
-# feature, not a generic Vercel Functions primitive: on this Vite (non-
-# Next.js) project it silently matched only a single path segment
-# (/api/tools worked, /api/run/<id>/evaluate 404'd at the platform level,
-# confirmed live). The earlier rewrite failure was very likely confounded
-# by the ASGI/module-staging bugs still unresolved at the time, not a real
-# rewrites limitation — confirmed by re-testing the exact same rewrite now
-# that those are fixed, and it works for arbitrarily deep sub-paths.
+# Routing — KNOWN LIMITATION, unresolved: a plain api/index.py only
+# auto-maps to the literal /api path, not the whole /api/* prefix. The
+# catch-all filename convention used here (api/[...path].py) only matches a
+# SINGLE path segment on this account/project (confirmed live: /api/config,
+# /api/tools, /api/run all work; /api/run/<id>/evaluate, /api/admin/usage,
+# PUT /api/tools/<name> all 404 at the platform level — this is exactly why
+# "Evaluate with AI" broke). A vercel.json `rewrites` entry
+# (/api/:path* -> /api) was tried twice, in two different sessions, and
+# BOTH times broke the app worse — the second time it 404'd even the
+# single-segment paths that were previously working. Do not re-attempt that
+# exact rewrite without first confirming in a preview/throwaway deploy that
+# it doesn't regress the working single-segment routes. See docs/DEPLOY.md
+# for the full history — this needs a real fix (candidates: multiple fixed-
+# depth catch-all files, checking for a dashboard-level routing override
+# from earlier manual experiments, or asking Vercel support) before any
+# multi-segment /api/* route can be trusted in production.
 on:
   push:
     branches: [main]
@@ -64,7 +65,7 @@ jobs:
           mkdir -p frontend/api
           cp -r backend frontend/backend
           grep -v '^pytest' requirements.txt > frontend/requirements.txt
-          cat > "frontend/api/index.py" <<'EOF'
+          cat > "frontend/api/[...path].py" <<'EOF'
           from a2wsgi import ASGIMiddleware
 
           from backend.server.app import app as _asgi_app

@@ -30,7 +30,7 @@ flowchart TB
 
     subgraph Vercel["One Vercel project"]
         FE["frontend/ Vite build (static)"]
-        API["api/index.py: FastAPI,<br/>bridged via a2wsgi<br/>backend/server/app.py<br/>(vercel.json rewrite routes /api/* here)"]
+        API["api/[...path].py: FastAPI,<br/>bridged via a2wsgi<br/>backend/server/app.py<br/>(⚠️ multi-segment /api/* routes broken — see DEPLOY.md)"]
     end
 
     subgraph Loop["backend/agent/loop.py"]
