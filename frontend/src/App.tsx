@@ -14,7 +14,7 @@ import { evaluateHypothesis } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
 import { cancelCurrentStream, currentLiveRunId, onStreamFinished, startAndStream } from "@/lib/runStream"
 import { getApiKeysSnapshot, hasUsableLlmKey, loadApiKeys } from "@/store/apiKeysStore"
-import { getPreferredModel } from "@/store/modelStore"
+import { getModelPrefs } from "@/store/modelStore"
 import { appendEvaluation, createRun, deleteRun, getRun } from "@/store/runsStore"
 import type { SseEvent, RunMode } from "@/types"
 
@@ -79,13 +79,14 @@ function App() {
     if (liveRunId) setViewedRunId(liveRunId)
   }
 
-  // A preferred-model override (Settings) rides the same api_keys request
-  // field as the actual BYOK keys (see backend/agent/providers/__init__.py's
-  // get_provider()) — merged in here rather than inside apiKeysStore itself,
-  // since it isn't a secret and lives in its own store (modelStore.ts).
+  // Model preferences (Settings) ride the same api_keys request field as the
+  // actual BYOK keys (see backend/agent/providers/__init__.py's get_provider()
+  // and backend/agent/model_policy.py) — merged in here rather than inside
+  // apiKeysStore itself, since they aren't secrets and live in their own
+  // store (modelStore.ts). Only set entries are sent, so the backend's own
+  // defaults apply to anything left on "Auto".
   function apiKeysForRequest() {
-    const preferredModel = getPreferredModel()
-    return preferredModel ? { ...loadApiKeys(), OPENROUTER_MODEL: preferredModel } : loadApiKeys()
+    return { ...loadApiKeys(), ...getModelPrefs() }
   }
 
   async function handleRun() {

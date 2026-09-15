@@ -1,0 +1,28 @@
+# Which Claude models a deployment uses, per tier, when a run is on the
+# Anthropic provider — either because only an Anthropic key was supplied, or
+# because OpenRouter (the free path, always tried first when both keys exist)
+# failed and the run fell back to Claude.
+#
+# The section is picked by deployment environment: APP_ENV if set, else
+# Vercel's own VERCEL_ENV ("production" for the main deploy, "preview" for the
+# dev alias), else "development" (local). Read by backend/agent/model_policy.py.
+#
+# allow_override: whether a user's own pick in the frontend Settings
+# (ANTHROPIC_MODEL / GROUNDING_FAST_MODEL in the request's api_keys) may
+# replace these. Off on preview so dev traffic can never land on Sonnet by
+# accident; on in production, where the user pays with their own key anyway.
+
+[production.anthropic]
+main = "claude-sonnet-5"
+fast = "claude-haiku-4-5-20251001"
+allow_override = true
+
+[preview.anthropic]
+main = "claude-haiku-4-5-20251001"
+fast = "claude-haiku-4-5-20251001"
+allow_override = false
+
+[development.anthropic]
+main = "claude-sonnet-5"
+fast = "claude-haiku-4-5-20251001"
+allow_override = true

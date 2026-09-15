@@ -46,6 +46,7 @@ load_dotenv(admin.ADMIN_OVERRIDES_PATH, override=True)
 
 from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
 from backend.agent.loop import HARD_MAX_TOOL_CALLS, _env_int, run_agent  # noqa: E402
+from backend.agent.model_policy import anthropic_policy  # noqa: E402
 from backend.agent.providers import get_provider  # noqa: E402
 from backend.kgviz.graph import snapshot as trajectory_snapshot  # noqa: E402
 from backend.kgviz.render import render_html as render_trajectory  # noqa: E402
@@ -141,6 +142,14 @@ def get_config():
         "anthropic_key_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "openrouter_key_configured": bool(os.environ.get("OPENROUTER_API_KEY")),
         "default_provider": "openrouter",
+        # With both keys a run starts on OpenRouter and falls back to Claude
+        # only if OpenRouter fails (backend/agent/providers/fallback.py).
+        "provider_order": ["openrouter", "anthropic"],
+        # Which Claude models this deployment uses per tier, and whether the
+        # user's Settings may override them — from backend/config/models.toml
+        # (backend/agent/model_policy.py); the frontend shows it next to its
+        # Claude model picker and disables the picker when overrides are off.
+        "anthropic_models": anthropic_policy(),
     }
 
 

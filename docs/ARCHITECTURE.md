@@ -74,9 +74,11 @@ Implemented as a manual, provider-agnostic tool-use loop (not the Claude
 Agent SDK) — chosen for transparency and low dependency risk within a
 36-hour build: every step is inspectable state, not framework magic. Every
 LLM call goes through `backend/agent/providers/get_provider()`, which
-selects Anthropic or OpenRouter depending on which BYOK key was supplied
-(see `docs/DEPLOY.md`) — the loop itself never branches on which provider
-is in use.
+selects OpenRouter or Anthropic depending on which BYOK key was supplied —
+with both, a `FallbackProvider` starts on OpenRouter's free models and moves
+to Claude (model per deployment from `backend/config/models.toml`) only if
+OpenRouter fails, sticky for the rest of the run (see `docs/DEPLOY.md`) —
+the loop itself never branches on which provider is in use.
 
 ```
 1. PLAN     A dedicated, tool-less Anthropic call (mirrors REVISE below):

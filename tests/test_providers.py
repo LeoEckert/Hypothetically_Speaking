@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend.agent.providers import NoProviderAvailable, get_provider  # noqa: E402
+from backend.agent.providers import FallbackProvider, NoProviderAvailable, get_provider  # noqa: E402
 from backend.agent.providers.anthropic_provider import AnthropicProvider  # noqa: E402
 from backend.agent.providers.openrouter_provider import OpenRouterProvider  # noqa: E402
 
@@ -38,11 +38,13 @@ def test_local_dev_openrouter_env_var_is_used_when_no_anthropic_key(monkeypatch)
     assert provider.key_source == "platform"
 
 
-def test_user_anthropic_key_overrides_the_openrouter_fallback(monkeypatch):
+def test_both_keys_start_on_openrouter_with_claude_as_the_fallback(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "local-dev-openrouter")
     provider = get_provider({"ANTHROPIC_API_KEY": "user-anthropic-key"})
-    assert isinstance(provider, AnthropicProvider)
-    assert provider.key_source == "user"
+    assert isinstance(provider, FallbackProvider)
+    assert isinstance(provider.primary, OpenRouterProvider) and isinstance(provider.fallback, AnthropicProvider)
+    assert provider.name == "openrouter" and not provider.switched
+    assert provider.primary.key_source == "platform" and provider.fallback.key_source == "user"
 
 
 def test_user_openrouter_key_is_used_when_no_anthropic_key(monkeypatch):
@@ -141,3 +143,85 @@ def test_env_helpers_treat_blank_as_unset(monkeypatch):
     monkeypatch.setenv("HS_TEST_VAR", " set ")
     monkeypatch.setenv("HS_TEST_INT", " 12 ")
     assert env_str("HS_TEST_VAR", "d") == "set" and env_int("HS_TEST_INT", 7) == 12
+
+
+# --- FallbackProvider: free first, Claude only when OpenRouter actually fails ---
+
+
+def _fake_provider(name, model, fail_with=None, calls=None):
+    from backend.agent.providers.base import LLMProvider, LLMResponse
+
+    class _P(LLMProvider):
+        key_source = "user"
+
+        def create(self, system, transcript, tools, max_tokens):
+            (calls if calls is not None else []).append(name)
+            if fail_with is not None:
+                raise fail_with
+            return LLMResponse(text=f"from {name}", model=model)
+
+        def stream(self, system, transcript, max_tokens, on_chunk):
+            on_chunk("x")
+            return self.create(system, transcript, [], max_tokens)
+
+    p = _P()
+    p.name, p.model = name, model
+    return p
+
+
+def _status_error(code):
+    import httpx
+    import openai
+
+    response = httpx.Response(code, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"))
+    return openai.APIStatusError(f"status {code}", response=response, body=None)
+
+
+def test_fallback_switches_on_a_rate_limit_and_stays_switched():
+    calls = []
+    primary = _fake_provider("openrouter", "free-model:free", fail_with=_status_error(429), calls=calls)
+    fallback = _fake_provider("anthropic", "claude-haiku-4-5-20251001", calls=calls)
+    provider = FallbackProvider(primary, fallback)
+
+    first = provider.complete("hi", 100)
+    assert first.text == "from anthropic" and provider.switched
+    assert provider.name == "anthropic" and provider.model == "claude-haiku-4-5-20251001"
+    assert "429" in (provider.fallback_reason or "")
+    provider.complete("again", 100)
+    assert calls == ["openrouter", "anthropic", "anthropic"], "after the switch the primary is never retried"
+
+
+def test_fallback_does_not_hide_a_rejected_key():
+    primary = _fake_provider("openrouter", "m:free", fail_with=_status_error(401))
+    provider = FallbackProvider(primary, _fake_provider("anthropic", "claude-sonnet-5"))
+    with pytest.raises(Exception, match="401"):
+        provider.complete("hi", 100)
+    assert not provider.switched
+
+
+def test_fallback_is_transparent_while_the_primary_works():
+    provider = FallbackProvider(_fake_provider("openrouter", "m:free"), _fake_provider("anthropic", "claude-sonnet-5"))
+    assert provider.complete("hi", 100).text == "from openrouter"
+    assert provider.name == "openrouter" and provider.model == "m:free" and not provider.switched
+
+
+def test_openrouter_usage_reports_cached_prompt_tokens():
+    from backend.agent.providers.openrouter_provider import _usage_dict
+
+    usage = SimpleNamespace(prompt_tokens=1200, completion_tokens=50, prompt_tokens_details=SimpleNamespace(cached_tokens=1000))
+    assert _usage_dict(usage) == {
+        "input_tokens": 1200, "output_tokens": 50, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 1000,
+    }
+    assert _usage_dict(None) == {}
+    assert _usage_dict(SimpleNamespace(prompt_tokens=10, completion_tokens=1))["cache_read_input_tokens"] == 0
+
+
+def test_openrouter_system_prompt_carries_a_cache_breakpoint():
+    from backend.agent.providers.base import Transcript
+
+    transcript = Transcript()
+    transcript.add_user_text("q")
+    messages = OpenRouterProvider._to_native_messages("SYSTEM", transcript)
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert messages[1] == {"role": "user", "content": "q"}

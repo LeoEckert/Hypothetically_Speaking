@@ -182,8 +182,19 @@ fallbacks. `ADMIN_TOKEN` enables the admin dashboard (below, with a
 serverless-specific caveat). **Double-check any numeric env var
 (`MAX_TOOL_CALLS`, `MAX_RUN_SECONDS`) is either genuinely unset or has a
 real value** — an empty string crashed the whole app once already (bug #3
-above); `_env_int()` now guards against this specific case, but there's no
-guarantee every future numeric env var read gets the same treatment.
+above); `backend/agent/env.py`'s `env_int()`/`env_str()` now guard against
+this for every env read with a default — the same blank-but-set pattern once
+sent `ANTHROPIC_MODEL=""` to the Anthropic API as the model name (400
+"model: String should have at least 1 character"). If `ANTHROPIC_MODEL` or
+`GROUNDING_FAST_MODEL` exist as *empty* variables on the project, delete
+them: they are not needed at all now. **Which Claude model each deployment
+uses is not an env var any more** but `backend/config/models.toml`, keyed
+by Vercel's own `VERCEL_ENV` (`production` for `main`, `preview` for `dev`):
+production runs the Sonnet/Haiku mix and honours a user's Settings pick,
+the `dev` preview pins both tiers to Haiku and ignores picks — so nobody
+testing `dev` on their own Anthropic key is billed Sonnet. And whenever a
+request carries both keys, the run starts on OpenRouter (free) and moves to
+Claude only if OpenRouter fails (`backend/agent/providers/fallback.py`).
 
 **Project Root Directory** stays at its existing value (`frontend`) — no
 dashboard change was needed once the three bugs above were fixed. This

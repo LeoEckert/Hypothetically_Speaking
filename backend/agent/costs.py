@@ -113,54 +113,51 @@ def build_cost_summary(state: RunState, provider, api_keys: dict | None = None) 
     model = getattr(provider, "model", "") or ""
     llm_key_source = getattr(provider, "key_source", "unset") if provider else "unset"
 
-    llm_usd, llm_priced, llm_free_tier = 0.0, True, False
+    # Price each model bucket on its own terms: a ":free" OpenRouter slug is a
+    # genuinely free tier ($0 with rate_configured True — distinct from "we
+    # don't know the price"), a Claude id is priced at its family's rate, and
+    # anything else (an operator-pinned paid OpenRouter model) is unpriced.
+    # Per bucket rather than per provider because one run can span both —
+    # FallbackProvider starts on OpenRouter and finishes on Claude — and a
+    # false $0 on Sonnet tokens is exactly the mistake this file exists to
+    # avoid.
+    by_model = state.anthropic_by_model or (
+        {
+            model: {
+                "calls": state.anthropic_calls,
+                "input_tokens": state.anthropic_input_tokens,
+                "output_tokens": state.anthropic_output_tokens,
+                "cache_creation_input_tokens": state.anthropic_cache_creation_input_tokens,
+                "cache_read_input_tokens": state.anthropic_cache_read_input_tokens,
+            }
+        }
+        if model
+        else {}
+    )
+    llm_usd, llm_priced = 0.0, True
     llm_models = []
-    # Free-tier status is keyed off the actual model slug, not just the
-    # provider name — get_provider() always picks a live ":free" OpenRouter
-    # model by default, but an operator can pin OPENROUTER_MODEL to a paid
-    # one, and that run must not show a false $0.
-    if provider_name == "openrouter" and model.endswith(":free"):
-        # A genuinely free tier, not an unknown rate — $0 with rate_configured
-        # True, distinct from "we don't know the price" (rate_configured False).
-        llm_usd, llm_priced, llm_free_tier = 0.0, True, True
-        llm_models = [
-            {
-                "model": name,
-                **tokens,
-                "usd": 0.0,
-                "rate_configured": True,
-            }
-            for name, tokens in (state.anthropic_by_model or {}).items()
-        ]
-    else:
-        # Price each Anthropic model at its own rate (Haiku grounding, Sonnet
-        # loop); fall back to the run model only for tokens recorded without one.
-        by_model = state.anthropic_by_model or (
-            {
-                model: {
-                    "calls": state.anthropic_calls,
-                    "input_tokens": state.anthropic_input_tokens,
-                    "output_tokens": state.anthropic_output_tokens,
-                    "cache_creation_input_tokens": state.anthropic_cache_creation_input_tokens,
-                    "cache_read_input_tokens": state.anthropic_cache_read_input_tokens,
-                }
-            }
-            if model
-            else {}
-        )
-        for name, tokens in by_model.items():
+    for name, tokens in by_model.items():
+        slug = name if name != "unknown" else model
+        if slug.endswith(":free"):
+            usd, priced = 0.0, True
+        else:
             usd, priced = anthropic_cost_usd(
-                name if name != "unknown" else model,
+                slug,
                 tokens["input_tokens"], tokens["output_tokens"],
                 tokens["cache_creation_input_tokens"], tokens["cache_read_input_tokens"],
             )
-            llm_models.append({"model": name, **tokens, "usd": usd, "rate_configured": priced})
-            if usd is None:
-                llm_priced = False
-            else:
-                llm_usd += usd
-        if not llm_priced and all(entry["usd"] is None for entry in llm_models):
-            llm_usd = None
+        llm_models.append({"model": name, **tokens, "usd": usd, "rate_configured": priced})
+        if usd is None:
+            llm_priced = False
+        else:
+            llm_usd += usd
+    if not llm_priced and all(entry["usd"] is None for entry in llm_models):
+        llm_usd = None
+    # The whole run was free only if every bucket was; a run that fell back
+    # to Claude for its second half is not.
+    llm_free_tier = bool(llm_models) and all(
+        (entry["model"] if entry["model"] != "unknown" else model).endswith(":free") for entry in llm_models
+    ) or (not llm_models and provider_name == "openrouter" and model.endswith(":free"))
 
     nebius_usd, nebius_priced = nebius_cost_usd(state.nebius_prompt_tokens, state.nebius_completion_tokens)
     amass_usd, amass_priced = amass_cost_usd(credits_used)
@@ -198,6 +195,12 @@ def build_cost_summary(state: RunState, provider, api_keys: dict | None = None) 
             "free_tier": llm_free_tier,
             "key_source": llm_key_source,
             "by_model": llm_models,
+            # Set when a FallbackProvider moved the run off its primary
+            # (OpenRouter) mid-way — the reason is the primary's last error.
+            "fell_back_from": getattr(provider, "primary", None).name
+            if getattr(provider, "switched", False)
+            else None,
+            "fallback_reason": getattr(provider, "fallback_reason", None) if getattr(provider, "switched", False) else None,
         },
         "nebius": {
             "calls": state.nebius_calls,

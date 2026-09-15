@@ -1,36 +1,44 @@
-"""Provider selection: an Anthropic key (from the request, i.e. BYOK, or a
-local-dev env var) selects Claude; otherwise an OpenRouter key (same) selects
-OpenRouter. There is deliberately no platform-held key funding every visitor
-from one shared allowance for either provider — every real user brings their
-own, guided by the frontend's required onboarding popup
-(frontend/src/components/OnboardingDialog.tsx). The env-var fallback here
-exists only for local dev convenience (scripts/run_demo.py, manual testing);
-an operator can also optionally set a platform key via the admin dashboard
-(backend/agent/admin.py's ROTATABLE_KEYS) if they choose to, but nothing in
-this app relies on one existing. This is the one place that decides which
-provider a run uses — loop.py, adapters.py and evaluate.py all call this
-instead of constructing an SDK client directly.
+"""Provider selection. Every key here is BYOK — from the request (the
+frontend's required onboarding popup / Settings) or, for local dev only, an
+env var; there is deliberately no platform-held key funding every visitor
+from one shared allowance (see the module docstring history in git and
+CLAUDE.md). An operator can still optionally set a platform key via the admin
+dashboard (backend/agent/admin.py's ROTATABLE_KEYS), but nothing relies on it.
+
+Which provider a run gets:
+
+- only an OpenRouter key -> OpenRouterProvider (free models);
+- only an Anthropic key  -> AnthropicProvider, model per
+  backend/config/models.toml for this deployment (see model_policy.py);
+- both                   -> FallbackProvider: OpenRouter first, and the run
+  moves to Claude only if OpenRouter fails (rate/daily limit, model gone,
+  5xx, transport) — sticky for the rest of that run.
+
+This is the one place that decides; loop.py, adapters.py and evaluate.py all
+call get_provider() instead of constructing an SDK client directly.
 """
 from __future__ import annotations
 
 import os
 
+from backend.agent.env import env_str
+from backend.agent.model_policy import anthropic_model
 from backend.agent.providers.anthropic_provider import AnthropicProvider
 from backend.agent.providers.base import LLMProvider, LLMResponse, ToolCall, ToolResult, Transcript
-from backend.agent.env import env_str
+from backend.agent.providers.fallback import FallbackProvider
 from backend.agent.providers.openrouter_models import best_free_tool_model
 from backend.agent.providers.openrouter_provider import OpenRouterProvider
 
-__all__ = ["LLMProvider", "LLMResponse", "ToolCall", "ToolResult", "Transcript", "get_provider", "NoProviderAvailable"]
-
-_ANTHROPIC_MAIN_MODEL = "claude-sonnet-5"
-_ANTHROPIC_FAST_MODEL = "claude-haiku-4-5-20251001"
-# No default OpenRouter model is hardcoded here — best_free_tool_model() asks
-# OpenRouter's own catalog, live, for whichever :free model currently supports
-# tool calling and ranks best on it (see openrouter_models.py). OpenRouter's
-# free-model roster changes on its own schedule; pinning a slug here would
-# silently go stale. OPENROUTER_MODEL/OPENROUTER_FAST_MODEL below still let an
-# operator pin a specific model if they want to.
+__all__ = [
+    "LLMProvider",
+    "LLMResponse",
+    "ToolCall",
+    "ToolResult",
+    "Transcript",
+    "FallbackProvider",
+    "get_provider",
+    "NoProviderAvailable",
+]
 
 
 class NoProviderAvailable(RuntimeError):
@@ -41,45 +49,45 @@ class NoProviderAvailable(RuntimeError):
     onboarding popup."""
 
 
+def _openrouter(api_keys: dict[str, str], tier: str, key: str, user_supplied: bool) -> OpenRouterProvider:
+    # A per-request pick (frontend Settings model picker, see GET /api/models)
+    # rides the same api_keys dict as the keys themselves. It beats the
+    # server-side OPENROUTER_MODEL / OPENROUTER_FAST_MODEL env pins, which in
+    # turn beat the live best-free-model pick. No default slug is hardcoded:
+    # OpenRouter's free roster changes on its own schedule (openrouter_models.py).
+    user_model = api_keys.get("OPENROUTER_MODEL")
+    env_pin = env_str("OPENROUTER_MODEL") if tier == "main" else env_str("OPENROUTER_FAST_MODEL")
+    provider = OpenRouterProvider(api_key=key, model=user_model or env_pin or best_free_tool_model())
+    provider.key_source = "user" if user_supplied else "platform"
+    return provider
+
+
+def _anthropic(api_keys: dict[str, str], tier: str, key: str, user_supplied: bool) -> AnthropicProvider:
+    provider = AnthropicProvider(api_key=key, model=anthropic_model(tier, api_keys))
+    provider.key_source = "user" if user_supplied else "platform"
+    return provider
+
+
 def get_provider(api_keys: dict[str, str] | None = None, tier: str = "main") -> LLMProvider:
     """`tier`: "main" for the primary loop/report-writing work, "fast" for
-    cheaper sub-tasks (grounding's L1 probe) — mirrors the pre-existing
-    Sonnet-vs-Haiku cost tiering, now generalized across providers.
-    `api_keys` are per-request, user-supplied overrides (see RunRequest.api_keys
-    in backend/server/app.py) — this is how BYOK actually reaches a run; the
-    os.environ fallback below is a local-dev convenience only, not how
-    production is meant to be configured (see module docstring)."""
+    cheaper sub-tasks (grounding's L1 probe) — the Sonnet-vs-Haiku cost
+    tiering, generalized across providers. `api_keys` are the per-request,
+    user-supplied values (RunRequest.api_keys in backend/server/app.py); the
+    os.environ fallback is a local-dev convenience only."""
     api_keys = api_keys or {}
-    user_anthropic_key = api_keys.get("ANTHROPIC_API_KEY")
-    anthropic_key = user_anthropic_key or os.environ.get("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        model = (
-            env_str("ANTHROPIC_MODEL", _ANTHROPIC_MAIN_MODEL)
-            if tier == "main"
-            else env_str("GROUNDING_FAST_MODEL", _ANTHROPIC_FAST_MODEL)
-        )
-        provider = AnthropicProvider(api_key=anthropic_key, model=model)
-        provider.key_source = "user" if user_anthropic_key else "platform"
-        return provider
-
     user_openrouter_key = api_keys.get("OPENROUTER_API_KEY")
     openrouter_key = user_openrouter_key or os.environ.get("OPENROUTER_API_KEY")
-    if not openrouter_key:
+    user_anthropic_key = api_keys.get("ANTHROPIC_API_KEY")
+    anthropic_key = user_anthropic_key or os.environ.get("ANTHROPIC_API_KEY")
+
+    if not openrouter_key and not anthropic_key:
         raise NoProviderAvailable(
             "No LLM key configured — add a free OpenRouter key (no credit card, "
             "openrouter.ai/keys) or your own Anthropic key in Settings to run this."
         )
-    # A per-request override (frontend Settings model picker, see GET
-    # /api/models) rides the same api_keys dict as the API keys themselves —
-    # no new request field needed. It takes precedence over the server-side
-    # OPENROUTER_MODEL/OPENROUTER_FAST_MODEL env vars, which in turn beat the
-    # live-picked default.
-    user_model_override = api_keys.get("OPENROUTER_MODEL")
-    model = (
-        user_model_override or env_str("OPENROUTER_MODEL") or best_free_tool_model()
-        if tier == "main"
-        else user_model_override or env_str("OPENROUTER_FAST_MODEL") or best_free_tool_model()
-    )
-    provider = OpenRouterProvider(api_key=openrouter_key, model=model)
-    provider.key_source = "user" if user_openrouter_key else "platform"
-    return provider
+
+    openrouter = _openrouter(api_keys, tier, openrouter_key, bool(user_openrouter_key)) if openrouter_key else None
+    anthropic = _anthropic(api_keys, tier, anthropic_key, bool(user_anthropic_key)) if anthropic_key else None
+    if openrouter and anthropic:
+        return FallbackProvider(primary=openrouter, fallback=anthropic)
+    return openrouter or anthropic  # type: ignore[return-value]
