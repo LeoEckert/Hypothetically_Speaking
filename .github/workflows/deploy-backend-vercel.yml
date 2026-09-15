@@ -61,10 +61,13 @@ jobs:
       - name: Deploy to Vercel (production)
         id: deploy
         working-directory: /tmp/backend-deploy
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
         run: |
+          # The CLI errors if only one of VERCEL_ORG_ID/VERCEL_PROJECT_ID is
+          # set ("you need to specify both") — so both are only exported
+          # once VERCEL_BACKEND_PROJECT_ID exists (i.e. after the first,
+          # bootstrap run below has created the project).
           if [ -n "${{ secrets.VERCEL_BACKEND_PROJECT_ID }}" ]; then
+            export VERCEL_ORG_ID="${{ secrets.VERCEL_ORG_ID }}"
             export VERCEL_PROJECT_ID="${{ secrets.VERCEL_BACKEND_PROJECT_ID }}"
           fi
           url=$(vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes)
