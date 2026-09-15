@@ -29,7 +29,7 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(() => !hasUsableLlmKey(getApiKeysSnapshot()))
   const [question, setQuestion] = useState("")
-  const [maxToolCalls, setMaxToolCalls] = useState(8)
+  const [maxToolCalls, setMaxToolCalls] = useState(15)
   const [mode, setMode] = useState<RunMode>("fast")
   const prefilledRef = useRef(false)
   const budgetInitRef = useRef(false)
@@ -193,7 +193,7 @@ function App() {
             onModeChange={setMode}
             maxToolCalls={maxToolCalls}
             onMaxToolCallsChange={setMaxToolCalls}
-            maxToolCallsCeiling={config?.max_tool_calls_ceiling ?? 12}
+            maxToolCallsCeiling={config?.max_tool_calls_ceiling ?? 25}
           />
 
           <main>

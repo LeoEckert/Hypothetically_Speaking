@@ -11,8 +11,8 @@ export function useConfig() {
         setConfig({
           dev_mode: false,
           demo_question: "",
-          max_tool_calls_default: 8,
-          max_tool_calls_ceiling: 12,
+          max_tool_calls_default: 15,
+          max_tool_calls_ceiling: 25,
           anthropic_key_configured: false,
           openrouter_key_configured: false,
           default_provider: "openrouter",

@@ -45,10 +45,10 @@ CancelCheck = Optional[Callable[[], bool]]
 # where a request originates.
 #
 # Sized for a hard 300s-per-run external platform ceiling (Vercel Fluid
-# Compute), not the old 1080s VM budget — scaled down proportionally from the
-# previous 30/40 defaults pending empirical retuning against real timed runs
-# (see scripts/run_demo.py and CLAUDE.md's Commands section).
-HARD_MAX_TOOL_CALLS = 12
+# Compute), not the old 1080s VM budget. Raised from 12 (initial scaled-down
+# guess) to 25 after real runs kept legitimately wanting more tool calls
+# than that for thorough questions.
+HARD_MAX_TOOL_CALLS = 25
 
 # REVISE (~2048 max_tokens) and REPORT (~8192 max_tokens) run unconditionally
 # once the ACT loop exits — neither is bounded by max_run_seconds on its own —
@@ -454,7 +454,7 @@ def run_agent(
 ) -> dict:
     api_keys = api_keys or {}
 
-    requested_max = max_tool_calls if max_tool_calls is not None else _env_int("MAX_TOOL_CALLS", 8)
+    requested_max = max_tool_calls if max_tool_calls is not None else _env_int("MAX_TOOL_CALLS", 15)
     state = RunState(
         question=question,
         max_tool_calls=min(requested_max, HARD_MAX_TOOL_CALLS),

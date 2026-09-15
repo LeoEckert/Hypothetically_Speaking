@@ -83,7 +83,7 @@ DEMO_QUESTION = (
     "test that mechanism?"
 )
 IS_DEV_MODE = os.environ.get("APP_ENV", "development") != "production"
-DEFAULT_MAX_TOOL_CALLS = min(_env_int("MAX_TOOL_CALLS", 8), HARD_MAX_TOOL_CALLS)
+DEFAULT_MAX_TOOL_CALLS = min(_env_int("MAX_TOOL_CALLS", 15), HARD_MAX_TOOL_CALLS)
 KEEPALIVE_SECONDS = 15.0  # module constant so tests can shrink it
 DISCONNECT_POLL_SECONDS = 1.0
 
