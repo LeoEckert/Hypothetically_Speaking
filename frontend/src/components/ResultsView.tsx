@@ -3,6 +3,7 @@ import { CostPanel } from "@/components/CostPanel"
 import { EvidencePanel } from "@/components/EvidencePanel"
 import { GroundingTrace } from "@/components/GroundingTrace"
 import { HypothesisList } from "@/components/HypothesisCard"
+import { KnowledgeTrajectory } from "@/components/KnowledgeTrajectory"
 import { ReportView } from "@/components/ReportView"
 import { TraceTimeline } from "@/components/TraceTimeline"
 import type { CostSummary, EvidenceItem, RankedHypothesis, RunRecord } from "@/types"
@@ -58,19 +59,14 @@ export function ResultsView({
           <AccordionItem value="trajectory">
             <AccordionTrigger>Knowledge trajectory</AccordionTrigger>
             <AccordionContent>
-              {/* Not available on this deployment, not a bug to chase: the
-                  trajectory view reads runs/knowledge.db, a graph that's
-                  meant to accumulate across many runs — but this app is a
-                  stateless Vercel serverless function with no persistent
-                  disk between requests (see docs/DEPLOY.md), so that file
-                  never has anything in it here. Works locally
-                  (`python -m scripts.run_grounding --kb`) where the
-                  filesystem actually persists between runs. */}
-              <p className="text-sm text-muted-foreground">
-                Not available on this deployment — the knowledge trajectory accumulates across many runs on a local
-                database file, and this app runs as a stateless serverless function with no persistent storage
-                between requests. Works when running the backend locally.
-              </p>
+              {/* Rebuilt in the browser from this run's own `grounding`
+                  event rather than fetched from /api/trajectory: that
+                  endpoint reads runs/knowledge.db, which a stateless
+                  serverless deployment never gets to keep between requests
+                  (see docs/DEPLOY.md). What this loses is only what a
+                  persistent database would add — other runs of the same
+                  question and each link's verdict history. */}
+              <KnowledgeTrajectory grounding={run.grounding} question={run.question} steps={run.groundingSteps} />
             </AccordionContent>
           </AccordionItem>
         )}
