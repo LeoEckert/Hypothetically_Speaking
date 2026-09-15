@@ -4,10 +4,5 @@
   "outputDirectory": "dist",
   "git": {
     "deploymentEnabled": false
-  },
-  "functions": {
-    "backend/server/app.py": {
-      "maxDuration": 300
-    }
   }
 }

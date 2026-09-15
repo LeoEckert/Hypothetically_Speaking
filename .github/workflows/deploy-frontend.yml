@@ -1,4 +1,4 @@
-name: Deploy frontend + backend to Vercel
+name: Deploy frontend to Vercel
 
 # Vercel's native git integration is intentionally disconnected for this
 # project (see docs/DEPLOY.md) to work around a Hobby-plan limitation: any
@@ -9,16 +9,9 @@ name: Deploy frontend + backend to Vercel
 # permissions on the project, not the pushing GitHub identity, so it isn't
 # subject to that restriction.
 #
-# This project's Root Directory is "frontend" (set in the Vercel dashboard).
-# Vercel has native, zero-config FastAPI support: frontend/pyproject.toml's
-# [tool.vercel] entrypoint = "backend.server.app:app" tells it exactly where
-# the FastAPI `app` instance lives, and it handles all internal routing
-# itself — no hand-rolled api/*.py function or vercel.json rewrites needed.
-# The backend code itself stays at the repo root (same layout as local dev,
-# tests, scripts/run_demo.py) — the "Stage backend for the Vercel function"
-# step below copies it into frontend/backend/ right before deploy, matching
-# what the entrypoint string resolves to, rather than duplicating it
-# permanently in the repo.
+# Backend deploys separately (deploy-backend-vercel.yml, its own Vercel
+# project) — co-locating it here fought this project's Vite framework
+# preset with no clean resolution, so it's a dedicated project instead.
 on:
   push:
     branches: [main]
@@ -34,39 +27,11 @@ jobs:
         with:
           node-version: 22
 
-      - name: Stage backend for the Vercel function
-        run: |
-          cp -r backend frontend/backend
-          grep -v '^pytest' requirements.txt > frontend/requirements.txt
-
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 
       - name: Deploy to Vercel (production)
-        id: deploy
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: |
-          url=$(vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes)
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      # Temporary diagnostic while bringing up the Python function on Vercel
-      # (see CLAUDE.md's Open TODOs) — safe to remove once /api/config is
-      # confirmed working from a normal deploy. Hitting the production alias,
-      # not steps.deploy.outputs.url: the raw per-deployment URL redirects to
-      # a Vercel Authentication gate (deployment protection), the alias
-      # doesn't. `vercel inspect --logs` only shows build logs; `vercel logs`
-      # is the runtime/request-log command.
-      - name: Show function invocation logs
-        if: always()
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: |
-          (timeout 25 vercel logs "${{ steps.deploy.outputs.url }}" --token=${{ secrets.VERCEL_TOKEN }} > vercel-logs.txt 2>&1 &)
-          sleep 5
-          curl -s -w "\nHTTP:%{http_code}\n" "https://frontend-azure-two-37.vercel.app/api/config" || true
-          sleep 15
-          echo "---runtime logs---"
-          cat vercel-logs.txt || true
+        run: vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
