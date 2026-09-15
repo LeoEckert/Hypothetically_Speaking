@@ -45,7 +45,7 @@ Short version:
 
 ```
 frontend/          Vite + React + shadcn/ui SPA: ask a question, watch the trace, read the report, browse history
-backend/agent/      the plan -> retrieve -> compute -> revise -> report loop (Anthropic tool-use)
+backend/agent/      the plan -> retrieve -> compute -> revise -> report loop (provider-agnostic tool-use: OpenRouter free models first, Claude as fallback)
 backend/tools/       one wrapper per external tool, each independently toggleable + mockable
 backend/server/      FastAPI app: POST /api/run, SSE stream of trace events, tool toggle + cost/usage endpoints
 scripts/             run_demo.py (canonical run + saved transcript), validate_citations.py
@@ -83,7 +83,8 @@ survives a dead key or rate limit.
 # backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in ANTHROPIC_API_KEY, TAVILY_API_KEY, AMASS_API_KEY, NEBIUS_API_KEY
+cp .env.example .env   # local-dev convenience: OPENROUTER_API_KEY (free) and/or ANTHROPIC_API_KEY; TAVILY/AMASS/NEBIUS optional
+                       # which Claude model each deployment uses is backend/config/models.toml (dev preview = Haiku only)
 python scripts/fetch_datasets.py   # downloads GenAge/DrugAge CSVs once
 uvicorn backend.server.app:app --reload   # http://localhost:8000 (API only)
 
@@ -115,7 +116,10 @@ backend as a Python serverless function (see `docs/DEPLOY.md` for the
 current URL and the full setup, including a Vercel-account-specific gotcha
 in how the backend's Python function is bridged). No LLM key is
 platform-held — every visitor brings their own free OpenRouter key (or an
-Anthropic key) via a required onboarding popup; see `docs/DEPLOY.md`. See
+Anthropic key) via a required onboarding popup — keys and model picks are
+remembered by the browser (Settings), and with both keys a run starts on
+OpenRouter and falls back to Claude only if OpenRouter fails; see
+`docs/DEPLOY.md`. See
 `docs/ARCHITECTURE.md` for open TODOs — notably that `NEBIUS_API_KEY` is
 unset by default, so `extract_genes` runs on its regex-heuristic fallback
 rather than the real Nebius-hosted NER model unless a user brings their own

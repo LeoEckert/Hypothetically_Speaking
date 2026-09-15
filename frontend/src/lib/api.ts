@@ -20,6 +20,19 @@ export interface ConfigResponse {
   anthropic_key_configured: boolean
   openrouter_key_configured: boolean
   default_provider: string
+  // With both keys a run starts on provider_order[0] and falls back to the
+  // next one only if it fails (backend/agent/providers/fallback.py).
+  provider_order?: string[]
+  // Which Claude models this deployment uses per tier and whether Settings
+  // may override them — backend/config/models.toml via model_policy.py.
+  anthropic_models?: AnthropicModelPolicy
+}
+
+export interface AnthropicModelPolicy {
+  environment: "production" | "preview" | "development" | string
+  main: string
+  fast: string
+  allow_override: boolean
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {

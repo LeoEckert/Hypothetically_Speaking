@@ -6,10 +6,16 @@ allowance (50 requests/day free, 1,000/day after ever buying $10 of credits
 once) — there is deliberately no platform-held OpenRouter key funding every
 visitor from one shared allowance; each user brings their own.
 
-No prompt-caching equivalent (no-op vs. AnthropicProvider's cache_control).
+Prompt caching: the system prompt is sent as a text part carrying
+`cache_control: {"type": "ephemeral"}` — OpenRouter forwards that to the
+providers that take an explicit breakpoint (Anthropic, Gemini) and ignores it
+for the rest; OpenAI-, DeepSeek- and Grok-hosted models cache the shared
+prefix automatically. Whatever was served from cache comes back in
+`usage.prompt_tokens_details.cached_tokens` and is reported as
+`cache_read_input_tokens`, same field the Anthropic provider fills.
 429s (rate/daily limits) are the *normal* failure mode on a free tier, not
 an edge case, so retry-with-backoff is built in rather than left to the
-caller.
+caller; what still fails after that is FallbackProvider's business.
 """
 from __future__ import annotations
 
@@ -37,6 +43,24 @@ def _tool_specs(tools: list[dict]) -> list[dict] | None:
     ]
 
 
+def _usage_dict(usage) -> dict:
+    """OpenAI-style usage -> the provider-agnostic dict. Cached prompt tokens
+    (OpenRouter: usage.prompt_tokens_details.cached_tokens) land in
+    cache_read_input_tokens; they are a subset of prompt_tokens, not extra."""
+    if not usage:
+        return {}
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = getattr(details, "cached_tokens", 0) if details is not None else 0
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens", 0)
+    return {
+        "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+        "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cached or 0,
+    }
+
+
 def _safe_json(raw: str) -> dict:
     try:
         parsed = json.loads(raw)
@@ -56,7 +80,11 @@ class OpenRouterProvider(LLMProvider):
     def _to_native_messages(system: str, transcript: Transcript) -> list[dict]:
         messages: list[dict] = []
         if system:
-            messages.append({"role": "system", "content": system})
+            # A content part rather than a bare string, so the cache
+            # breakpoint can ride on it (see module docstring).
+            messages.append(
+                {"role": "system", "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]}
+            )
         for turn in transcript.turns:
             if turn["role"] == "user":
                 messages.append({"role": "user", "content": turn["text"]})
@@ -88,14 +116,7 @@ class OpenRouterProvider(LLMProvider):
             text=message.content or "",
             tool_calls=tool_calls,
             stop_reason="tool_use" if tool_calls else "end_turn",
-            usage={
-                "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
-                "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-            }
-            if usage
-            else {},
+            usage=_usage_dict(usage),
             model=getattr(response, "model", "") or self.model,
             raw={
                 "role": "assistant",
@@ -142,14 +163,7 @@ class OpenRouterProvider(LLMProvider):
             text=text,
             tool_calls=[],
             stop_reason="end_turn",
-            usage={
-                "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
-                "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-            }
-            if usage
-            else {},
+            usage=_usage_dict(usage),
             model=model_name,
             raw={"role": "assistant", "content": text},
         )

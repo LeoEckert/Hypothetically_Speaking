@@ -30,6 +30,7 @@ from backend.agent.prompts import (
     final_report_prompt,
     plan_prompt,
 )
+from backend.agent.env import env_int
 from backend.agent.costs import build_cost_summary
 from backend.agent.providers import NoProviderAvailable, ToolResult, Transcript, get_provider
 from backend.agent.state import RunState
@@ -81,13 +82,7 @@ def _emit(on_event: EventCallback, event: dict) -> None:
         on_event(event)
 
 
-def _env_int(name: str, default: int) -> int:
-    """Like os.environ.get(name, default), but an env var that's *set to an
-    empty string* (confirmed to happen on Vercel — an env var declared with
-    no value in the dashboard still exists, it just reads as "") falls back
-    to the default too, instead of int("") raising ValueError."""
-    raw = os.environ.get(name, "").strip()
-    return int(raw) if raw else default
+_env_int = env_int  # blank-but-set env vars fall back to the default; see backend/agent/env.py
 
 
 def _has_llm_key(api_keys: dict) -> bool:

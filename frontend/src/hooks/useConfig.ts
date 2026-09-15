@@ -16,6 +16,7 @@ export function useConfig() {
           anthropic_key_configured: false,
           openrouter_key_configured: false,
           default_provider: "openrouter",
+          provider_order: ["openrouter", "anthropic"],
         })
       )
   }, [])
