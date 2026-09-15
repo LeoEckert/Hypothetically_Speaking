@@ -44,6 +44,38 @@ cd frontend && npm run lint    # oxlint
 
 There is no Python lint/type-check command configured.
 
+## Branching & workflow
+
+As of 2026-09-15, this repo uses a `main`/`dev` split with real branch
+protection (GitHub rulesets), not ad hoc pushes to `main`:
+
+- **`main`** is the protected, production branch — it's what
+  `.github/workflows/deploy-frontend.yml` deploys on every push, and it's
+  what `docs/DEPLOY.md`/`CLAUDE.md` mean whenever they say "deploy = push to
+  main". It **requires a pull request** now (no direct pushes, for anyone,
+  including an agent session) and the CI workflow (`.github/workflows/ci.yml`
+  — pytest + frontend build/lint, the exact commands in this file's Commands
+  section) must pass before merging. Force-pushes and deletion are blocked.
+- **`dev`** is the integration branch and GitHub's default branch (so a new
+  PR/clone lands here by default). Direct pushes are still allowed here
+  (deliberately — this is where day-to-day work happens), but **feature
+  branches are the expected norm from here on**, not a suggestion: cut a
+  branch off `dev` (`feature/<short-description>`, or the existing
+  `claude/<description>` convention for agent-authored work), open a PR back
+  into `dev` once it's ready. `dev` itself only has force-push/deletion
+  blocked — no PR requirement, no required CI check.
+- **Shipping to production** means promoting `dev` → `main` via a PR once
+  `dev` is in a state worth deploying — that PR is what actually triggers
+  `deploy-frontend.yml` once merged.
+
+This replaced an earlier phase of this project where `main` was the single
+working+deploy branch with no protection at all and several long-lived,
+never-merged branches accumulated with no cleanup policy — all of that was
+audited and cleaned up in the same session this workflow was introduced
+(the branches genuinely worth keeping had already been merged via PR; the
+rest were confirmed fully-merged-and-redundant or too stale to trust and
+deleted).
+
 ## Architecture
 
 ```
