@@ -1,0 +1,22 @@
+name: TEMP - check token project scope
+
+# One-off diagnostic, manually triggered only. Lists which Vercel
+# project(s) the current VERCEL_TOKEN can see — never prints the token
+# itself, only the resulting project list. Deleted once checked.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: List projects visible to this token (no team scope)
+        run: vercel project ls --token="${{ secrets.VERCEL_TOKEN }}"
+
+      - name: List projects visible to this token (with team scope)
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        run: vercel project ls --token="${{ secrets.VERCEL_TOKEN }}"
