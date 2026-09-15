@@ -3,6 +3,7 @@ import { Switch } from "@/components/ui/switch"
 import { useApiKeys } from "@/hooks/useApiKeys"
 import { useTools } from "@/hooks/useTools"
 import { toolLabel } from "@/lib/toolLabels"
+import type { ApiKeyName } from "@/store/apiKeysStore"
 import { openSettingsDialog } from "@/store/settingsDialogStore"
 
 export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
@@ -58,7 +59,7 @@ export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
                   {tool.paid ? "No free tier for this one — add" : "Runs as a mock without"} your own key in{" "}
                   <button
                     type="button"
-                    onClick={openSettingsDialog}
+                    onClick={() => openSettingsDialog(tool.key_env_var as ApiKeyName)}
                     className="underline underline-offset-2 hover:text-amber-700 dark:hover:text-amber-300"
                   >
                     Settings

@@ -34,6 +34,8 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
       usd: cost.anthropic.usd,
       rateConfigured: cost.anthropic.rate_configured,
       tooltip: `${cost.anthropic.calls ?? 0} calls · ${cost.anthropic.input_tokens}/${cost.anthropic.output_tokens} in/out tokens`,
+      calls: cost.anthropic.calls ?? 0,
+      alwaysShow: true, // every completed run used an LLM
     },
     {
       key: "nebius",
@@ -41,6 +43,7 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
       usd: cost.nebius.usd,
       rateConfigured: cost.nebius.rate_configured,
       tooltip: `${cost.nebius.calls ?? 0} calls · ${cost.nebius.prompt_tokens}/${cost.nebius.completion_tokens} in/out tokens`,
+      calls: cost.nebius.calls ?? 0,
     },
     {
       key: "amass",
@@ -51,6 +54,7 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
         cost.amass.credits_used !== null
           ? `${cost.amass.live_calls} live calls · ${cost.amass.credits_used} credits used`
           : `${cost.amass.live_calls} live calls`,
+      calls: cost.amass.calls ?? 0,
     },
     {
       key: "tavily",
@@ -58,8 +62,11 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
       usd: cost.tavily.usd,
       rateConfigured: cost.tavily.rate_configured,
       tooltip: `${cost.tavily.live_calls} live calls`,
+      calls: cost.tavily.calls ?? 0,
     },
-  ]
+    // Only tools this run actually used (or the LLM, always) — a tool that
+    // was disabled or simply never called shouldn't clutter the cost chart.
+  ].filter((r) => r.alwaysShow || r.calls > 0)
   const maxCost = Math.max(
     0.0001,
     ...costRows.filter((r) => r.rateConfigured && r.usd !== null).map((r) => r.usd as number)

@@ -92,19 +92,36 @@ trial-and-error by then to have already found the `a2wsgi`/staging fixes).
 first** — a traceback-catching diagnostic function is the fastest way back
 to a real Python exception when `vercel logs` comes up empty.
 
-## Routing: the catch-all filename convention, not `rewrites`
+## Routing: a `vercel.json` rewrite, not the catch-all filename convention
 
 A plain `api/index.py` in this project only auto-routes the *literal* `/api`
 path, not the whole `/api/*` prefix (confirmed: `/api` reached the function,
-`/api/config` got a platform-level 404 with zero function invocations,
-across several otherwise-correct configurations). A `vercel.json` `rewrites`
-entry (`{"source": "/api/:path*", "destination": "/api"}`) did **not** fix
-this — sub-paths still 404'd at the platform level without ever reaching
-the function. What worked: naming the function file with Vercel's catch-all
-convention, **`api/[...path].py`** — this is Vercel's own file-based
-mechanism for "one function owns everything under this prefix" (the same
-convention Next.js uses for catch-all API routes) and needs no rewrite at
-all once used.
+`/api/config` got a platform-level 404 with zero function invocations). The
+fix is a `vercel.json` **`rewrites`** entry forwarding every sub-path to it:
+```json
+"rewrites": [{ "source": "/api/:path*", "destination": "/api" }]
+```
+A rewrite changes *which function* serves a request, not the path the
+function itself sees — FastAPI still routes internally on the real incoming
+path (via a2wsgi's WSGI environ), so nested dynamic routes like
+`/api/run/<id>/evaluate` work correctly.
+
+An earlier attempt at this exact rewrite appeared not to work (confirmed at
+the time: sub-paths still 404'd at the platform level) — but that was almost
+certainly confounded by the ASGI/module-staging bugs (#1/#2 above) still
+unresolved in the same deploy, not a real limitation of rewrites. The fix
+tried instead was naming the function file with Vercel's catch-all
+convention, **`api/[...path].py`** — but that turned out to be a
+**Next.js-specific** file-system-routing feature, not a generic Vercel
+Functions primitive: on this Vite (non-Next.js) project it silently matched
+only a *single* path segment. `/api/tools`/`/api/config`/`/api/run` (all one
+segment after `/api/`) worked and looked like confirmation it was fully
+working, while any deeper path — `/api/run/<id>/evaluate`, `/api/admin/usage`
+— 404'd at the platform level exactly like the original bug, just one level
+deeper. This broke "Evaluate with AI" silently until a user report caught
+it. **If sub-paths ever start 404ing again, check this first**: confirm
+`vercel.json` has the `rewrites` entry above and the function file is a
+plain `api/index.py`, not a bracketed catch-all name.
 
 ## Setup
 
@@ -116,14 +133,14 @@ Deployed by `.github/workflows/deploy-frontend.yml` on every push to `main`
    `frontend/backend/` (a sibling of `frontend/api/`, not nested inside it
    — see bug #2 above), a trimmed `requirements.txt` (pytest excluded) to
    `frontend/requirements.txt`, and writes the `a2wsgi`-bridged function to
-   `frontend/api/[...path].py` (bug #1's fix, using the catch-all filename
-   from the routing section above).
+   `frontend/api/index.py` (bug #1's fix).
 2. **Deploys via the Vercel CLI with a personal access token**
    (`vercel deploy --prod --token=...`), **not** Vercel's native git
    integration — see CI/CD below for why.
-3. `vercel.json` sets `"functions": {"api/[...path].py": {"maxDuration": 300}}`.
-   Fluid Compute is on by default for this kind of function, so 300s is
-   actually honored rather than capped at 60s.
+3. `vercel.json` sets `"functions": {"api/index.py": {"maxDuration": 300}}`
+   and the `rewrites` entry from the routing section above. Fluid Compute is
+   on by default for this kind of function, so 300s is actually honored
+   rather than capped at 60s.
 
 **Environment variables** (Project Settings → Environment Variables): leave
 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` **unset** by design — every request

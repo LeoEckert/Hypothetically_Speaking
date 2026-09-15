@@ -16,7 +16,13 @@ import { useModel } from "@/hooks/useModel"
 import { useTools } from "@/hooks/useTools"
 import { fetchModels, type ModelInfo } from "@/lib/api"
 import { API_KEY_NAMES, hasUsableLlmKey, type ApiKeyName } from "@/store/apiKeysStore"
-import { getSettingsDialogOpen, setSettingsDialogOpen, subscribeSettingsDialog } from "@/store/settingsDialogStore"
+import {
+  clearSettingsFocusKey,
+  getSettingsDialogOpen,
+  getSettingsFocusKey,
+  setSettingsDialogOpen,
+  subscribeSettingsDialog,
+} from "@/store/settingsDialogStore"
 
 const KEY_LABELS: Record<ApiKeyName, string> = {
   ANTHROPIC_API_KEY: "Anthropic (Claude)",
@@ -38,6 +44,7 @@ const KEY_HINTS: Record<ApiKeyName, string> = {
 
 export function SettingsDialog() {
   const open = useSyncExternalStore(subscribeSettingsDialog, getSettingsDialogOpen)
+  const focusKey = useSyncExternalStore(subscribeSettingsDialog, getSettingsFocusKey)
   const config = useConfig()
   const { tools } = useTools()
   const { keys, setKey, clearKey } = useApiKeys()
@@ -57,6 +64,21 @@ export function SettingsDialog() {
         // a free model on its own even if this listing call fails.
       })
   }, [])
+
+  // Jump straight to one key's input (e.g. ToolsPanel's "needs a key" link
+  // passes its own key_env_var to openSettingsDialog). One-shot: consumed
+  // right after use so a later plain re-open doesn't re-jump to a stale target.
+  useEffect(() => {
+    if (!open || !focusKey) return
+    const target = focusKey
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById(`key-${target}`) as HTMLInputElement | null
+      el?.scrollIntoView({ behavior: "smooth", block: "center" })
+      el?.focus()
+    })
+    clearSettingsFocusKey()
+    return () => cancelAnimationFrame(raf)
+  }, [open, focusKey])
 
   function platformConfigured(name: ApiKeyName): boolean {
     if (name === "ANTHROPIC_API_KEY") return config?.anthropic_key_configured ?? false

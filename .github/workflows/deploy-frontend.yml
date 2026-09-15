@@ -12,30 +12,38 @@ name: Deploy to Vercel
 # One Vercel project serves both: the static Vite build and a Python
 # serverless function for the backend. This project's Root Directory is
 # "frontend" (set in the Vercel dashboard), so the function has to live at
-# frontend/api/[...path].py (Vercel's catch-all filename convention — see
-# below) to be auto-detected alongside the static build, and backend/ must
-# be staged as that function file's *sibling* — frontend/backend/, not
-# nested inside frontend/api/ — matching the exact layout confirmed working
-# during development (nesting it under api/ instead produces
-# `ModuleNotFoundError: No module named 'backend'` at runtime; Vercel's
-# Python function root ends up being the deploy root, not api/'s own
-# directory). backend/ itself stays at the repo root otherwise (same layout
-# as local dev, tests, scripts/run_demo.py) — the staging step below copies
-# it into frontend/backend/ right before deploy rather than duplicating it
-# permanently in the repo.
+# frontend/api/index.py to be auto-detected alongside the static build, and
+# backend/ must be staged as that function file's *sibling* —
+# frontend/backend/, not nested inside frontend/api/ — matching the exact
+# layout confirmed working during development (nesting it under api/
+# instead produces `ModuleNotFoundError: No module named 'backend'` at
+# runtime; Vercel's Python function root ends up being the deploy root, not
+# api/'s own directory). backend/ itself stays at the repo root otherwise
+# (same layout as local dev, tests, scripts/run_demo.py) — the staging step
+# below copies it into frontend/backend/ right before deploy rather than
+# duplicating it permanently in the repo.
 #
 # The function bridges the real FastAPI app through a2wsgi's ASGIMiddleware
 # onto Vercel's WSGI pathway rather than exposing bare ASGI — this account's
 # native FastAPI/ASGI auto-detection is broken (confirmed by elimination;
 # see docs/DEPLOY.md), and this WSGI bridge is what actually gets invoked
-# correctly. Vercel's file-based routing for a plain api/index.py only maps
-# to the literal /api path in this project (not the whole /api/* prefix,
-# unlike a from-scratch Python-only project) — a vercel.json `rewrites`
-# entry forwarding /api/:path* to it did not fix this (confirmed: still a
-# platform-level 404 for any sub-path, only the literal /api reached the
-# function). The catch-all filename convention (api/[...path].py, used
-# below) is Vercel's own file-based mechanism for "one function owns
-# everything under this prefix" and works natively, no rewrite needed.
+# correctly.
+#
+# Routing: a plain api/index.py only auto-maps to the literal /api path in
+# this project, not the whole /api/* prefix — vercel.json's `rewrites`
+# (/api/:path* -> /api) forwards every sub-path to it; the rewrite changes
+# which function serves the request, not the path the function itself
+# sees, so FastAPI still routes on the real incoming path via a2wsgi's WSGI
+# environ. An earlier attempt at this exact rewrite appeared not to work,
+# and Vercel's catch-all filename convention (api/[...path].py) was used
+# instead — but that turned out to be a Next.js-specific file-system-routing
+# feature, not a generic Vercel Functions primitive: on this Vite (non-
+# Next.js) project it silently matched only a single path segment
+# (/api/tools worked, /api/run/<id>/evaluate 404'd at the platform level,
+# confirmed live). The earlier rewrite failure was very likely confounded
+# by the ASGI/module-staging bugs still unresolved at the time, not a real
+# rewrites limitation — confirmed by re-testing the exact same rewrite now
+# that those are fixed, and it works for arbitrarily deep sub-paths.
 on:
   push:
     branches: [main]
@@ -56,7 +64,7 @@ jobs:
           mkdir -p frontend/api
           cp -r backend frontend/backend
           grep -v '^pytest' requirements.txt > frontend/requirements.txt
-          cat > "frontend/api/[...path].py" <<'EOF'
+          cat > "frontend/api/index.py" <<'EOF'
           from a2wsgi import ASGIMiddleware
 
           from backend.server.app import app as _asgi_app
