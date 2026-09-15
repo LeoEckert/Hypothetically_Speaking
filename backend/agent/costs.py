@@ -86,7 +86,18 @@ def tavily_cost_usd(live_calls: int) -> tuple[float | None, bool]:
 _FREE_TOOLS = ("open_targets", "pubmed", "clinicaltrials", "genage_drugage", "run_enrichment")
 
 
-def build_cost_summary(state: RunState, model: str) -> dict:
+def _key_source(env_var: str, api_keys: dict | None) -> str:
+    api_keys = api_keys or {}
+    if api_keys.get(env_var):
+        return "user"
+    if os.environ.get(env_var):
+        return "platform"
+    return "unset"
+
+
+def build_cost_summary(state: RunState, provider, api_keys: dict | None = None) -> dict:
+    """`provider` is the resolved LLMProvider for this run (or None if no
+    provider was ever available — see loop.py's NoProviderAvailable path)."""
     tavily_calls = [t for t in state.trace if t.tool_name == "tavily"]
     tavily_live = sum(1 for t in tavily_calls if not t.mock)
     tavily_mock = len(tavily_calls) - tavily_live
@@ -98,32 +109,55 @@ def build_cost_summary(state: RunState, model: str) -> dict:
     if state.amass_credits_before is not None and state.amass_credits_after is not None:
         credits_used = state.amass_credits_before - state.amass_credits_after
 
-    # Price each model at its own rate (Haiku grounding, Sonnet loop); fall
-    # back to the run model only for tokens recorded without one.
-    by_model = state.anthropic_by_model or {
-        model: {
-            "calls": state.anthropic_calls,
-            "input_tokens": state.anthropic_input_tokens,
-            "output_tokens": state.anthropic_output_tokens,
-            "cache_creation_input_tokens": state.anthropic_cache_creation_input_tokens,
-            "cache_read_input_tokens": state.anthropic_cache_read_input_tokens,
-        }
-    }
-    anthropic_usd, anthropic_priced = 0.0, True
-    anthropic_models = []
-    for name, tokens in by_model.items():
-        usd, priced = anthropic_cost_usd(
-            name if name != "unknown" else model,
-            tokens["input_tokens"], tokens["output_tokens"],
-            tokens["cache_creation_input_tokens"], tokens["cache_read_input_tokens"],
+    provider_name = getattr(provider, "name", None)
+    model = getattr(provider, "model", "") or ""
+    llm_key_source = getattr(provider, "key_source", "unset") if provider else "unset"
+
+    llm_usd, llm_priced, llm_free_tier = 0.0, True, False
+    llm_models = []
+    if provider_name == "groq":
+        # A genuinely free tier, not an unknown rate — $0 with rate_configured
+        # True, distinct from "we don't know the price" (rate_configured False).
+        llm_usd, llm_priced, llm_free_tier = 0.0, True, True
+        llm_models = [
+            {
+                "model": name,
+                **tokens,
+                "usd": 0.0,
+                "rate_configured": True,
+            }
+            for name, tokens in (state.anthropic_by_model or {}).items()
+        ]
+    else:
+        # Price each Anthropic model at its own rate (Haiku grounding, Sonnet
+        # loop); fall back to the run model only for tokens recorded without one.
+        by_model = state.anthropic_by_model or (
+            {
+                model: {
+                    "calls": state.anthropic_calls,
+                    "input_tokens": state.anthropic_input_tokens,
+                    "output_tokens": state.anthropic_output_tokens,
+                    "cache_creation_input_tokens": state.anthropic_cache_creation_input_tokens,
+                    "cache_read_input_tokens": state.anthropic_cache_read_input_tokens,
+                }
+            }
+            if model
+            else {}
         )
-        anthropic_models.append({"model": name, **tokens, "usd": usd, "rate_configured": priced})
-        if usd is None:
-            anthropic_priced = False
-        else:
-            anthropic_usd += usd
-    if not anthropic_priced and all(entry["usd"] is None for entry in anthropic_models):
-        anthropic_usd = None
+        for name, tokens in by_model.items():
+            usd, priced = anthropic_cost_usd(
+                name if name != "unknown" else model,
+                tokens["input_tokens"], tokens["output_tokens"],
+                tokens["cache_creation_input_tokens"], tokens["cache_read_input_tokens"],
+            )
+            llm_models.append({"model": name, **tokens, "usd": usd, "rate_configured": priced})
+            if usd is None:
+                llm_priced = False
+            else:
+                llm_usd += usd
+        if not llm_priced and all(entry["usd"] is None for entry in llm_models):
+            llm_usd = None
+
     nebius_usd, nebius_priced = nebius_cost_usd(state.nebius_prompt_tokens, state.nebius_completion_tokens)
     amass_usd, amass_priced = amass_cost_usd(credits_used)
     tavily_usd, tavily_priced = tavily_cost_usd(tavily_live)
@@ -132,7 +166,7 @@ def build_cost_summary(state: RunState, model: str) -> dict:
         name: {"calls": sum(1 for t in state.trace if t.tool_name == name)} for name in _FREE_TOOLS
     }
 
-    total_usd = sum(usd for usd in (anthropic_usd, nebius_usd, amass_usd, tavily_usd) if usd is not None)
+    total_usd = sum(usd for usd in (llm_usd, nebius_usd, amass_usd, tavily_usd) if usd is not None)
     unpriced = [
         name
         for name, priced in (
@@ -144,16 +178,22 @@ def build_cost_summary(state: RunState, model: str) -> dict:
     ]
 
     return {
+        # Kept as "anthropic" for frontend/report-JSON compatibility, but this
+        # row now reports whichever LLM provider the run actually used —
+        # see `provider`/`free_tier`/`key_source` to tell them apart.
         "anthropic": {
+            "provider": provider_name,
             "calls": state.anthropic_calls,
             "model": model,
             "input_tokens": state.anthropic_input_tokens,
             "output_tokens": state.anthropic_output_tokens,
             "cache_creation_input_tokens": state.anthropic_cache_creation_input_tokens,
             "cache_read_input_tokens": state.anthropic_cache_read_input_tokens,
-            "usd": anthropic_usd,
-            "rate_configured": anthropic_priced,
-            "by_model": anthropic_models,
+            "usd": llm_usd,
+            "rate_configured": llm_priced,
+            "free_tier": llm_free_tier,
+            "key_source": llm_key_source,
+            "by_model": llm_models,
         },
         "nebius": {
             "calls": state.nebius_calls,
@@ -161,6 +201,7 @@ def build_cost_summary(state: RunState, model: str) -> dict:
             "completion_tokens": state.nebius_completion_tokens,
             "usd": nebius_usd,
             "rate_configured": nebius_priced,
+            "key_source": _key_source("NEBIUS_API_KEY", api_keys),
         },
         "amass": {
             "calls": len(amass_calls),
@@ -171,6 +212,7 @@ def build_cost_summary(state: RunState, model: str) -> dict:
             "credits_used": credits_used,
             "usd": amass_usd,
             "rate_configured": amass_priced,
+            "key_source": _key_source("AMASS_API_KEY", api_keys),
             "note": (
                 "credits consumed on this account during the run window "
                 "(account-wide balance delta; not isolated to this run if the "
@@ -183,6 +225,7 @@ def build_cost_summary(state: RunState, model: str) -> dict:
             "mock_calls": tavily_mock,
             "usd": tavily_usd,
             "rate_configured": tavily_priced,
+            "key_source": _key_source("TAVILY_API_KEY", api_keys),
         },
         "free_tools": free_tools,
         "total_usd": total_usd,

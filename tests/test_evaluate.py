@@ -72,37 +72,26 @@ def test_extract_json_fence_requires_key_and_never_raises():
     assert _extract_json_fence("```json\n{not valid json\n```", "critiques") is None
 
 
-class _FakeUsage:
-    input_tokens = 10
-    output_tokens = 5
-    cache_creation_input_tokens = 0
-    cache_read_input_tokens = 0
+class _FakeProvider:
+    """A fake backend.agent.providers.LLMProvider — evaluate_hypothesis only
+    ever calls provider.complete(prompt, max_tokens)."""
 
+    name = "anthropic"
+    model = "claude-sonnet-5"
+    key_source = "user"
 
-class _FakeTextBlock:
-    type = "text"
-
-    def __init__(self, text):
-        self.text = text
-
-
-class _FakeResponse:
-    def __init__(self, text):
-        self.usage = _FakeUsage()
-        self.content = [_FakeTextBlock(text)]
-
-
-class _FakeMessages:
     def __init__(self, responses):
         self._responses = list(responses)
 
-    def create(self, **kwargs):
-        return self._responses.pop(0)
+    def complete(self, prompt, max_tokens):
+        from backend.agent.providers import LLMResponse
 
-
-class _FakeClient:
-    def __init__(self, responses):
-        self.messages = _FakeMessages(responses)
+        text = self._responses.pop(0)
+        return LLMResponse(
+            text=text,
+            usage={"input_tokens": 10, "output_tokens": 5, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            model=self.model,
+        )
 
 
 _JUDGE_RESPONSE = """Reasoning...
@@ -118,13 +107,13 @@ _JUDGE_RESPONSE = """Reasoning...
 
 
 def _run(revise_response: str, run_result: dict | None = None) -> dict:
-    client = _FakeClient([_FakeResponse(_JUDGE_RESPONSE), _FakeResponse(revise_response)])
+    provider = _FakeProvider([_JUDGE_RESPONSE, revise_response])
     result = run_result or {
         "report": REPORT,
         "hypotheses": [dict(HYPOTHESIS)],
         "evidence": dict(EVIDENCE),
     }
-    return evaluate_hypothesis(result, "check the counter-evidence", client, "claude-sonnet-5")
+    return evaluate_hypothesis(result, "check the counter-evidence", provider)
 
 
 def test_a_dropped_section_is_carried_over_and_recorded_not_lost():

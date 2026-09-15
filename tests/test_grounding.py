@@ -798,31 +798,22 @@ def test_decomposition_drops_a_broken_triple_but_keeps_the_rest():
     assert [t.object for t in decomposition.triples] == ["B"]
 
 
-def test_claude_asks_once_more_when_the_first_reply_does_not_fit(monkeypatch):
+def test_claude_asks_once_more_when_the_first_reply_does_not_fit():
+    from backend.agent.providers import LLMResponse
     from backend.grounding import adapters
 
     replies = iter(['```json\n{"why": "no status"}\n```', '```json\n{"status": "ESTABLISHED", "why": "fine", "evidence": []}\n```'])
     calls = []
 
-    class _Block:
-        type = "text"
+    class _FakeProvider:
+        model = "test-model"
 
-        def __init__(self, text):
-            self.text = text
+        def complete(self, prompt, max_tokens):
+            calls.append(prompt)
+            return LLMResponse(text=next(replies))
 
-    class _Messages:
-        def create(self, **kwargs):
-            calls.append(kwargs)
-            return type("R", (), {"content": [_Block(next(replies))], "usage": None})()
-
-    class _FakeAnthropic:
-        def __init__(self, **kwargs):
-            self.messages = _Messages()
-
-    monkeypatch.setattr(adapters, "Anthropic", _FakeAnthropic)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     knowledge_base = SqliteKnowledgeBase(":memory:")
-    verdict, digest = adapters._claude("judge this", adapters._Verdict, knowledge_base, stage="t")
+    verdict, digest = adapters._claude("judge this", adapters._Verdict, knowledge_base, stage="t", provider=_FakeProvider())
     assert verdict.status is PremiseStatus.ESTABLISHED and len(calls) == 2
     assert knowledge_base.cached_response(digest) is not None, "the reply that fit is what gets cached"
 

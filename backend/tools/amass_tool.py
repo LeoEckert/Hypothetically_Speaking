@@ -77,14 +77,17 @@ def _record_summary(core: str, rec: dict) -> tuple[str, str, str]:
     return "", str(title), str(title)
 
 
-def get_credits() -> float | None:
+def get_credits(user_api_key: str | None = None) -> float | None:
     """GET {AMASS_API_URL}/credits/api-credits — returns the account's
     remaining credit balance (confirmed live response shape:
     {"data": {"remaining": <number>}}), or None if unconfigured, unreachable,
     or the response doesn't match that shape. Used for real (not guessed)
     per-run credit-consumption accounting (backend/agent/costs.py): call once
-    before and once after a run's Amass calls and diff the two balances."""
-    api_key = os.environ.get("AMASS_API_KEY")
+    before and once after a run's Amass calls and diff the two balances.
+    `user_api_key`, when given, is a per-request BYOK override of the
+    platform's AMASS_API_KEY — the account balance sampled is then the
+    caller's own account, not the platform's."""
+    api_key = user_api_key or os.environ.get("AMASS_API_KEY")
     base_url = os.environ.get("AMASS_API_URL", "").rstrip("/")
     if not api_key or not base_url:
         return None
@@ -101,7 +104,7 @@ def get_credits() -> float | None:
 
 
 def run(args: dict) -> dict:
-    api_key = os.environ.get("AMASS_API_KEY")
+    api_key = args.get("_user_api_key") or os.environ.get("AMASS_API_KEY")
     base_url = os.environ.get("AMASS_API_URL", "").rstrip("/")
     if not api_key or not base_url:
         return {

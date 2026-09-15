@@ -1,10 +1,12 @@
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
+import { useApiKeys } from "@/hooks/useApiKeys"
 import { useTools } from "@/hooks/useTools"
 import { toolLabel } from "@/lib/toolLabels"
 
 export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
   const { tools, loading, toggle } = useTools()
+  const { keys } = useApiKeys()
 
   return (
     <div className="space-y-3">
@@ -34,6 +36,11 @@ export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">{tool.description}</p>
+            {tool.key_env_var && !tool.key_configured && !keys[tool.key_env_var as keyof typeof keys] && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                Runs as a mock — bring your own key in Settings for live results.
+              </p>
+            )}
           </div>
           <Switch
             checked={tool.enabled}

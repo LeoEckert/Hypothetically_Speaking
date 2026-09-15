@@ -10,6 +10,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { HowItWorksPanel } from "@/components/HowItWorksPanel"
+import { SettingsDialog } from "@/components/SettingsDialog"
 
 export function AppHeader({
   runsCount,
@@ -56,6 +57,8 @@ export function AppHeader({
             <HowItWorksPanel />
           </DialogContent>
         </Dialog>
+
+        <SettingsDialog />
 
         <Button className="font-semibold" size="lg" onClick={onNewRequest}>
           + New Hypothesis

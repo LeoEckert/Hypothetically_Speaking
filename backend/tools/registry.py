@@ -38,6 +38,15 @@ _ALL_TOOLS = {
     "extract_genes": extract_genes_tool,
 }
 
+# Which env var a tool's key comes from, for tools that need one at all — used
+# both to inject a per-request user-supplied override (run_tool below) and to
+# tell the frontend which tools are BYOK-able (GET /api/tools).
+KEY_ENV_VAR = {
+    "tavily": "TAVILY_API_KEY",
+    "amass": "AMASS_API_KEY",
+    "extract_genes": "NEBIUS_API_KEY",
+}
+
 
 # Runtime, in-memory overrides layered on top of the ENABLED_TOOLS env var —
 # set via PUT /api/tools/{name} (backend/server/app.py). Intentionally not
@@ -77,11 +86,19 @@ def all_specs() -> list[dict]:
     return [_ALL_TOOLS[name].SPEC for name in _ALL_TOOLS]
 
 
-def run_tool(name: str, args: dict, enabled_names: set[str] | None = None) -> dict:
+def run_tool(
+    name: str, args: dict, enabled_names: set[str] | None = None, api_keys: dict[str, str] | None = None
+) -> dict:
     """`enabled_names`, when given, is used instead of re-checking the live
     registry state — this is how a run snapshots which tools it's allowed to
     call at start time, so a mid-run toggle never changes that run's behavior
-    or cost accounting (backend/agent/loop.py)."""
+    or cost accounting (backend/agent/loop.py).
+
+    `api_keys` (env-var-name -> value, e.g. from RunRequest.api_keys) is a
+    per-request, user-supplied override for a tool's key. It's injected into
+    a reserved `_user_api_key` args field rather than changing this
+    function's or `run(args: dict)`'s signature — each tool's own
+    `os.environ.get(...)` call site checks that field first."""
     allowed = enabled_names if enabled_names is not None else set(enabled_tool_names())
     if name not in allowed:
         return {
@@ -91,8 +108,12 @@ def run_tool(name: str, args: dict, enabled_names: set[str] | None = None) -> di
             "error": "tool_disabled",
         }
     module = _ALL_TOOLS[name]
+    env_var = KEY_ENV_VAR.get(name)
+    call_args = args
+    if env_var and api_keys and api_keys.get(env_var):
+        call_args = {**args, "_user_api_key": api_keys[env_var]}
     try:
-        return module.run(args)
+        return module.run(call_args)
     except Exception as exc:  # tool failures must not crash the agent loop
         return {
             "summary": f"Tool '{name}' raised an error: {exc}",

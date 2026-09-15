@@ -37,7 +37,7 @@ _MOCK_ITEMS = [
 
 
 def run(args: dict) -> dict:
-    api_key = os.environ.get("TAVILY_API_KEY")
+    api_key = args.get("_user_api_key") or os.environ.get("TAVILY_API_KEY")
     if not api_key:
         return {
             "summary": "Tavily disabled: TAVILY_API_KEY not set; returning mock placeholder.",

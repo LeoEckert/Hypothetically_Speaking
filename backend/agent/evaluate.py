@@ -21,8 +21,6 @@ import json
 import re
 from datetime import datetime, timezone
 
-from anthropic import Anthropic
-
 from backend.agent.costs import anthropic_cost_usd
 
 # Verbatim from the reference module's judge.py -- the core invariant that
@@ -334,7 +332,7 @@ def _find_selected_hypothesis(hypotheses: list[dict]) -> dict | None:
     return hypotheses[0] if hypotheses else None
 
 
-def evaluate_hypothesis(run_result: dict, comment: str, client: Anthropic, model: str) -> dict:
+def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
     """Judge the run's selected hypothesis against the rubric, then revise
     it once. Raises ValueError if the run has no hypotheses to evaluate --
     callers are expected to only invoke this on a finished run."""
@@ -368,17 +366,12 @@ def evaluate_hypothesis(run_result: dict, comment: str, client: Anthropic, model
     }
 
     def _call(prompt: str, max_tokens: int) -> str:
-        resp = client.messages.create(
-            model=model, max_tokens=max_tokens, messages=[{"role": "user", "content": prompt}]
-        )
-        usage = resp.usage
-        usage_totals["input_tokens"] += getattr(usage, "input_tokens", 0) or 0
-        usage_totals["output_tokens"] += getattr(usage, "output_tokens", 0) or 0
-        usage_totals["cache_creation_input_tokens"] += (
-            getattr(usage, "cache_creation_input_tokens", 0) or 0
-        )
-        usage_totals["cache_read_input_tokens"] += getattr(usage, "cache_read_input_tokens", 0) or 0
-        return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+        resp = provider.complete(prompt, max_tokens)
+        usage_totals["input_tokens"] += resp.usage.get("input_tokens", 0)
+        usage_totals["output_tokens"] += resp.usage.get("output_tokens", 0)
+        usage_totals["cache_creation_input_tokens"] += resp.usage.get("cache_creation_input_tokens", 0)
+        usage_totals["cache_read_input_tokens"] += resp.usage.get("cache_read_input_tokens", 0)
+        return resp.text
 
     # Generous budgets: on this model family, thinking tokens count against
     # max_tokens, and a too-small cap silently burns the whole budget on
@@ -477,23 +470,29 @@ def evaluate_hypothesis(run_result: dict, comment: str, client: Anthropic, model
         "unresolved": unresolved,
     }
 
-    usd, rate_configured = anthropic_cost_usd(
-        model,
-        usage_totals["input_tokens"],
-        usage_totals["output_tokens"],
-        usage_totals["cache_creation_input_tokens"],
-        usage_totals["cache_read_input_tokens"],
-    )
+    if provider.name == "groq":
+        usd, rate_configured = 0.0, True  # genuinely free tier, not an unknown rate
+    else:
+        usd, rate_configured = anthropic_cost_usd(
+            provider.model,
+            usage_totals["input_tokens"],
+            usage_totals["output_tokens"],
+            usage_totals["cache_creation_input_tokens"],
+            usage_totals["cache_read_input_tokens"],
+        )
 
     return {
         "hypothesis_id": hypothesis.get("id"),
         "comment": comment,
-        "model": model,
+        "model": provider.model,
+        "provider": provider.name,
         "critiques": critiques,
         "revised": revised,
         "cost": {
             "usd": usd,
             "rate_configured": rate_configured,
+            "free_tier": provider.name == "groq",
+            "key_source": provider.key_source,
             "input_tokens": usage_totals["input_tokens"],
             "output_tokens": usage_totals["output_tokens"],
         },

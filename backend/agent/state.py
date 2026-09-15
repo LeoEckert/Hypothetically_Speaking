@@ -135,9 +135,13 @@ class RunState:
             getattr(response, "model", "") or "",
         )
 
-    def budget_exceeded(self) -> bool:
+    def budget_exceeded(self, reserve_seconds: float = 0) -> bool:
+        """`reserve_seconds`, when given, holds back that much wall-clock time
+        for phases after this check (REVISE + REPORT) — those run unconditionally
+        once entered, so the ACT loop must stop early enough that they still fit
+        inside `max_run_seconds` instead of running past it."""
         elapsed = time.time() - self.started_at
-        return self.tool_calls_made >= self.max_tool_calls or elapsed >= self.max_run_seconds
+        return self.tool_calls_made >= self.max_tool_calls or elapsed >= (self.max_run_seconds - reserve_seconds)
 
     def citation_index(self) -> str:
         """Render the evidence registry as a citation appendix for the report prompt."""

@@ -1,7 +1,12 @@
-"""FastAPI app: POST /api/run kicks off an agent run in a background thread;
-GET /api/run/{run_id}/stream streams its trace as Server-Sent Events. The
-frontend is a separately-deployed Vite/React app (see frontend/, docs/DEPLOY.md)
-that talks to this API cross-origin — this app is a pure JSON/SSE API.
+"""FastAPI app: POST /api/run runs the agent loop and streams its trace back
+as Server-Sent Events within that single request/response — no separate
+"start" + "stream" endpoints and no server-side run cache, so this app has
+no state that needs to survive between requests (see the module docstring
+note below on why that matters for where this can be deployed).
+
+The frontend is a separately-deployed Vite/React app (see frontend/,
+docs/DEPLOY.md) that talks to this API cross-origin — this app is a pure
+JSON/SSE API.
 """
 from __future__ import annotations
 
@@ -13,14 +18,12 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
-
-from anthropic import Anthropic  # noqa: E402
 
 from backend.agent import admin  # noqa: E402
 
@@ -28,10 +31,21 @@ from backend.agent import admin  # noqa: E402
 # main .env with override=True so a rotation always wins, and survives a
 # container rebuild even though the main .env can't be rewritten from inside
 # the container (see admin.py's module docstring for why).
+#
+# NOTE: this, and the rest of backend/agent/admin.py's usage-history/key
+# overrides, assume a persistent container filesystem. That's true on the
+# Nebius VM this used to run on; it is not true of ephemeral/serverless
+# hosting (e.g. Vercel Functions) — this subsystem needs a real persistent
+# store (a small free-tier KV/Postgres) to keep working there. Left as a
+# known gap rather than solved here: with ANTHROPIC_API_KEY now user-supplied
+# (BYOK) rather than platform-held, key *rotation* specifically is likely
+# close to vestigial (GROQ_API_KEY, the one secret the platform still holds,
+# is a free-tier key with no billing risk to rotate away from).
 load_dotenv(admin.ADMIN_OVERRIDES_PATH, override=True)
 
 from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
 from backend.agent.loop import HARD_MAX_TOOL_CALLS, run_agent  # noqa: E402
+from backend.agent.providers import get_provider  # noqa: E402
 from backend.kgviz.graph import snapshot as trajectory_snapshot  # noqa: E402
 from backend.kgviz.render import render_html as render_trajectory  # noqa: E402
 from backend.tools import registry  # noqa: E402
@@ -56,7 +70,10 @@ app.add_middleware(
 )
 
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
-REPORTS_DIR.mkdir(exist_ok=True)
+try:
+    REPORTS_DIR.mkdir(exist_ok=True)
+except OSError:
+    pass  # read-only filesystem (serverless) — local-report-saving is a dev convenience only
 
 # Mirrors scripts/run_demo.py's DEFAULT_QUESTION — the canonical demo question.
 DEMO_QUESTION = (
@@ -65,40 +82,22 @@ DEMO_QUESTION = (
     "test that mechanism?"
 )
 IS_DEV_MODE = os.environ.get("APP_ENV", "development") != "production"
-DEFAULT_MAX_TOOL_CALLS = min(int(os.environ.get("MAX_TOOL_CALLS", 30)), HARD_MAX_TOOL_CALLS)
-
-_run_events: dict[str, list[dict]] = {}
-# Per-connection wake-up waiters for stream_run. A single shared Queue would
-# wake exactly one consumer per put — wrong semantics for "N browser tabs
-# watching the same run" — so each attached SSE connection registers its own
-# (event_loop, asyncio.Event) pair here, and _notify() below wakes every
-# currently-attached reader. _run_events remains the single source of truth
-# for event content, so readers never lose or double-deliver events
-# regardless of when they attach.
-_waiters: dict[str, list[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
-_waiters_lock = threading.Lock()
+DEFAULT_MAX_TOOL_CALLS = min(int(os.environ.get("MAX_TOOL_CALLS", 8)), HARD_MAX_TOOL_CALLS)
 KEEPALIVE_SECONDS = 15.0  # module constant so tests can shrink it
-_results: dict[str, dict] = {}
-_cancel_events: dict[str, threading.Event] = {}
-
-
-def _notify(run_id: str) -> None:
-    """Wake every SSE connection currently attached to run_id. Called from a
-    background worker thread (never from an event loop itself), hence
-    call_soon_threadsafe to safely cross into each waiter's own loop."""
-    with _waiters_lock:
-        waiters = list(_waiters.get(run_id, ()))
-    for loop, event in waiters:
-        try:
-            loop.call_soon_threadsafe(event.set)
-        except RuntimeError:
-            pass  # target loop already closed (process shutdown / dead client)
+DISCONNECT_POLL_SECONDS = 1.0
 
 
 class RunRequest(BaseModel):
     question: str
     max_tool_calls: int | None = None
-    mode: str = "normal"  # "fast" — Haiku everywhere, 4 links, no second look — or "normal"
+    mode: str = "normal"  # "fast" — small/fast model everywhere, 4 grounding links, no second look — or "normal"
+    # Optional BYOK overrides, env-var-name -> value: ANTHROPIC_API_KEY selects
+    # Claude for this run instead of the shared free-tier Groq default; the
+    # others (GROQ_API_KEY, TAVILY_API_KEY, AMASS_API_KEY, NEBIUS_API_KEY) are
+    # per-request overrides of the platform's own keys for those services.
+    # Never persisted — used only to construct clients/inject into tool args
+    # for this one request.
+    api_keys: dict[str, str] = {}
 
 
 class ToolToggleRequest(BaseModel):
@@ -107,6 +106,12 @@ class ToolToggleRequest(BaseModel):
 
 class EvaluateRequest(BaseModel):
     comment: str = ""
+    api_keys: dict[str, str] = {}
+    # The finished run this evaluates (report/hypotheses/evidence) — the
+    # client already received all of this in the `done` event at the end of
+    # its streaming run; there is no server-side run cache to look it up
+    # from any more (see the module docstring).
+    run_result: dict
 
 
 class KeyRotateRequest(BaseModel):
@@ -125,17 +130,35 @@ def get_config():
         "demo_question": DEMO_QUESTION if IS_DEV_MODE else "",
         "max_tool_calls_default": DEFAULT_MAX_TOOL_CALLS,
         "max_tool_calls_ceiling": HARD_MAX_TOOL_CALLS,
+        # Whether the *platform* holds a working key for each — independent
+        # of whatever a given user has typed into Settings (BYOK). Anthropic
+        # is expected to read false by default now: it's a user-supplied-only
+        # upgrade, not something the platform funds.
+        "anthropic_key_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "groq_key_configured": bool(os.environ.get("GROQ_API_KEY")),
+        "default_provider": "groq",
     }
 
 
 @app.get("/api/tools")
 def get_tools():
     """The full tool roster (name + description from each tool's SPEC), with
-    which ones are currently enabled via ENABLED_TOOLS — lets the frontend
-    show the user what the agent can call without duplicating the text."""
+    which ones are currently enabled via ENABLED_TOOLS, and whether each
+    needs an API key at all (and whether the platform has one configured) —
+    lets the frontend show BYOK hints without duplicating this mapping."""
     enabled = set(enabled_tool_names())
     return [
-        {"name": spec["name"], "description": spec["description"], "enabled": spec["name"] in enabled}
+        {
+            "name": spec["name"],
+            "description": spec["description"],
+            "enabled": spec["name"] in enabled,
+            "key_env_var": registry.KEY_ENV_VAR.get(spec["name"]),
+            "key_configured": (
+                bool(os.environ.get(registry.KEY_ENV_VAR[spec["name"]]))
+                if spec["name"] in registry.KEY_ENV_VAR
+                else True
+            ),
+        }
         for spec in all_specs()
     ]
 
@@ -152,22 +175,39 @@ def set_tool(name: str, req: ToolToggleRequest):
     return {"name": name, "enabled": name in enabled}
 
 
-@app.post("/api/run")
-def start_run(req: RunRequest):
-    run_id = uuid.uuid4().hex[:8]
-    _run_events[run_id] = []
-    _waiters[run_id] = []
-    cancel_event = threading.Event()
-    _cancel_events[run_id] = cancel_event
+async def _watch_disconnect(request: Request, cancel_event: threading.Event) -> None:
+    """A closed connection is this run's cancel signal — there's no separate
+    /cancel endpoint or cross-request state to hold it in any more."""
+    try:
+        while True:
+            if await request.is_disconnected():
+                cancel_event.set()
+                return
+            await asyncio.sleep(DISCONNECT_POLL_SECONDS)
+    except asyncio.CancelledError:
+        raise
 
+
+@app.post("/api/run")
+async def start_run(req: RunRequest, request: Request):
+    """Runs the whole agent loop and streams its trace as SSE within this one
+    request — the loop runs in a background thread (run_agent is synchronous)
+    while this coroutine drains its events off an asyncio.Queue and yields
+    them, so the request's own connection lifetime is the run's lifetime.
+    Closing the connection (browser cancel / tab close) is how a run is
+    cancelled; there's nothing left to hold open across separate requests."""
+    run_id = uuid.uuid4().hex[:8]
     requested = req.max_tool_calls if req.max_tool_calls is not None else DEFAULT_MAX_TOOL_CALLS
     effective_max_tool_calls = max(1, min(requested, HARD_MAX_TOOL_CALLS))
 
-    def _worker():
-        def on_event(event: dict) -> None:
-            _run_events[run_id].append(event)
-            _notify(run_id)
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    cancel_event = threading.Event()
 
+    def on_event(event: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    def _worker() -> None:
         try:
             result = run_agent(
                 req.question,
@@ -176,100 +216,54 @@ def start_run(req: RunRequest):
                 max_tool_calls=effective_max_tool_calls,
                 should_cancel=cancel_event.is_set,
                 mode="fast" if req.mode == "fast" else "normal",
+                api_keys=req.api_keys,
             )
-            _results[run_id] = result
-            (REPORTS_DIR / f"{run_id}.json").write_text(json.dumps(result, indent=2, default=str))
+            try:
+                (REPORTS_DIR / f"{run_id}.json").write_text(json.dumps(result, indent=2, default=str))
+            except OSError:
+                pass  # best-effort local-dev convenience; no-op on a read-only/ephemeral filesystem
         finally:
-            # A finally, not a plain trailing statement: run_agent can still
-            # raise after its own internal try/except (e.g. in
-            # build_cost_summary or the final amass_tool.get_credits() call)
-            # — without this, stream_end would never be appended and every
-            # attached stream would keepalive-loop forever instead of closing.
-            _run_events[run_id].append({"type": "stream_end"})
-            _notify(run_id)
-            _cancel_events.pop(run_id, None)
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "stream_end"})
 
     threading.Thread(target=_worker, daemon=True).start()
-    return {"run_id": run_id, "max_tool_calls": effective_max_tool_calls}
-
-
-@app.post("/api/run/{run_id}/cancel")
-def cancel_run(run_id: str):
-    event = _cancel_events.get(run_id)
-    if event is None:
-        raise HTTPException(status_code=404, detail="run not found or already finished")
-    event.set()
-    return {"run_id": run_id, "cancelling": True}
-
-
-@app.get("/api/run/{run_id}/stream")
-async def stream_run(run_id: str):
-    if run_id not in _run_events:
-        async def _empty():
-            return
-            yield  # pragma: no cover — unreachable, just makes this an async generator
-
-        return StreamingResponse(_empty(), media_type="text/event-stream")
 
     async def event_gen():
-        # An async generator, not a sync one — a sync generator behind
-        # StreamingResponse gets iterated via Starlette's threadpool bridge,
-        # and this generator's per-iteration blocking wait used to hold one
-        # of that pool's slots for the entire lifetime of a run (up to 18
-        # minutes), for every open run. Under enough concurrent runs that
-        # exhausted the shared pool and made brand-new, trivially-fast
-        # requests (e.g. GET /api/config) queue behind them long enough to
-        # look like a dead connection. Running natively on the event loop
-        # avoids the shared pool entirely.
-        loop = asyncio.get_running_loop()
-        wake = asyncio.Event()
-        entry = (loop, wake)
-        with _waiters_lock:
-            _waiters.setdefault(run_id, []).append(entry)
+        watcher = asyncio.create_task(_watch_disconnect(request, cancel_event))
         try:
-            # _run_events is the single source of truth; each connection
-            # tracks its own read position into it, so a reload or a late
-            # "View live run" attach replays everything so far exactly once,
-            # and a live tail never double-delivers what replay already
-            # showed.
-            next_index = 0
             while True:
-                events = _run_events[run_id]
-                while next_index < len(events):
-                    event = events[next_index]
-                    next_index += 1
-                    yield f"data: {json.dumps(event, default=str)}\n\n"
-                    if event.get("type") == "stream_end":
-                        return
-
-                # Clear before re-checking, not after waiting: clearing
-                # after the wait would leave a window where an event
-                # appended between the drain above and the wait below is
-                # missed until the next full keepalive timeout.
-                wake.clear()
-                if len(_run_events[run_id]) > next_index:
-                    continue
-                # Nothing new yet — wait for a wake-up. A long gap between
-                # events (slow tool calls, a multi-minute Anthropic
-                # response) over a real network hop could otherwise look
-                # like a dead connection to an intermediary; send an SSE
-                # comment line as a keepalive instead of waiting forever.
                 try:
-                    await asyncio.wait_for(wake.wait(), timeout=KEEPALIVE_SECONDS)
+                    event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
                 except asyncio.TimeoutError:
+                    # A long gap between events (slow tool calls, a
+                    # multi-minute LLM response) over a real network hop
+                    # could otherwise look like a dead connection.
                     yield ": keepalive\n\n"
+                    continue
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+                if event.get("type") == "stream_end":
+                    return
         finally:
-            with _waiters_lock:
-                lst = _waiters.get(run_id)
-                if lst and entry in lst:
-                    lst.remove(entry)
+            watcher.cancel()
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_gen(), media_type="text/event-stream", headers={"X-Run-Id": run_id}
+    )
 
 
-@app.get("/api/run/{run_id}/result")
-def get_result(run_id: str):
-    return _results.get(run_id, {"status": "not_ready"})
+@app.post("/api/run/{run_id}/evaluate")
+def evaluate_run(run_id: str, req: EvaluateRequest):
+    """Critique + revise the run's selected hypothesis via a fresh, one-off
+    LLM judge+revise pass (see backend/agent/evaluate.py). `req.run_result`
+    carries the finished run the client already has — there's no server-side
+    run cache to look `run_id` up in any more."""
+    try:
+        provider = get_provider(req.api_keys, tier="main")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        return evaluate_hypothesis(req.run_result, req.comment, provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 def _trajectory(question: str | None, walk: str, depth: int, records: bool) -> dict:
@@ -293,25 +287,6 @@ def view_trajectory(question: str | None = None, walk: str = "bfs", depth: int =
 
     query = urlencode({k: v for k, v in {"question": question, "walk": walk, "depth": depth, "records": int(records)}.items() if v is not None})
     return render_trajectory(_trajectory(question, walk, depth, records), reload_url=f"/api/trajectory?{query}")
-
-
-@app.post("/api/run/{run_id}/evaluate")
-def evaluate_run(run_id: str, req: EvaluateRequest):
-    """Critique + revise the run's selected hypothesis via a fresh, one-off
-    LLM judge+revise pass (see backend/agent/evaluate.py). Only reachable
-    once the run has finished: _results is populated at the very end of
-    the background worker in POST /api/run, so a still-running run simply
-    has nothing here yet."""
-    run_result = _results.get(run_id)
-    if run_result is None:
-        raise HTTPException(status_code=404, detail="run not found or not finished yet")
-
-    model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
-    client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    try:
-        return evaluate_hypothesis(run_result, req.comment, client, model)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/admin/usage", dependencies=[Depends(admin.check_admin_token)])

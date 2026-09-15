@@ -171,6 +171,21 @@ export function markCancelling(runId: string) {
   notify()
 }
 
+export function markCancelled(runId: string) {
+  // Cancelling now means aborting the run's one streaming connection (see
+  // @/lib/runStream) — there's no follow-up `done` event to wait for the
+  // way there was when cancel (POST) and streaming (GET) were two separate
+  // connections, so this is the terminal state transition, not `appendEvent`.
+  const idx = runs.findIndex((r) => r.id === runId)
+  if (idx === -1) return
+  const run = runs[idx]
+  if (run.status !== "running" && run.status !== "cancelling") return
+  const updated: RunRecord = { ...run, status: "cancelled" }
+  runs = [...runs.slice(0, idx), updated, ...runs.slice(idx + 1)]
+  save()
+  notify()
+}
+
 export function markErrored(runId: string) {
   const idx = runs.findIndex((r) => r.id === runId)
   if (idx === -1) return

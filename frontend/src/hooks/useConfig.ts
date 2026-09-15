@@ -8,7 +8,15 @@ export function useConfig() {
     fetchConfig()
       .then(setConfig)
       .catch(() =>
-        setConfig({ dev_mode: false, demo_question: "", max_tool_calls_default: 30, max_tool_calls_ceiling: 40 })
+        setConfig({
+          dev_mode: false,
+          demo_question: "",
+          max_tool_calls_default: 8,
+          max_tool_calls_ceiling: 12,
+          anthropic_key_configured: false,
+          groq_key_configured: false,
+          default_provider: "groq",
+        })
       )
   }, [])
 

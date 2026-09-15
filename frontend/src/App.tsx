@@ -9,10 +9,11 @@ import { ResultsView } from "@/components/ResultsView"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useConfig } from "@/hooks/useConfig"
 import { useRunsStore } from "@/hooks/useRunsStore"
-import { cancelRun, evaluateHypothesis, startRun } from "@/lib/api"
+import { evaluateHypothesis } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
-import { currentLiveRunId, ensureStream, onStreamFinished } from "@/lib/runStream"
-import { appendEvaluation, createRun, deleteRun, getRun, markCancelling } from "@/store/runsStore"
+import { cancelCurrentStream, currentLiveRunId, onStreamFinished, startAndStream } from "@/lib/runStream"
+import { loadApiKeys } from "@/store/apiKeysStore"
+import { appendEvaluation, createRun, deleteRun, getRun } from "@/store/runsStore"
 import type { SseEvent, RunMode } from "@/types"
 
 function App() {
@@ -25,7 +26,7 @@ function App() {
   const [composeOpen, setComposeOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [question, setQuestion] = useState("")
-  const [maxToolCalls, setMaxToolCalls] = useState(30)
+  const [maxToolCalls, setMaxToolCalls] = useState(8)
   const [mode, setMode] = useState<RunMode>("fast")
   const prefilledRef = useRef(false)
   const budgetInitRef = useRef(false)
@@ -80,24 +81,22 @@ function App() {
     if (!trimmed || liveRunId) return
 
     const forkedFrom = viewedRunId && viewedRunId !== liveRunId ? viewedRunId : null
-    const { run_id } = await startRun(trimmed, maxToolCalls, mode)
-    createRun(run_id, trimmed, forkedFrom)
-    setLiveRunId(run_id)
-    setViewedRunId(run_id)
+    const runId = await startAndStream({ question: trimmed, maxToolCalls, mode, apiKeys: loadApiKeys() })
+    createRun(runId, trimmed, forkedFrom)
+    setLiveRunId(runId)
+    setViewedRunId(runId)
     setShowDetails(false)
     setComposeOpen(false)
-    ensureStream(run_id)
   }
 
   function handleCancel() {
     if (!liveRunId) return
-    markCancelling(liveRunId)
-    cancelRun(liveRunId)
+    cancelCurrentStream(liveRunId)
   }
 
   function handleDeleteHistory(id: string) {
     if (id === liveRunId) {
-      cancelRun(id)
+      cancelCurrentStream(id)
       setLiveRunId(null)
     }
     if (id === viewedRunId) {
@@ -113,8 +112,13 @@ function App() {
   }
 
   async function handleEvaluate(comment: string) {
-    if (!viewedRunId) return
-    const result = await evaluateHypothesis(viewedRunId, comment)
+    if (!viewedRunId || !doneEvent) return
+    const result = await evaluateHypothesis(
+      viewedRunId,
+      { report: doneEvent.report, hypotheses: doneEvent.hypotheses, evidence: doneEvent.evidence },
+      comment,
+      loadApiKeys()
+    )
     appendEvaluation(viewedRunId, result)
   }
 
@@ -170,7 +174,7 @@ function App() {
             onModeChange={setMode}
             maxToolCalls={maxToolCalls}
             onMaxToolCallsChange={setMaxToolCalls}
-            maxToolCallsCeiling={config?.max_tool_calls_ceiling ?? 40}
+            maxToolCallsCeiling={config?.max_tool_calls_ceiling ?? 12}
           />
 
           <main>

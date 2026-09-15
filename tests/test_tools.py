@@ -109,6 +109,32 @@ def test_run_tool_uses_explicit_enabled_names(monkeypatch):
     assert result["error"] == "tool_disabled"
 
 
+def test_run_tool_injects_user_supplied_key_as_reserved_args_field(monkeypatch):
+    """A BYOK key (RunRequest.api_keys) must reach the tool without changing
+    the run(args: dict) -> dict contract — registry.run_tool injects it into
+    a reserved args["_user_api_key"] field instead."""
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    seen = {}
+
+    def fake_run(args):
+        seen["api_key"] = args.get("_user_api_key")
+        return {"summary": "ok", "items": [], "mock": False, "error": None}
+
+    monkeypatch.setattr(tavily_tool, "run", fake_run)
+    registry.run_tool(
+        "tavily", {"query": "sirtuin ageing"}, enabled_names={"tavily"}, api_keys={"TAVILY_API_KEY": "user-key-123"}
+    )
+    assert seen["api_key"] == "user-key-123"
+
+
+def test_run_tool_without_api_keys_falls_back_to_mock():
+    """No platform env var and no api_keys override — the tool still
+    degrades to its mock contract rather than raising or leaking a key."""
+    result = registry.run_tool("tavily", {"query": "sirtuin ageing"}, enabled_names={"tavily"})
+    _assert_contract(result)
+    assert result["mock"] is True
+
+
 def test_extract_genes_success_includes_usage(monkeypatch):
     monkeypatch.setenv("NEBIUS_API_KEY", "fake-key")
     monkeypatch.setenv("NEBIUS_BASE_URL", "https://fake.example/v1")

@@ -1,6 +1,54 @@
-# Deploy: Vercel (frontend) + Nebius (backend)
+# Deploy: Vercel (frontend) + Nebius (backend) — being migrated to Vercel + Vercel
 
-## Why split like this
+## Free-tier-by-default, BYOK, and the planned move off the Nebius VM
+
+The platform now runs on free services by default: the LLM is a shared free-tier
+Groq key (`GROQ_API_KEY`, real signup at console.groq.com, no card) unless a
+user pastes their own Anthropic key into the frontend's Settings menu — the
+platform holds no Claude key of its own any more. The three paid tool APIs
+(Tavily/Amass/Nebius) are all optional BYOK too; every tool already degrades
+to a mock/heuristic result without a key. See `CLAUDE.md`'s "Tools wired into
+the loop" and "The agent loop" sections for the code-level detail.
+
+As part of this, every run budget (`MAX_TOOL_CALLS`, `MAX_RUN_SECONDS`,
+grounding depth) was re-derived to fit inside a **hard 300-second-per-run
+ceiling** — the limit Vercel Fluid Compute imposes even on its free Hobby
+plan (standard functions cap at 60s; Fluid Compute raises that to 300s on
+Hobby, 800s on Pro — there is no way to raise it further, and no
+chunked/resumable workaround survives Vercel's 4.5MB request/response
+payload cap combined with this app's fully in-memory run state, so that path
+was considered and dropped, not overlooked). `backend/server/app.py` was
+also rewritten so `POST /api/run` runs the whole agent loop and streams its
+trace as SSE within **one** request/response — the old two-endpoint design
+(`POST /api/run` starts a background thread and returns a `run_id`; a
+separate `GET .../stream` tails an in-memory event list) depended on one
+long-lived process with shared memory across requests, which doesn't exist
+on stateless/serverless hosting.
+
+**What this means for this doc**: the "why split like this" reasoning below,
+and everything under "Backend: Nebius VM", describes the deployment as it
+exists *today* — a real, currently-live VM. The code changes above are
+what make a serverless backend possible; they do **not**, on their own,
+retire the VM. Actually doing that — decommissioning a live instance,
+standing up a new Vercel project for the backend (Python runtime, Fluid
+Compute, `maxDuration: 300`), updating `.github/workflows/deploy-backend.yml`
+and `VITE_API_BASE_URL` — touches real, currently-working infrastructure and
+CI/CD and needs the project owner's own Vercel/Nebius account access, so
+it's deliberately left as an explicit next step rather than something to
+execute automatically alongside a code refactor. Until that migration
+happens, follow the Nebius VM instructions below exactly as before; the only
+change is which env vars matter (`GROQ_API_KEY` now, `ANTHROPIC_API_KEY`
+now optional/BYOK-only).
+
+**Planned backend-migration checklist**, for whoever picks this up:
+1. New Vercel project, Python runtime (`@vercel/python` / the `frontend/DEPLOY`-style FastAPI preset), root pointed at the repo (backend has no separate subfolder today — may need `api/` restructuring depending on the preset chosen).
+2. `vercel.json` for that project: route everything to the FastAPI ASGI app, `"maxDuration": 300`, Fluid Compute enabled in Project Settings → Functions.
+3. Set `GROQ_API_KEY` (required) and any optional BYOK-adjacent platform env vars in that project's Environment Variables — **not** `ANTHROPIC_API_KEY`, which should stay unset there by design.
+4. Verify SSE actually streams end-to-end through Vercel's Python runtime for a real run (not just locally) before cutting over — this wasn't verified against live Vercel infrastructure as part of this change, only against a local `uvicorn` process.
+5. Point the frontend's `VITE_API_BASE_URL` at the new backend URL, redeploy.
+6. Only once the new backend is confirmed working: decommission the Nebius VM and remove/retire `.github/workflows/deploy-backend.yml`, `Dockerfile`, `docker-compose.yml`, `Caddyfile`.
+
+## Why split like this (current, Nebius-VM deployment)
 
 Vercel Functions cap at 300 seconds max duration, even on paid tiers. A full
 agent run targets up to 18 minutes. So Vercel can only serve the built
@@ -305,9 +353,14 @@ Either way, local dev is **fully independent** of Vercel/Nebius: no
 network calls to either happen unless you explicitly point
 `VITE_API_BASE_URL` at a deployed backend.
 
-## Known limitation (pre-existing, unrelated to this split)
+## Known limitation (pre-existing, now resolved by the streaming rewrite)
 
-`_run_events`/`_wakeups`/`_results` in `backend/server/app.py` are
-in-memory — a backend container restart mid-run loses all in-flight run
-state. This was true before this deployment split and isn't addressed by
-it.
+`_run_events`/`_waiters`/`_results` in `backend/server/app.py` used to be
+in-memory module-level dicts — a backend container restart mid-run lost all
+in-flight run state. That whole mechanism is gone: `POST /api/run` now runs
+a request entirely within its own single response (see "Free-tier-by-default,
+BYOK, and the planned move off the Nebius VM" above), so there's no
+cross-request state left to lose. A container restart still kills any run
+in flight at that moment (same as before), but no longer corrupts or loses
+state for any *other* run, because no state is shared across requests at all
+any more.

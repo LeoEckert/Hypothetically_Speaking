@@ -2,6 +2,8 @@ export interface ToolInfo {
   name: string
   description: string
   enabled: boolean
+  key_env_var: string | null
+  key_configured: boolean
 }
 
 export interface AdminKeyInfo {
@@ -247,7 +249,7 @@ export type SseEvent =
       usage: { prompt_tokens: number; completion_tokens: number } | null
     }
   | { type: "hypotheses"; stage: HypothesisStage; hypotheses: RankedHypothesis[] }
-  | { type: "error"; error: string }
+  | { type: "error"; error: string; error_code?: string }
   | {
       type: "done"
       report: string

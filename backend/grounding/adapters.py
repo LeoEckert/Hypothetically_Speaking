@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 import httpx
-from anthropic import Anthropic
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from backend.grounding.domain import (
@@ -53,8 +52,11 @@ MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 FAST_MODEL = os.environ.get("GROUNDING_FAST_MODEL", "claude-haiku-4-5-20251001")
 PROBE_MODEL = os.environ.get("GROUNDING_PROBE_MODEL", FAST_MODEL)
 VERIFY_MODEL = os.environ.get("GROUNDING_VERIFY_MODEL", MODEL)
-ABSTRACT_CHARS_FAST = 1500
-TRIAL_LIMIT_FAST = 10
+# Depths below are sized for a hard 300s-per-run external platform ceiling
+# (Vercel Fluid Compute), scaled down from earlier, VM-era values pending
+# empirical retuning against real timed runs (see scripts/run_demo.py).
+ABSTRACT_CHARS_FAST = 1000
+TRIAL_LIMIT_FAST = 6
 MAX_TOKENS = 4096  # a verdict over 20 full abstracts needs the room
 TAVILY_URL = "https://api.tavily.com/search"
 AMASS_URL = "https://api.amass.tech/api/v1/cores/biomedcore/records"
@@ -62,14 +64,14 @@ AMASS_TRIALS_URL = "https://api.amass.tech/api/v1/cores/trialcore/records"
 FIXTURE_PATH = Path("fixtures/recorded_run.json")
 
 TAVILY_MAX_RESULTS = 10
-AMASS_LIMIT = 20  # per query; the API allows up to 300
+AMASS_LIMIT = 12  # per query; the API allows up to 300
 # A citation floor only passes old work: the 2026 Nature Metabolism review on
 # mitochondrial quality control has citationCount 0, and a floor of 5 deletes it.
 MIN_CITATIONS = 0
 # JUFO journal tier: 0 unrated (incl. preprints), 1 listed, 2 leading, 3 top.
 MIN_JUFO = 1
 MIN_PUBLICATION_DATE = "2010-01-01"
-ABSTRACT_CHARS = 3000  # effectively the whole abstract: a verdict from 400 chars is a guess
+ABSTRACT_CHARS = 1800  # was the whole abstract (3000) pre-300s-cap; still most of it
 HTTP_TIMEOUT = 60
 
 
@@ -112,42 +114,36 @@ class Ledger(list):
 
 def _claude(
     prompt: str, schema: type[BaseModel], cache: LLMCache | None = None, ledger: Ledger | None = None, stage: str = "",
-    model: str = MODEL,
+    provider=None,
 ) -> tuple[BaseModel, str]:
-    """The single LLM entry point. Reads ANTHROPIC_API_KEY from the environment.
+    """The single LLM entry point. `provider` is a
+    backend.agent.providers.LLMProvider (Anthropic when a key — BYOK or
+    platform — is available, otherwise the shared free-tier Groq default;
+    resolved once per `ground()` call via backend.agent.providers.get_provider).
 
     Returns the parsed object and the prompt hash. With a cache attached, an
     identical prompt replays the stored response byte for byte, so two runs over
     the same evidence produce the same reasoning rather than merely similar
     reasoning. A miss means the input genuinely changed, and the hash recorded
     in the reasoning log is what shows where.
-
-    No `temperature`: the Claude 5 family rejects the parameter outright with
-    HTTP 400. Determinism rests on the cache instead.
     """
+    model_label = provider.model
     instructed = (
         f"{prompt}\n\nRespond with ONLY a fenced ```json code block, no prose "
         f"before or after it, matching this JSON schema:\n"
         f"{json.dumps(schema.model_json_schema())}"
     )
-    digest = prompt_hash(instructed, model)
+    digest = prompt_hash(instructed, model_label)
     if cache is not None:
         stored = cache.cached_response(digest)
         if stored is not None:
             if ledger is not None:
-                ledger.append({"tool": "grounding", "args": {"stage": stage, "model": model}, "summary": "cache hit — identical prompt replayed", "usage": None, "cached": True})
+                ledger.append({"tool": "grounding", "args": {"stage": stage, "model": model_label}, "summary": "cache hit — identical prompt replayed", "usage": None, "cached": True})
             return schema.model_validate_json(stored), digest
 
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
     def ask():
-        response = client.messages.create(
-            model=model,
-            max_tokens=MAX_TOKENS,
-            messages=[{"role": "user", "content": instructed}],
-        )
-        text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
-        return response, _parse_fence(text, schema)
+        response = provider.complete(instructed, MAX_TOKENS)
+        return response, _parse_fence(response.text, schema)
 
     try:
         response, result = ask()
@@ -155,43 +151,42 @@ def _claude(
         # A reply that does not fit the schema is a bad sample, not a bad
         # prompt; one fresh answer usually fits. Nothing was cached, so this
         # is a genuine re-ask.
-        print(f"grounding {stage or model}: unparseable reply, asking once more ({str(exc)[:160]})", file=sys.stderr)
+        print(f"grounding {stage or model_label}: unparseable reply, asking once more ({str(exc)[:160]})", file=sys.stderr)
         response, result = ask()
 
     if cache is not None:
-        cache.store_response(digest, model, result.model_dump_json())
+        cache.store_response(digest, model_label, result.model_dump_json())
     if ledger is not None:
-        usage = getattr(response, "usage", None)
         ledger.append({
             "tool": "grounding",
-            "args": {"stage": stage, "model": model},
+            "args": {"stage": stage, "model": model_label},
             # The parsed object, not the raw fenced reply: the trace should read
             # like a result ({"status": "CONTESTED", ...}), not like a transcript.
             "summary": result.model_dump_json()[:300],
-            "usage": {
-                "input_tokens": getattr(usage, "input_tokens", 0) or 0,
-                "output_tokens": getattr(usage, "output_tokens", 0) or 0,
-                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
-                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
-            },
+            "usage": response.usage,
             "cached": False,
         })
     return result, digest
 
 
 class _CachingAdapter:
-    """Shared constructor: every Claude-backed adapter records its last prompt hash."""
+    """Shared constructor: every LLM-backed adapter records its last prompt hash."""
 
     stage = ""
 
-    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, model: str | None = None) -> None:
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, provider=None) -> None:
         self.cache = cache
         self.ledger = ledger
-        self.model = model or MODEL
+        if provider is None:
+            from backend.agent.providers import get_provider
+
+            provider = get_provider()
+        self.provider = provider
+        self.model = provider.model  # kept for callers that still read .model directly
         self.last_prompt_hash: str | None = None
 
     def _call(self, prompt: str, schema: type[BaseModel]) -> BaseModel:
-        result, self.last_prompt_hash = _claude(prompt, schema, self.cache, self.ledger, self.stage, self.model)
+        result, self.last_prompt_hash = _claude(prompt, schema, self.cache, self.ledger, self.stage, self.provider)
         return result
 
 
@@ -368,9 +363,9 @@ class ClaudeVerifier(_CachingAdapter):
 
     stage = "L2 verify"
 
-    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, model: str | None = None,
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, provider=None,
                  abstract_chars: int = ABSTRACT_CHARS) -> None:
-        super().__init__(cache, ledger, model)
+        super().__init__(cache, ledger, provider)
         self.abstract_chars = abstract_chars
 
     def verify(self, link: Triple, papers: list[Paper]) -> Verification:
@@ -397,7 +392,7 @@ class ClaudeVerifier(_CachingAdapter):
             self.cache,
             self.ledger,
             f"L2 verify: {link.subject} -> {link.object}",
-            self.model,
+            self.provider,
         )
         return Verification(
             status=verdict.status,
@@ -562,7 +557,9 @@ class ClaudeEntityExtractor(_CachingAdapter):
         return result.entities
 
 
-def _amass_records(url: str, params: dict, cache: LLMCache | None, ledger: Ledger | None = None) -> list[dict]:
+def _amass_records(
+    url: str, params: dict, cache: LLMCache | None, ledger: Ledger | None = None, api_key: str | None = None
+) -> list[dict]:
     """GET one Amass core. With a cache, an identical query replays the recorded
     records, so a repeated question is verified against the same literature —
     the retrieval half of reproducibility, next to the LLM cache."""
@@ -579,7 +576,7 @@ def _amass_records(url: str, params: dict, cache: LLMCache | None, ledger: Ledge
         try:
             response = httpx.get(
                 url,
-                headers={"Authorization": f"Bearer {os.environ['AMASS_API_KEY']}"},
+                headers={"Authorization": f"Bearer {api_key or os.environ['AMASS_API_KEY']}"},
                 params=params,
                 timeout=HTTP_TIMEOUT,
             )
@@ -602,14 +599,18 @@ def _amass_records(url: str, params: dict, cache: LLMCache | None, ledger: Ledge
 class AmassTrialRepository:
     """L2, second source. Registered trials — the only place a human RCT shows up."""
 
-    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, limit: int = AMASS_LIMIT) -> None:
+    def __init__(
+        self, cache: LLMCache | None = None, ledger: Ledger | None = None, limit: int = AMASS_LIMIT,
+        api_key: str | None = None,
+    ) -> None:
         self.cache = cache
         self.ledger = ledger
         self.limit = limit
+        self.api_key = api_key
 
     def find(self, query: LiteratureQuery) -> list[Paper]:
         records = _amass_records(
-            AMASS_TRIALS_URL, {"query": query.text, "limit": self.limit}, self.cache, self.ledger
+            AMASS_TRIALS_URL, {"query": query.text, "limit": self.limit}, self.cache, self.ledger, self.api_key
         )
         return [
             Paper(
@@ -636,9 +637,10 @@ class AmassTrialRepository:
 class AmassPaperRepository:
     """Stage 2 and 4, and L2. Amass BiomedCore, filtered server-side."""
 
-    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None) -> None:
+    def __init__(self, cache: LLMCache | None = None, ledger: Ledger | None = None, api_key: str | None = None) -> None:
         self.cache = cache
         self.ledger = ledger
+        self.api_key = api_key
 
     def find(self, query: LiteratureQuery) -> list[Paper]:
         records = _amass_records(
@@ -653,6 +655,7 @@ class AmassPaperRepository:
             },
             self.cache,
             self.ledger,
+            self.api_key,
         )
         return [
             Paper(

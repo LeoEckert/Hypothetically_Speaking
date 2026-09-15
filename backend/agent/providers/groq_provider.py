@@ -1,0 +1,151 @@
+"""Groq's OpenAI-compatible chat-completions API behind the LLMProvider
+interface — the free-tier default execution path when no Anthropic key is
+configured (platform or user).
+
+No prompt-caching equivalent (no-op vs. AnthropicProvider's cache_control).
+429s (rate/token/day limits) are the *normal* failure mode on a free tier,
+not an edge case, so retry-with-backoff is built in rather than left to the
+caller.
+"""
+from __future__ import annotations
+
+import json
+import time
+
+from openai import OpenAI, RateLimitError
+
+from backend.agent.providers.base import LLMProvider, LLMResponse, ToolCall, Transcript
+
+DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 2.0
+
+
+def _tool_specs(tools: list[dict]) -> list[dict] | None:
+    if not tools:
+        return None
+    return [
+        {
+            "type": "function",
+            "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]},
+        }
+        for t in tools
+    ]
+
+
+def _safe_json(raw: str) -> dict:
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+class GroqProvider(LLMProvider):
+    name = "groq"
+
+    def __init__(self, api_key: str, model: str, base_url: str = DEFAULT_BASE_URL) -> None:
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.model = model
+
+    @staticmethod
+    def _to_native_messages(system: str, transcript: Transcript) -> list[dict]:
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        for turn in transcript.turns:
+            if turn["role"] == "user":
+                messages.append({"role": "user", "content": turn["text"]})
+            elif turn["role"] == "assistant":
+                messages.append(turn["response"].raw)
+            elif turn["role"] == "tool_results":
+                for r in turn["results"]:
+                    messages.append({"role": "tool", "tool_call_id": r.tool_call_id, "content": r.content})
+        return messages
+
+    def _call_with_retry(self, **kwargs):
+        for attempt in range(MAX_RETRIES):
+            try:
+                return self.client.chat.completions.create(**kwargs)
+            except RateLimitError:
+                if attempt == MAX_RETRIES - 1:
+                    raise
+                time.sleep(RETRY_BACKOFF_SECONDS * (2**attempt))
+
+    def _normalize(self, response) -> LLMResponse:
+        message = response.choices[0].message
+        raw_tool_calls = getattr(message, "tool_calls", None) or []
+        tool_calls = [
+            ToolCall(id=tc.id, name=tc.function.name, input=_safe_json(tc.function.arguments))
+            for tc in raw_tool_calls
+        ]
+        usage = getattr(response, "usage", None)
+        return LLMResponse(
+            text=message.content or "",
+            tool_calls=tool_calls,
+            stop_reason="tool_use" if tool_calls else "end_turn",
+            usage={
+                "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }
+            if usage
+            else {},
+            model=getattr(response, "model", "") or self.model,
+            raw={
+                "role": "assistant",
+                "content": message.content,
+                **({"tool_calls": [tc.model_dump() for tc in raw_tool_calls]} if raw_tool_calls else {}),
+            },
+        )
+
+    def create(self, system: str, transcript: Transcript, tools: list[dict], max_tokens: int) -> LLMResponse:
+        kwargs: dict = {}
+        specs = _tool_specs(tools)
+        if specs:
+            kwargs["tools"] = specs
+        response = self._call_with_retry(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=self._to_native_messages(system, transcript),
+            **kwargs,
+        )
+        return self._normalize(response)
+
+    def stream(self, system: str, transcript: Transcript, max_tokens: int, on_chunk) -> LLMResponse:
+        stream = self._call_with_retry(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=self._to_native_messages(system, transcript),
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        text_parts: list[str] = []
+        usage = None
+        model_name = self.model
+        for chunk in stream:
+            if chunk.model:
+                model_name = chunk.model
+            if chunk.choices and chunk.choices[0].delta.content:
+                delta = chunk.choices[0].delta.content
+                text_parts.append(delta)
+                on_chunk(delta)
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage
+        text = "".join(text_parts)
+        return LLMResponse(
+            text=text,
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage={
+                "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }
+            if usage
+            else {},
+            model=model_name,
+            raw={"role": "assistant", "content": text},
+        )

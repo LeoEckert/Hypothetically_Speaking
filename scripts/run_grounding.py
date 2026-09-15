@@ -19,6 +19,7 @@ stderr.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -140,27 +141,38 @@ def replay() -> RunTrace:
 
 
 
-def ground(question: str, ledger=None, fast: bool = False, on_progress=None) -> premises.Grounding:
-    """L0-L4 with live adapters; the knowledge base caches every Claude call and
+def ground(
+    question: str, ledger=None, fast: bool = False, on_progress=None, api_keys: dict | None = None
+) -> premises.Grounding:
+    """L0-L4 with live adapters; the knowledge base caches every LLM call and
     Amass query. `ledger` (adapters.Ledger) receives every external call.
+    `api_keys` (env-var-name -> value) is a per-request BYOK override — an
+    Anthropic key (yours or the platform's) selects Claude via
+    backend.agent.providers.get_provider(); otherwise the shared free-tier
+    Groq default is used, same as the main agent loop.
 
-    L0, L2 verdicts and L4 stay on the main model in both modes (see the note
-    on Haiku verdicts in adapters.py); L1 probing runs on PROBE_MODEL (Haiku).
+    L0, L2 verdicts and L4 stay on the "main" tier in both modes (see the note
+    on Haiku verdicts in adapters.py); L1 probing runs on the "fast" tier.
     normal: 8 links, whole abstracts, 20 trials per query, a second-look search
             before a link is called unverified.
     fast:   4 links, 1500-char abstracts, 10 trials per query, no second look."""
+    from backend.agent.providers import get_provider
+
     knowledge_base = SqliteKnowledgeBase()
+    main_provider = get_provider(api_keys, tier="main")
+    fast_provider = get_provider(api_keys, tier="fast")
+    amass_key = (api_keys or {}).get("AMASS_API_KEY") or os.environ.get("AMASS_API_KEY")
     return premises.extract(
         question,
-        triplifier=ClaudeTriplifier(knowledge_base, ledger, MODEL),
-        prober=ClaudeProber(knowledge_base, ledger, PROBE_MODEL),
+        triplifier=ClaudeTriplifier(knowledge_base, ledger, main_provider),
+        prober=ClaudeProber(knowledge_base, ledger, fast_provider),
         sources=[
-            AmassPaperRepository(knowledge_base, ledger),
-            AmassTrialRepository(knowledge_base, ledger, TRIAL_LIMIT_FAST if fast else AMASS_LIMIT),
+            AmassPaperRepository(knowledge_base, ledger, amass_key),
+            AmassTrialRepository(knowledge_base, ledger, TRIAL_LIMIT_FAST if fast else AMASS_LIMIT, amass_key),
         ],
-        verifier=ClaudeVerifier(knowledge_base, ledger, VERIFY_MODEL, ABSTRACT_CHARS_FAST if fast else ABSTRACT_CHARS),
+        verifier=ClaudeVerifier(knowledge_base, ledger, main_provider, ABSTRACT_CHARS_FAST if fast else ABSTRACT_CHARS),
         # The seam: swap in any object with generate(grounding) -> list[Hypothesis].
-        generator=ClaudeHypothesisGenerator(knowledge_base, ledger, MODEL),
+        generator=ClaudeHypothesisGenerator(knowledge_base, ledger, main_provider),
         knowledge_base=knowledge_base,
         fast=fast,
         on_progress=on_progress,

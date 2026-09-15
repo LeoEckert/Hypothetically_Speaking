@@ -1,9 +1,13 @@
 """The plan -> retrieve -> compute -> revise -> report agent loop.
 
-A manual Anthropic Messages API tool-use loop (see docs/ARCHITECTURE.md for
-why this was chosen over the Claude Agent SDK for this build). `on_event`
-is called with small dicts describing each step, so a caller (the FastAPI
-SSE endpoint, or scripts/run_demo.py) can stream/record the run live.
+A manual, provider-agnostic tool-use loop (see docs/ARCHITECTURE.md for why
+this was chosen over the Claude Agent SDK for this build). Every LLM call
+goes through backend.agent.providers.get_provider(), which picks Anthropic
+when a key (BYOK or platform) is available and otherwise falls back to the
+shared free-tier Groq default — loop.py itself never branches on which
+provider is in use. `on_event` is called with small dicts describing each
+step, so a caller (the FastAPI SSE endpoint, or scripts/run_demo.py) can
+stream/record the run live.
 """
 from __future__ import annotations
 
@@ -15,7 +19,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
-from anthropic import Anthropic
+import anthropic
+import openai
 
 from backend.agent.prompts import (
     CANCELLED_RUN_NOTICE,
@@ -26,6 +31,7 @@ from backend.agent.prompts import (
     plan_prompt,
 )
 from backend.agent.costs import build_cost_summary
+from backend.agent.providers import NoProviderAvailable, ToolResult, Transcript, get_provider
 from backend.agent.state import RunState
 from backend.tools import amass_tool
 from backend.tools.registry import enabled_tool_names, get_specs, run_tool
@@ -33,20 +39,23 @@ from backend.tools.registry import enabled_tool_names, get_specs, run_tool
 EventCallback = Optional[Callable[[dict], None]]
 CancelCheck = Optional[Callable[[], bool]]
 
-# The system prompt is identical on every PLAN/ACT/REVISE/REPORT call (up to
-# ~30+ times per run) — sending it as a cached block lets Anthropic serve it
-# from cache (read price = CACHE_READ_MULTIPLIER, see backend/agent/costs.py)
-# on every call after the first instead of pricing it as fresh input tokens
-# every time. Precomputed once since SYSTEM_PROMPT never changes at runtime.
-_SYSTEM_PROMPT_BLOCKS = [
-    {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
-]
-
 # Absolute ceiling on tool calls for any run, regardless of what a caller
 # (the API's max_tool_calls request field, MAX_TOOL_CALLS env var, or a
 # future caller) asks for — protects against runaway cost/time no matter
 # where a request originates.
-HARD_MAX_TOOL_CALLS = 40
+#
+# Sized for a hard 300s-per-run external platform ceiling (Vercel Fluid
+# Compute), not the old 1080s VM budget — scaled down proportionally from the
+# previous 30/40 defaults pending empirical retuning against real timed runs
+# (see scripts/run_demo.py and CLAUDE.md's Commands section).
+HARD_MAX_TOOL_CALLS = 12
+
+# REVISE (~2048 max_tokens) and REPORT (~8192 max_tokens) run unconditionally
+# once the ACT loop exits — neither is bounded by max_run_seconds on its own —
+# so the ACT loop must stop early enough to leave room for both. Sized for
+# Anthropic's slower streaming case; Groq's free-tier default path finishes
+# these well under this reserve.
+REPORT_RESERVE_SECONDS = 100
 
 _NUDGE_NO_TOOLS = (
     "You have not called any tools yet. Use the available tools now to "
@@ -55,16 +64,34 @@ _NUDGE_NO_TOOLS = (
 )
 MAX_NO_TOOL_NUDGES = 2
 
+# Auth/permission errors from either SDK mean "this key was rejected" —
+# distinct from NoProviderAvailable ("no key was ever configured") and worth
+# a clearer message than the generic catch-all.
+_KEY_INVALID_ERRORS = (
+    anthropic.AuthenticationError,
+    anthropic.PermissionDeniedError,
+    openai.AuthenticationError,
+    openai.PermissionDeniedError,
+)
+
 
 def _emit(on_event: EventCallback, event: dict) -> None:
     if on_event:
         on_event(event)
 
 
-_GROUNDING_KEYS = ("ANTHROPIC_API_KEY", "AMASS_API_KEY")
+def _has_llm_key(api_keys: dict) -> bool:
+    return bool(
+        api_keys.get("ANTHROPIC_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or api_keys.get("GROQ_API_KEY")
+        or os.environ.get("GROQ_API_KEY")
+    )
 
 
-def _resolve_amass_credits_before(state: RunState, thread: threading.Thread | None, box: list) -> None:
+def _resolve_amass_credits_before(
+    state: RunState, thread: threading.Thread | None, box: list, user_api_key: str | None = None
+) -> None:
     """Amass's account-wide balance only needs to be sampled once, before any
     Amass call this run makes — it doesn't need to happen synchronously right
     at that call site. `thread`/`box` are the background prefetch started at
@@ -76,7 +103,7 @@ def _resolve_amass_credits_before(state: RunState, thread: threading.Thread | No
         thread.join()
         state.amass_credits_before = box[0] if box else None
     else:
-        state.amass_credits_before = amass_tool.get_credits()
+        state.amass_credits_before = amass_tool.get_credits(user_api_key)
 
 
 def _grounding_payload(
@@ -86,14 +113,21 @@ def _grounding_payload(
     mode: str = "normal",
     amass_credits_thread: threading.Thread | None = None,
     amass_credits_box: list | None = None,
+    api_keys: dict | None = None,
 ) -> dict:
     """Run L0-L4 and return the same structured payload sent to the UI.
 
-    Every Amass and Claude call the grounding makes is streamed as a
-    tool_call/tool_result pair and recorded on the run state (trace, Anthropic
+    Every Amass and LLM call the grounding makes is streamed as a
+    tool_call/tool_result pair and recorded on the run state (trace, LLM
     tokens, Amass credits) so the trace and cost panel show the whole run —
     without counting against the agent's tool budget."""
-    missing = [name for name in _GROUNDING_KEYS if not os.environ.get(name)]
+    api_keys = api_keys or {}
+    amass_key = api_keys.get("AMASS_API_KEY") or os.environ.get("AMASS_API_KEY")
+    missing = []
+    if not _has_llm_key(api_keys):
+        missing.append("an LLM provider key (your own, or the platform's shared one)")
+    if not amass_key:
+        missing.append("AMASS_API_KEY")
     empty = {"coherent": None, "triples": [], "destination": "", "premises": [], "knowledge_graph": "", "hypotheses": [], "rejected": []}
     if missing:
         return {"status": "skipped", "why": f"Missing {', '.join(missing)}", **empty}
@@ -111,12 +145,13 @@ def _grounding_payload(
             _emit(on_event, {"type": "tool_result", "tool": entry["tool"], "step": step, "mock": False, "error": None, "summary": entry["summary"], "usage": None})
 
         if state is not None:
-            _resolve_amass_credits_before(state, amass_credits_thread, amass_credits_box or [])
+            _resolve_amass_credits_before(state, amass_credits_thread, amass_credits_box or [], amass_key)
         grounding = ground(
             question,
             ledger=Ledger(record),
             fast=mode == "fast",
             on_progress=lambda event: _emit(on_event, {"type": "grounding_step", **event}),
+            api_keys=api_keys,
         )
         return {
             "status": "complete",
@@ -212,14 +247,18 @@ REPORT_SECTIONS = [
 _HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.M)
 
 
-def _stream_message(client, on_event, phase: str, detail: dict, **kwargs):
-    """Stream one Messages call and emit a `progress` event about once a
-    second: characters written so far and, for the report, which of the fixed
+def _stream_message(provider, on_event, phase: str, detail: dict, transcript: Transcript, max_tokens: int):
+    """Stream one call and emit a `progress` event about once a second:
+    characters written so far and, for the report, which of the fixed
     sections is being written. PLAN, REVISE and REPORT are each a single long
     call with nothing else to show, so this is what keeps the status bar
-    moving. Returns the same final Message that messages.create would."""
+    moving. Returns the normalized LLMResponse."""
     buffer: list[str] = []
     last_emit = 0.0
+
+    def on_chunk(chunk: str) -> None:
+        buffer.append(chunk)
+        emit()
 
     def emit(force: bool = False) -> None:
         nonlocal last_emit
@@ -241,16 +280,9 @@ def _stream_message(client, on_event, phase: str, detail: dict, **kwargs):
             },
         )
 
-    with client.messages.stream(**kwargs) as stream:
-        for chunk in stream.text_stream:
-            buffer.append(chunk)
-            emit()
-        emit(force=True)
-        return stream.get_final_message()
-
-
-def _text_of(content_blocks) -> str:
-    return "".join(b.text for b in content_blocks if getattr(b, "type", None) == "text")
+    response = provider.stream(system=SYSTEM_PROMPT, transcript=transcript, max_tokens=max_tokens, on_chunk=on_chunk)
+    emit(force=True)
+    return response
 
 
 _HYPOTHESES_FENCE_RE = re.compile(r"```json\s*(\{.*?\"hypotheses\".*?\})\s*```", re.DOTALL)
@@ -401,18 +433,6 @@ def _normalize_hypotheses(
     return normalized
 
 
-def _strip_empty_text_blocks(content_blocks):
-    """Claude sometimes returns a text block with empty/whitespace-only text
-    alongside a tool_use or thinking block in the same turn. Resending that
-    verbatim on the next request gets rejected with a 400 ("text content
-    blocks must be non-empty"), which otherwise aborts the whole run. Drop
-    only truly empty text blocks; everything else (tool_use, thinking,
-    non-empty text) passes through untouched."""
-    return [
-        b for b in content_blocks if not (getattr(b, "type", None) == "text" and not b.text.strip())
-    ]
-
-
 def run_agent(
     question: str,
     on_event: EventCallback = None,
@@ -420,49 +440,62 @@ def run_agent(
     max_tool_calls: int | None = None,
     should_cancel: CancelCheck = None,
     mode: str = "normal",
+    api_keys: dict | None = None,
 ) -> dict:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
-    client = Anthropic(api_key=api_key)
+    api_keys = api_keys or {}
 
-    requested_max = max_tool_calls if max_tool_calls is not None else int(os.environ.get("MAX_TOOL_CALLS", 30))
+    requested_max = max_tool_calls if max_tool_calls is not None else int(os.environ.get("MAX_TOOL_CALLS", 8))
     state = RunState(
         question=question,
         max_tool_calls=min(requested_max, HARD_MAX_TOOL_CALLS),
-        max_run_seconds=int(os.environ.get("MAX_RUN_SECONDS", 1080)),
+        # Default kept safely under Vercel Fluid Compute's hard 300s ceiling —
+        # see REPORT_RESERVE_SECONDS above and CLAUDE.md.
+        max_run_seconds=int(os.environ.get("MAX_RUN_SECONDS", 260)),
     )
     if run_id:
         state.run_id = run_id
     state.enabled_tools = set(enabled_tool_names())
     tools = get_specs()
-    if tools:
-        # The tool roster is snapshotted once per run and never changes for
-        # the life of this run (see enabled_tools above) — cache it too, on
-        # the last spec, same reasoning as the system prompt.
-        tools = [*tools[:-1], {**tools[-1], "cache_control": {"type": "ephemeral"}}]
-    messages: list[dict] = [{"role": "user", "content": f"Research question: {question}"}]
-    # Rolling cache breakpoint on the growing ACT-loop transcript: each turn
-    # marks its own tool-results block as the new "cache everything up to
-    # here" point and clears the previous one, so later turns mostly pay the
-    # cheap cache_read rate for the whole prior transcript instead of full
-    # input price for it every time.
-    last_cache_marker: dict | None = None
+    messages_seed = f"Research question: {question}"
+    transcript = Transcript()
+    transcript.add_user_text(messages_seed)
 
     # Amass's account-wide credit balance only needs to be sampled once
     # before this run's first Amass call — fire it off the critical path now
     # instead of blocking on it right before whichever call needs it first.
+    amass_key = api_keys.get("AMASS_API_KEY") or os.environ.get("AMASS_API_KEY")
     amass_credits_box: list = []
     amass_credits_thread: threading.Thread | None = None
-    if os.environ.get("AMASS_API_KEY"):
+    if amass_key:
         amass_credits_thread = threading.Thread(
-            target=lambda: amass_credits_box.append(amass_tool.get_credits()), daemon=True
+            target=lambda: amass_credits_box.append(amass_tool.get_credits(amass_key)), daemon=True
         )
         amass_credits_thread.start()
 
     _emit(on_event, {"type": "start", "run_id": state.run_id, "question": question})
 
+    try:
+        provider = get_provider(api_keys, tier="main")
+    except NoProviderAvailable as exc:
+        state.partial = True
+        report_text = (
+            "## No LLM Provider Available\n\n"
+            f"{exc}\n\n"
+            "No report could be generated."
+        )
+        _emit(on_event, {"type": "error", "error": str(exc), "error_code": "no_llm_key_configured"})
+        cost_summary = build_cost_summary(state, None, api_keys)
+        result = {
+            "run_id": state.run_id, "question": question, "report": report_text,
+            "partial": True, "cancelled": False, "trace": [], "evidence": {},
+            "cost": cost_summary, "hypotheses": [],
+        }
+        _emit(on_event, {"type": "done", "report": report_text, "partial": True, "cancelled": False,
+                          "run_id": state.run_id, "cost": cost_summary, "evidence": {}, "hypotheses": []})
+        return result
+
     _emit(on_event, {"type": "phase", "phase": "grounding"})
-    grounding = _grounding_payload(question, state, on_event, mode, amass_credits_thread, amass_credits_box)
+    grounding = _grounding_payload(question, state, on_event, mode, amass_credits_thread, amass_credits_box, api_keys)
     grounding_text = _grounding_text(grounding)
     _emit(on_event, {"type": "grounding", **grounding})
 
@@ -471,19 +504,19 @@ def run_agent(
         # --- PLAN ---
         candidate_count = len(grounding.get("hypotheses") or [])
         _emit(on_event, {"type": "phase", "phase": "plan", "detail": {"candidates": candidate_count}})
-        messages.append({"role": "user", "content": _plan_message(grounding_text, candidate_count)})
+        transcript.add_user_text(_plan_message(grounding_text, candidate_count))
         plan_resp = _stream_message(
-            client, on_event, "plan", {"candidates": candidate_count},
-            model=model, max_tokens=1536, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
+            provider, on_event, "plan", {"candidates": candidate_count},
+            transcript=transcript, max_tokens=1536,
         )
-        state.record_anthropic_usage(plan_resp)
-        messages.append({"role": "assistant", "content": _strip_empty_text_blocks(plan_resp.content)})
-        raw_plan_hyps = _parse_hypotheses(_text_of(plan_resp.content))
+        state.record_anthropic_tokens(plan_resp.usage, plan_resp.model)
+        transcript.add_assistant(plan_resp)
+        raw_plan_hyps = _parse_hypotheses(plan_resp.text)
         if grounding.get("hypotheses"):
             raw_plan_hyps = _adopt_candidates(raw_plan_hyps, grounding["hypotheses"])
         state.hypotheses = _normalize_hypotheses(raw_plan_hyps, "plan", {}, set(state.evidence))
         _emit(on_event, {"type": "hypotheses", "stage": "plan", "hypotheses": state.hypotheses})
-        messages.append({"role": "user", "content": _PLAN_TO_ACT_NUDGE})
+        transcript.add_user_text(_PLAN_TO_ACT_NUDGE)
 
         _emit(on_event, {"type": "phase", "phase": "plan_and_gather"})
 
@@ -492,32 +525,26 @@ def run_agent(
                 state.cancelled = True
                 state.partial = True
                 break
-            if state.budget_exceeded():
+            if state.budget_exceeded(reserve_seconds=REPORT_RESERVE_SECONDS):
                 state.partial = True
                 break
 
-            response = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                system=_SYSTEM_PROMPT_BLOCKS,
-                messages=messages,
-                **({"tools": tools} if tools else {}),
-            )
-            state.record_anthropic_usage(response)
-            messages.append({"role": "assistant", "content": _strip_empty_text_blocks(response.content)})
+            response = provider.create(system=SYSTEM_PROMPT, transcript=transcript, tools=tools, max_tokens=4096)
+            state.record_anthropic_tokens(response.usage, response.model)
+            transcript.add_assistant(response)
 
-            text = _text_of(response.content)
+            text = response.text
             if text.strip():
                 _emit(on_event, {"type": "assistant_text", "text": text})
 
             if response.stop_reason != "tool_use":
                 if state.tool_calls_made == 0 and no_tool_nudges < MAX_NO_TOOL_NUDGES:
                     no_tool_nudges += 1
-                    messages.append({"role": "user", "content": _NUDGE_NO_TOOLS})
+                    transcript.add_user_text(_NUDGE_NO_TOOLS)
                     continue
                 break
 
-            tool_use_blocks = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
+            tool_use_blocks = response.tool_calls
 
             # Cancel/budget are evaluated once for the whole batch rather than
             # per block: the calls below run concurrently, so there is no
@@ -526,7 +553,7 @@ def run_agent(
             cancelled_now = bool(should_cancel and should_cancel())
             if cancelled_now:
                 state.cancelled = True
-            budget_exhausted = state.budget_exceeded()
+            budget_exhausted = state.budget_exceeded(reserve_seconds=REPORT_RESERVE_SECONDS)
             remaining_budget = max(0, state.max_tool_calls - state.tool_calls_made)
 
             to_run: list[int] = []
@@ -552,7 +579,7 @@ def run_agent(
                     {"type": "tool_call", "tool": block.name, "args": block.input, "step": base_step + 1 + position},
                 )
                 if block.name == "amass":
-                    _resolve_amass_credits_before(state, amass_credits_thread, amass_credits_box)
+                    _resolve_amass_credits_before(state, amass_credits_thread, amass_credits_box, amass_key)
 
             # Independent tool calls requested in one turn are run side by
             # side instead of one after another — this is the same reasoning
@@ -567,17 +594,18 @@ def run_agent(
                 with ThreadPoolExecutor(max_workers=len(to_run)) as pool:
                     futures = {
                         pool.submit(
-                            run_tool, tool_use_blocks[i].name, tool_use_blocks[i].input, enabled_names=state.enabled_tools
+                            run_tool, tool_use_blocks[i].name, tool_use_blocks[i].input,
+                            enabled_names=state.enabled_tools, api_keys=api_keys,
                         ): i
                         for i in to_run
                     }
                     for future, i in futures.items():
                         run_results[i] = future.result()
 
-            tool_results = []
+            tool_results: list[ToolResult] = []
             for i, block in enumerate(tool_use_blocks):
                 if i in skip_reason:
-                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": skip_reason[i]})
+                    tool_results.append(ToolResult(tool_call_id=block.id, content=skip_reason[i]))
                     continue
 
                 result = run_results[i]
@@ -611,27 +639,20 @@ def run_agent(
                 if "genes" in result:
                     content_text += f"\n\nExtracted genes (use these for run_enrichment): {result['genes']}"
 
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content_text})
+                tool_results.append(ToolResult(tool_call_id=block.id, content=content_text))
 
-            if tool_results:
-                if last_cache_marker is not None:
-                    last_cache_marker.pop("cache_control", None)
-                tool_results[-1]["cache_control"] = {"type": "ephemeral"}
-                last_cache_marker = tool_results[-1]
-
-            messages.append({"role": "user", "content": tool_results})
+            transcript.add_tool_results(tool_results)
 
         # --- REVISE ---
         revise_detail = {"hypotheses": len(state.hypotheses), "evidence": len(state.evidence), "tool_calls": state.tool_calls_made}
         _emit(on_event, {"type": "phase", "phase": "revise", "detail": revise_detail})
-        messages.append({"role": "user", "content": REVISE_PROMPT})
+        transcript.add_user_text(REVISE_PROMPT)
         revise_resp = _stream_message(
-            client, on_event, "revise", revise_detail,
-            model=model, max_tokens=2048, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
+            provider, on_event, "revise", revise_detail, transcript=transcript, max_tokens=2048,
         )
-        state.record_anthropic_usage(revise_resp)
-        messages.append({"role": "assistant", "content": _strip_empty_text_blocks(revise_resp.content)})
-        revise_text, raw_revise_hyps = _extract_hypotheses(_text_of(revise_resp.content))
+        state.record_anthropic_tokens(revise_resp.usage, revise_resp.model)
+        transcript.add_assistant(revise_resp)
+        revise_text, raw_revise_hyps = _extract_hypotheses(revise_resp.text)
         if revise_text.strip():
             _emit(on_event, {"type": "assistant_text", "text": revise_text})
         normalized_revise = _normalize_hypotheses(
@@ -649,13 +670,12 @@ def run_agent(
             report_instructions = CANCELLED_RUN_NOTICE + "\n\n" + report_instructions
         elif state.partial:
             report_instructions = PARTIAL_RUN_NOTICE + "\n\n" + report_instructions
-        messages.append({"role": "user", "content": report_instructions})
+        transcript.add_user_text(report_instructions)
         report_resp = _stream_message(
-            client, on_event, "report", report_detail,
-            model=model, max_tokens=8192, system=_SYSTEM_PROMPT_BLOCKS, messages=messages,
+            provider, on_event, "report", report_detail, transcript=transcript, max_tokens=8192,
         )
-        state.record_anthropic_usage(report_resp)
-        report_text, raw_final_hyps = _extract_hypotheses(_text_of(report_resp.content))
+        state.record_anthropic_tokens(report_resp.usage, report_resp.model)
+        report_text, raw_final_hyps = _extract_hypotheses(report_resp.text)
         normalized_final = _normalize_hypotheses(
             raw_final_hyps, "final", {h["id"]: h for h in state.hypotheses}, set(state.evidence)
         )
@@ -663,6 +683,18 @@ def run_agent(
             state.hypotheses = normalized_final
         _emit(on_event, {"type": "hypotheses", "stage": "final", "hypotheses": state.hypotheses})
 
+    except _KEY_INVALID_ERRORS as exc:
+        state.partial = True
+        report_text = (
+            "## LLM Key Invalid\n\n"
+            f"The configured API key was rejected by the provider (`{exc}`). "
+            "If you supplied your own key in Settings, double-check it; otherwise "
+            "the platform's shared free-tier key may be exhausted or misconfigured — "
+            "try again later, or add your own key.\n\n"
+            f"Evidence gathered before the failure ({len(state.evidence)} items) is listed below "
+            "for debugging; no hypothesis ranking was completed.\n\n" + state.citation_index()
+        )
+        _emit(on_event, {"type": "error", "error": str(exc), "error_code": "llm_key_invalid"})
     except Exception as exc:
         state.partial = True
         report_text = (
@@ -673,8 +705,8 @@ def run_agent(
         _emit(on_event, {"type": "error", "error": str(exc)})
 
     if state.amass_credits_before is not None:
-        state.amass_credits_after = amass_tool.get_credits()
-    cost_summary = build_cost_summary(state, model)
+        state.amass_credits_after = amass_tool.get_credits(amass_key)
+    cost_summary = build_cost_summary(state, provider, api_keys)
     evidence_dict = {k: vars(v) for k, v in state.evidence.items()}
 
     result = {

@@ -2,7 +2,7 @@
 // configuration — set VITE_API_BASE_URL as a project env var to override
 // this (e.g. after moving the backend to a new host), no code change needed
 // either way since the env var always takes precedence when set.
-import type { AdminKeyInfo, AdminUsageHistory, AdminUsageSnapshot, EvaluationResult } from "@/types"
+import type { AdminKeyInfo, AdminUsageHistory, AdminUsageSnapshot, EvaluationResult, ToolInfo } from "@/types"
 
 const PROD_API_BASE_FALLBACK = "https://api-185-175-110-142.sslip.io"
 
@@ -15,6 +15,9 @@ export interface ConfigResponse {
   demo_question: string
   max_tool_calls_default: number
   max_tool_calls_ceiling: number
+  anthropic_key_configured: boolean
+  groq_key_configured: boolean
+  default_provider: string
 }
 
 export async function fetchConfig(): Promise<ConfigResponse> {
@@ -22,7 +25,7 @@ export async function fetchConfig(): Promise<ConfigResponse> {
   return res.json()
 }
 
-export async function fetchTools() {
+export async function fetchTools(): Promise<ToolInfo[]> {
   const res = await fetch(`${API_BASE}/api/tools`)
   return res.json()
 }
@@ -36,32 +39,23 @@ export async function setToolEnabled(name: string, enabled: boolean) {
   return res.json()
 }
 
-export async function startRun(
-  question: string,
-  maxToolCalls?: number,
-  mode: "fast" | "normal" = "normal"
-): Promise<{ run_id: string; max_tool_calls: number }> {
-  const res = await fetch(`${API_BASE}/api/run`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, max_tool_calls: maxToolCalls, mode }),
-  })
-  return res.json()
-}
+// startRun/cancelRun/runStreamUrl are gone: POST /api/run now runs the whole
+// agent loop and streams its trace back within that one request/response
+// (see backend/server/app.py) — starting and streaming a run is one call,
+// implemented in @/lib/runStream since it needs to read a streaming fetch
+// response body rather than issue a plain JSON fetch. Cancelling means
+// aborting that same request (@/lib/runStream's cancelCurrentStream).
 
-export async function cancelRun(runId: string): Promise<void> {
-  await fetch(`${API_BASE}/api/run/${runId}/cancel`, { method: "POST" })
-}
-
-export function runStreamUrl(runId: string): string {
-  return `${API_BASE}/api/run/${runId}/stream`
-}
-
-export async function evaluateHypothesis(runId: string, comment: string): Promise<EvaluationResult> {
+export async function evaluateHypothesis(
+  runId: string,
+  runResult: { report: string; hypotheses: unknown[]; evidence: Record<string, unknown> },
+  comment: string,
+  apiKeys: Record<string, string> = {}
+): Promise<EvaluationResult> {
   const res = await fetch(`${API_BASE}/api/run/${runId}/evaluate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify({ comment, run_result: runResult, api_keys: apiKeys }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))

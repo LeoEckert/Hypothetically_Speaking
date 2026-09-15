@@ -47,7 +47,7 @@ def _fallback_summary(genes: list[str], reason: str) -> str:
 
 def run(args: dict) -> dict:
     text = args["text"]
-    api_key = os.environ.get("NEBIUS_API_KEY")
+    api_key = args.get("_user_api_key") or os.environ.get("NEBIUS_API_KEY")
     base_url = os.environ.get("NEBIUS_BASE_URL")
     model = os.environ.get("NEBIUS_MODEL", "meta-llama/Meta-Llama-3.1-70B-Instruct")
 
