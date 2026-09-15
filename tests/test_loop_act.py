@@ -78,7 +78,19 @@ def _install_fake_provider(monkeypatch, create_responses, stream_responses):
 
 @pytest.fixture(autouse=True)
 def _no_grounding(monkeypatch):
-    monkeypatch.delenv("AMASS_API_KEY", raising=False)
+    # Grounding no longer skips just because AMASS_API_KEY is unset (see
+    # backend/agent/loop.py::_grounding_payload) — it falls back to keyless
+    # PubMed/ClinicalTrials.gov sources instead, which would make these
+    # ACT-loop-only tests hit the real network. They only care about
+    # tool-call concurrency/budget, so grounding is stubbed out directly.
+    monkeypatch.setattr(
+        loop,
+        "_grounding_payload",
+        lambda *args, **kwargs: {
+            "status": "skipped", "why": "grounding disabled for this test", "coherent": None,
+            "triples": [], "destination": "", "premises": [], "knowledge_graph": "", "hypotheses": [], "rejected": [],
+        },
+    )
     monkeypatch.setenv("ENABLED_TOOLS", "pubmed,tavily")
 
 

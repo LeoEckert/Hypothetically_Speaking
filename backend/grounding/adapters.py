@@ -1,8 +1,12 @@
 """Infrastructure: the only layer that knows about HTTP, API keys and JSON shapes.
 
-Live adapters call Tavily, Amass and Claude. `RecordedRun` replays a captured
-`RunTrace` instead — one class satisfies all five ports at once, because
-`Protocol` is structural.
+Live adapters call Tavily, Amass and Claude. `PubMedPaperRepository`/
+`ClinicalTrialsRepository` are the keyless equivalents of the two Amass
+repositories, used instead whenever no AMASS_API_KEY is configured (Amass has
+no free tier — see scripts/run_grounding.py::ground() for the branch). Amass
+stays the default when a key exists: curated, single-call, higher-quality
+filtering. `RecordedRun` replays a captured `RunTrace` instead — one class
+satisfies all five ports at once, because `Protocol` is structural.
 
 Every HTTP call raises on a non-2xx. A 401 or 429 must fail the run loudly; an
 empty list would read downstream as "no evidence exists", which is a lie.
@@ -14,6 +18,7 @@ import json
 import os
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import httpx
@@ -65,6 +70,18 @@ FIXTURE_PATH = Path("fixtures/recorded_run.json")
 
 TAVILY_MAX_RESULTS = 10
 AMASS_LIMIT = 12  # per query; the API allows up to 300
+
+# Keyless fallback sources, used instead of Amass when no AMASS_API_KEY (BYOK
+# or platform) is configured — Amass has no free tier, so requiring it would
+# block every user who only has a free LLM key. Same NCBI/ClinicalTrials.gov
+# endpoints backend/tools/pubmed_tool.py and clinicaltrials_tool.py already
+# call, but grounding also needs real abstract text (for ClaudeVerifier's
+# verdict), which those tools don't fetch.
+PUBMED_ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_ESUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+PUBMED_EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+CLINICALTRIALS_URL = "https://clinicaltrials.gov/api/v2/studies"
+KEYLESS_LIMIT = 12  # mirrors AMASS_LIMIT
 # A citation floor only passes old work: the 2026 Nature Metabolism review on
 # mitochondrial quality control has citationCount 0, and a floor of 5 deletes it.
 MIN_CITATIONS = 0
@@ -673,6 +690,141 @@ class AmassPaperRepository:
     def count_direct(self, a: str, c: str) -> int:
         """How many papers cover both concepts at once — the novelty measurement."""
         return len(self.find(LiteratureQuery(text=f'"{a}" "{c}"')))
+
+
+def _pubmed_efetch_abstracts(pmids: list[str]) -> dict[str, dict]:
+    """GET efetch for a batch of PMIDs at once, returning {pmid: {"abstract",
+    "doi"}} — XML, not the plain-text rendering, because the text format
+    interleaves multiple records with no reliable per-record delimiter to
+    split back apart; the XML tree pairs each PMID with its own abstract."""
+    if not pmids:
+        return {}
+    response = httpx.get(
+        PUBMED_EFETCH_URL,
+        params={"db": "pubmed", "id": ",".join(pmids), "rettype": "abstract", "retmode": "xml"},
+        timeout=HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    root = ET.fromstring(response.text)
+    found: dict[str, dict] = {}
+    for article in root.findall(".//PubmedArticle"):
+        pmid_el = article.find(".//MedlineCitation/PMID")
+        if pmid_el is None or not pmid_el.text:
+            continue
+        abstract = "\n".join(
+            "".join(node.itertext()) for node in article.findall(".//Abstract/AbstractText")
+        )
+        doi = next(
+            (aid.text for aid in article.findall(".//ArticleIdList/ArticleId") if aid.get("IdType") == "doi"),
+            None,
+        )
+        found[pmid_el.text] = {"abstract": abstract or None, "doi": doi}
+    return found
+
+
+class PubMedPaperRepository:
+    """Keyless fallback for AmassPaperRepository: NCBI E-utilities. Same
+    PaperRepository port, same "raise on failure, never fabricate" rule as
+    the Amass adapters — a rate-limited or unreachable NCBI must fail the
+    run loudly, not silently substitute an empty list."""
+
+    def __init__(self, limit: int = KEYLESS_LIMIT) -> None:
+        self.limit = limit
+
+    def find(self, query: LiteratureQuery) -> list[Paper]:
+        search = httpx.get(
+            PUBMED_ESEARCH_URL,
+            params={"db": "pubmed", "term": query.text, "retmode": "json", "retmax": self.limit},
+            timeout=HTTP_TIMEOUT,
+        )
+        search.raise_for_status()
+        pmids = search.json().get("esearchresult", {}).get("idlist", [])
+        if not pmids:
+            return []
+        summary = httpx.get(
+            PUBMED_ESUMMARY_URL,
+            params={"db": "pubmed", "id": ",".join(pmids), "retmode": "json"},
+            timeout=HTTP_TIMEOUT,
+        )
+        summary.raise_for_status()
+        docs = summary.json().get("result", {})
+        extra = _pubmed_efetch_abstracts(pmids)
+        return [
+            Paper(
+                # PMID:-prefixed, matching this app's existing citation-id
+                # convention (Evidence.label() already prefers this format)
+                # rather than inventing an Amass-shaped id for a non-Amass record.
+                amass_id=f"PMID:{pmid}",
+                title=docs.get(pmid, {}).get("title", "").strip(),
+                abstract=extra.get(pmid, {}).get("abstract"),
+                doi=extra.get(pmid, {}).get("doi"),
+                pmid=pmid,
+            )
+            for pmid in pmids
+        ]
+
+    def count_direct(self, a: str, c: str) -> int:
+        """Same measurement as AmassPaperRepository, cheaper: E-utilities
+        reports the match count directly, no need to fetch any records."""
+        search = httpx.get(
+            PUBMED_ESEARCH_URL,
+            params={"db": "pubmed", "term": f'"{a}" AND "{c}"', "retmode": "json", "retmax": 0},
+            timeout=HTTP_TIMEOUT,
+        )
+        search.raise_for_status()
+        return int(search.json().get("esearchresult", {}).get("count", 0))
+
+
+class ClinicalTrialsRepository:
+    """Keyless fallback for AmassTrialRepository: ClinicalTrials.gov API v2."""
+
+    def __init__(self, limit: int = KEYLESS_LIMIT) -> None:
+        self.limit = limit
+
+    def find(self, query: LiteratureQuery) -> list[Paper]:
+        response = httpx.get(
+            CLINICALTRIALS_URL,
+            params={"query.term": query.text, "pageSize": self.limit, "format": "json"},
+            timeout=HTTP_TIMEOUT,
+        )
+        response.raise_for_status()
+        return [self._to_paper(study) for study in response.json().get("studies", [])]
+
+    @staticmethod
+    def _to_paper(study: dict) -> Paper:
+        proto = study.get("protocolSection", {})
+        ident = proto.get("identificationModule", {})
+        status = proto.get("statusModule", {})
+        design = proto.get("designModule", {})
+        interventions = ", ".join(
+            i.get("name", "") for i in proto.get("armsInterventionsModule", {}).get("interventions", []) if i.get("name")
+        )
+        primary_outcomes = ", ".join(
+            o.get("measure", "") for o in proto.get("outcomesModule", {}).get("primaryOutcomes", []) if o.get("measure")
+        )
+        nct_id = ident.get("nctId", "")
+        return Paper(
+            amass_id=f"NCT:{nct_id}",
+            title=ident.get("briefTitle", ""),
+            abstract=(
+                f"{proto.get('descriptionModule', {}).get('briefSummary', '')}\n"
+                f"type: {design.get('studyType')}; phase: {', '.join(design.get('phases', []) or [])}; "
+                f"status: {status.get('overallStatus')}\n"
+                f"interventions: {interventions}\n"
+                f"primary outcomes: {primary_outcomes}"
+            ),
+            nct_id=nct_id,
+            url=f"https://clinicaltrials.gov/study/{nct_id}" if nct_id else None,
+        )
+
+    def count_direct(self, a: str, c: str) -> int:
+        response = httpx.get(
+            CLINICALTRIALS_URL,
+            params={"query.term": f'"{a}" AND "{c}"', "pageSize": 1, "countTotal": "true", "format": "json"},
+            timeout=HTTP_TIMEOUT,
+        )
+        response.raise_for_status()
+        return int(response.json().get("totalCount", 0))
 
 
 class ClaudeRelevanceRanker(_CachingAdapter):

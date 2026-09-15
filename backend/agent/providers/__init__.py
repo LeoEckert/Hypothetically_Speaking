@@ -17,18 +17,19 @@ import os
 
 from backend.agent.providers.anthropic_provider import AnthropicProvider
 from backend.agent.providers.base import LLMProvider, LLMResponse, ToolCall, ToolResult, Transcript
+from backend.agent.providers.openrouter_models import best_free_tool_model
 from backend.agent.providers.openrouter_provider import OpenRouterProvider
 
 __all__ = ["LLMProvider", "LLMResponse", "ToolCall", "ToolResult", "Transcript", "get_provider", "NoProviderAvailable"]
 
 _ANTHROPIC_MAIN_MODEL = "claude-sonnet-5"
 _ANTHROPIC_FAST_MODEL = "claude-haiku-4-5-20251001"
-# OpenRouter's auto-router picks a free model that supports what the request
-# needs (including tool calling) from its rotating free-tier lineup — re-verify
-# this actually works reliably for tool-calling at implementation/test time; if
-# not, pin an explicit named free model here instead (see CLAUDE.md).
-_OPENROUTER_MAIN_MODEL_DEFAULT = "openrouter/auto"
-_OPENROUTER_FAST_MODEL_DEFAULT = "openrouter/auto"
+# No default OpenRouter model is hardcoded here — best_free_tool_model() asks
+# OpenRouter's own catalog, live, for whichever :free model currently supports
+# tool calling and ranks best on it (see openrouter_models.py). OpenRouter's
+# free-model roster changes on its own schedule; pinning a slug here would
+# silently go stale. OPENROUTER_MODEL/OPENROUTER_FAST_MODEL below still let an
+# operator pin a specific model if they want to.
 
 
 class NoProviderAvailable(RuntimeError):
@@ -68,9 +69,9 @@ def get_provider(api_keys: dict[str, str] | None = None, tier: str = "main") -> 
             "openrouter.ai/keys) or your own Anthropic key in Settings to run this."
         )
     model = (
-        os.environ.get("OPENROUTER_MODEL", _OPENROUTER_MAIN_MODEL_DEFAULT)
+        os.environ.get("OPENROUTER_MODEL") or best_free_tool_model()
         if tier == "main"
-        else os.environ.get("OPENROUTER_FAST_MODEL", _OPENROUTER_FAST_MODEL_DEFAULT)
+        else os.environ.get("OPENROUTER_FAST_MODEL") or best_free_tool_model()
     )
     provider = OpenRouterProvider(api_key=openrouter_key, model=model)
     provider.key_source = "user" if user_openrouter_key else "platform"

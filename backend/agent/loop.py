@@ -133,14 +133,14 @@ def _grounding_payload(
     without counting against the agent's tool budget."""
     api_keys = api_keys or {}
     amass_key = api_keys.get("AMASS_API_KEY") or os.environ.get("AMASS_API_KEY")
-    missing = []
-    if not _has_llm_key(api_keys):
-        missing.append("an LLM provider key (Anthropic or OpenRouter, from Settings)")
-    if not amass_key:
-        missing.append("AMASS_API_KEY")
     empty = {"coherent": None, "triples": [], "destination": "", "premises": [], "knowledge_graph": "", "hypotheses": [], "rejected": []}
-    if missing:
-        return {"status": "skipped", "why": f"Missing {', '.join(missing)}", **empty}
+    # AMASS_API_KEY is deliberately not required: without one, ground() falls
+    # back to keyless PubMed/ClinicalTrials.gov sources instead of skipping
+    # (Amass has no free tier, so requiring it would block every BYOK user
+    # who only has a free LLM key). An LLM key is still mandatory — grounding
+    # is nothing but LLM-backed judgment calls over retrieved literature.
+    if not _has_llm_key(api_keys):
+        return {"status": "skipped", "why": "Missing an LLM provider key (Anthropic or OpenRouter, from Settings)", **empty}
     try:
         from backend.grounding.adapters import Ledger
         from scripts.run_grounding import ground

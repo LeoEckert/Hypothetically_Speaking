@@ -123,13 +123,36 @@ def test_plan_message_puts_grounding_before_schema():
     assert "```json" in text
 
 
-def test_grounding_text_skips_without_keys(monkeypatch):
-    for name in ("ANTHROPIC_API_KEY", "AMASS_API_KEY"):
+def test_grounding_text_skips_without_llm_key(monkeypatch):
+    # AMASS_API_KEY is deliberately not required (see the next test) — only
+    # the LLM key gates grounding now, since Amass has no free tier and
+    # ground() falls back to keyless PubMed/ClinicalTrials.gov without one.
+    for name in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     payload = _grounding_payload("does SIRT1 matter?")
     assert payload["status"] == "skipped"
     assert payload["triples"] == []
     assert _grounding_text(payload).startswith("(grounding skipped:")
+    assert "AMASS" not in payload["why"]
+
+
+def test_grounding_does_not_skip_without_amass_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("AMASS_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    reached = {}
+
+    def fake_ground(question, **kwargs):
+        reached["called"] = True
+        raise RuntimeError("stub — no real network call in this test")
+
+    monkeypatch.setattr("scripts.run_grounding.ground", fake_ground)
+    payload = _grounding_payload("does SIRT1 matter?")
+    # Reaching ground() (and getting "failed" from the stub's raise) rather
+    # than short-circuiting to "skipped" is exactly what a missing Amass key
+    # must no longer prevent.
+    assert reached.get("called") is True
+    assert payload["status"] == "failed"
 
 
 def test_grounding_payload_preserves_the_l0_trace(monkeypatch):

@@ -28,7 +28,8 @@ const KEY_HINTS: Record<ApiKeyName, string> = {
   OPENROUTER_API_KEY:
     "Free, no credit card (openrouter.ai/keys) — 50 requests/day per account, 1,000/day after ever buying $10 of credits once. One of Anthropic or OpenRouter is required — there's no shared key.",
   TAVILY_API_KEY: "Optional — enables live web/paper/trial search instead of a mock result.",
-  AMASS_API_KEY: "Optional — enables live Amass Core lookups instead of a mock result.",
+  AMASS_API_KEY:
+    "Optional — enables live Amass Core lookups in the tool loop instead of a mock result, and upgrades literature grounding from PubMed/ClinicalTrials.gov to Amass's curated corpus. Grounding works fine without this — it just uses the free sources instead.",
   NEBIUS_API_KEY: "Optional — improves gene/protein extraction quality over the built-in regex heuristic.",
 }
 

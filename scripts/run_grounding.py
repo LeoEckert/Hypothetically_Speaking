@@ -42,6 +42,8 @@ from backend.grounding.adapters import (
     ClaudeRelevanceRanker,
     ClaudeTriplifier,
     ClaudeVerifier,
+    ClinicalTrialsRepository,
+    PubMedPaperRepository,
     RecordedRun,
     TavilyWebSearch,
 )
@@ -162,14 +164,27 @@ def ground(
     main_provider = get_provider(api_keys, tier="main")
     fast_provider = get_provider(api_keys, tier="fast")
     amass_key = (api_keys or {}).get("AMASS_API_KEY") or os.environ.get("AMASS_API_KEY")
+    # Amass (curated, single-call) when a key exists — BYOK or platform;
+    # otherwise the keyless PubMed/ClinicalTrials.gov equivalents, since Amass
+    # has no free tier and grounding must not require one. Same PaperRepository
+    # port either way (backend/grounding/domain.py) — this is the seam
+    # stages.py's own docstring describes.
+    sources = (
+        [
+            AmassPaperRepository(knowledge_base, ledger, amass_key),
+            AmassTrialRepository(knowledge_base, ledger, TRIAL_LIMIT_FAST if fast else AMASS_LIMIT, amass_key),
+        ]
+        if amass_key
+        else [
+            PubMedPaperRepository(TRIAL_LIMIT_FAST if fast else AMASS_LIMIT),
+            ClinicalTrialsRepository(TRIAL_LIMIT_FAST if fast else AMASS_LIMIT),
+        ]
+    )
     return premises.extract(
         question,
         triplifier=ClaudeTriplifier(knowledge_base, ledger, main_provider),
         prober=ClaudeProber(knowledge_base, ledger, fast_provider),
-        sources=[
-            AmassPaperRepository(knowledge_base, ledger, amass_key),
-            AmassTrialRepository(knowledge_base, ledger, TRIAL_LIMIT_FAST if fast else AMASS_LIMIT, amass_key),
-        ],
+        sources=sources,
         verifier=ClaudeVerifier(knowledge_base, ledger, main_provider, ABSTRACT_CHARS_FAST if fast else ABSTRACT_CHARS),
         # The seam: swap in any object with generate(grounding) -> list[Hypothesis].
         generator=ClaudeHypothesisGenerator(knowledge_base, ledger, main_provider),

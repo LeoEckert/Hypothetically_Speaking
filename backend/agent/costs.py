@@ -115,7 +115,11 @@ def build_cost_summary(state: RunState, provider, api_keys: dict | None = None) 
 
     llm_usd, llm_priced, llm_free_tier = 0.0, True, False
     llm_models = []
-    if provider_name == "openrouter":
+    # Free-tier status is keyed off the actual model slug, not just the
+    # provider name — get_provider() always picks a live ":free" OpenRouter
+    # model by default, but an operator can pin OPENROUTER_MODEL to a paid
+    # one, and that run must not show a false $0.
+    if provider_name == "openrouter" and model.endswith(":free"):
         # A genuinely free tier, not an unknown rate — $0 with rate_configured
         # True, distinct from "we don't know the price" (rate_configured False).
         llm_usd, llm_priced, llm_free_tier = 0.0, True, True

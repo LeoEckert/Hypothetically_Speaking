@@ -9,11 +9,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.grounding import stages  # noqa: E402
-from backend.grounding.adapters import RecordedRun, _parse_fence  # noqa: E402
+from backend.grounding import adapters, stages  # noqa: E402
+from backend.grounding.adapters import (  # noqa: E402
+    ClinicalTrialsRepository,
+    PubMedPaperRepository,
+    RecordedRun,
+    _parse_fence,
+)
 from backend.grounding.domain import (  # noqa: E402
     BiologicalEntity,
     Decomposition,
+    LiteratureQuery,
     NoveltyVerdict,
     Paper,
     RankedPaper,
@@ -857,3 +863,119 @@ def test_a_failed_hypothesis_generator_still_hands_plan_the_premises():
     assert grounding.hypotheses == [] and grounding.rejected == []
     assert "Weakest links:" in grounding.knowledge_graph
     assert any(s.stage == "hypothesize" and s.verdict == "error" for s in knowledge_base.steps_for(question_id("sirt1?")))
+
+
+# --- keyless grounding fallback (PubMed / ClinicalTrials.gov, used when no
+# AMASS_API_KEY is configured — Amass has no free tier) -----------------
+
+
+class _FakeResponse:
+    def __init__(self, json_data=None, text=""):
+        self._json = json_data
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._json
+
+
+_EFETCH_XML = """<?xml version="1.0"?>
+<PubmedArticleSet>
+  <PubmedArticle>
+    <MedlineCitation>
+      <PMID>111</PMID>
+      <Article><Abstract><AbstractText>Abstract of paper one.</AbstractText></Abstract></Article>
+    </MedlineCitation>
+    <PubmedData>
+      <ArticleIdList>
+        <ArticleId IdType="pubmed">111</ArticleId>
+        <ArticleId IdType="doi">10.1/one</ArticleId>
+      </ArticleIdList>
+    </PubmedData>
+  </PubmedArticle>
+  <PubmedArticle>
+    <MedlineCitation>
+      <PMID>222</PMID>
+      <Article><Abstract><AbstractText>Abstract of paper two.</AbstractText></Abstract></Article>
+    </MedlineCitation>
+  </PubmedArticle>
+</PubmedArticleSet>"""
+
+
+def test_pubmed_paper_repository_finds_papers_with_abstracts(monkeypatch):
+    esearch_payload = {"esearchresult": {"idlist": ["111", "222"]}}
+    esummary_payload = {"result": {"111": {"title": "Paper One"}, "222": {"title": "Paper Two"}}}
+
+    def fake_get(url, params=None, timeout=None):
+        if url == adapters.PUBMED_ESEARCH_URL:
+            return _FakeResponse(json_data=esearch_payload)
+        if url == adapters.PUBMED_ESUMMARY_URL:
+            return _FakeResponse(json_data=esummary_payload)
+        if url == adapters.PUBMED_EFETCH_URL:
+            return _FakeResponse(text=_EFETCH_XML)
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr(adapters.httpx, "get", fake_get)
+    papers = PubMedPaperRepository().find(LiteratureQuery(text="SIRT1 aging"))
+    assert [p.amass_id for p in papers] == ["PMID:111", "PMID:222"]
+    assert papers[0].title == "Paper One"
+    assert papers[0].abstract == "Abstract of paper one."
+    assert papers[0].doi == "10.1/one"
+    assert papers[0].pmid == "111"
+    assert papers[1].abstract == "Abstract of paper two."
+
+
+def test_pubmed_paper_repository_no_hits_returns_empty(monkeypatch):
+    monkeypatch.setattr(
+        adapters.httpx, "get", lambda url, params=None, timeout=None: _FakeResponse(json_data={"esearchresult": {"idlist": []}})
+    )
+    assert PubMedPaperRepository().find(LiteratureQuery(text="nonsense query")) == []
+
+
+def test_pubmed_paper_repository_count_direct_reads_esearch_count(monkeypatch):
+    def fake_get(url, params=None, timeout=None):
+        assert url == adapters.PUBMED_ESEARCH_URL
+        assert params["retmax"] == 0
+        return _FakeResponse(json_data={"esearchresult": {"count": "7"}})
+
+    monkeypatch.setattr(adapters.httpx, "get", fake_get)
+    assert PubMedPaperRepository().count_direct("SIRT1", "healthspan") == 7
+
+
+_CT_STUDY = {
+    "protocolSection": {
+        "identificationModule": {"nctId": "NCT123", "briefTitle": "A Trial"},
+        "statusModule": {"overallStatus": "RECRUITING"},
+        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE2"]},
+        "descriptionModule": {"briefSummary": "Summary text."},
+        "armsInterventionsModule": {"interventions": [{"name": "Drug X"}]},
+        "outcomesModule": {"primaryOutcomes": [{"measure": "Change in Y"}]},
+    }
+}
+
+
+def test_clinicaltrials_repository_maps_study_fields(monkeypatch):
+    monkeypatch.setattr(
+        adapters.httpx, "get", lambda url, params=None, timeout=None: _FakeResponse(json_data={"studies": [_CT_STUDY]})
+    )
+    papers = ClinicalTrialsRepository().find(LiteratureQuery(text="SIRT1"))
+    assert len(papers) == 1
+    paper = papers[0]
+    assert paper.amass_id == "NCT:NCT123"
+    assert paper.nct_id == "NCT123"
+    assert paper.title == "A Trial"
+    assert "Summary text." in paper.abstract
+    assert "Drug X" in paper.abstract
+    assert "Change in Y" in paper.abstract
+    assert paper.url == "https://clinicaltrials.gov/study/NCT123"
+
+
+def test_clinicaltrials_repository_count_direct_reads_total_count(monkeypatch):
+    def fake_get(url, params=None, timeout=None):
+        assert params["countTotal"] == "true"
+        return _FakeResponse(json_data={"totalCount": 42, "studies": []})
+
+    monkeypatch.setattr(adapters.httpx, "get", fake_get)
+    assert ClinicalTrialsRepository().count_direct("A", "C") == 42
