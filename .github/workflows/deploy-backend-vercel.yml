@@ -42,14 +42,39 @@ jobs:
           dependencies = []
 
           [tool.vercel]
-          entrypoint = "backend.server.app:app"
+          entrypoint = "_diag:app"
+          EOF
+          # Temporary diagnostic entrypoint (see CLAUDE.md's Open TODOs):
+          # the real app has crashed at import time on every deploy so far
+          # with FUNCTION_INVOCATION_FAILED and no retrievable traceback
+          # (`vercel logs` consistently reports none, even moments after a
+          # confirmed invocation) — this wraps the real import in a
+          # try/except and serves the traceback as the HTTP response
+          # instead, so the actual exception is visible via a plain curl.
+          # Point [tool.vercel].entrypoint back at "backend.server.app:app"
+          # directly once the underlying crash is fixed.
+          cat > /tmp/backend-deploy/_diag.py <<'EOF'
+          import traceback
+
+          try:
+              from backend.server.app import app  # noqa: F401
+          except Exception:
+              _tb = traceback.format_exc()
+              from fastapi import FastAPI
+              from fastapi.responses import PlainTextResponse
+
+              app = FastAPI()
+
+              @app.get("/{path:path}")
+              def _err(path: str):
+                  return PlainTextResponse(_tb, status_code=500)
           EOF
           cat > /tmp/backend-deploy/vercel.json <<'EOF'
           {
             "$schema": "https://openapi.vercel.sh/vercel.json",
             "name": "hypothetically-speaking-backend",
             "functions": {
-              "backend/server/app.py": { "maxDuration": 300 }
+              "_diag.py": { "maxDuration": 300 }
             }
           }
           EOF
@@ -81,18 +106,12 @@ jobs:
           echo "--- linked project ---"
           cat .vercel/project.json || true
 
-      # Temporary while bringing this up (see CLAUDE.md's Open TODOs) — the
-      # per-deployment url output redirects to a Vercel Authentication gate,
-      # so this hits the stable production alias instead, and captures
-      # runtime logs (not build logs — `vercel inspect --logs` only shows
-      # those) via `vercel logs`.
-      - name: Smoke test + runtime logs
+      # Temporary while bringing this up (see CLAUDE.md's Open TODOs) — hits
+      # the stable production alias (the per-deployment url output redirects
+      # to a Vercel Authentication gate) and prints _diag.py's response,
+      # which is the real Python traceback if the actual app failed to import.
+      - name: Smoke test
         if: always()
-        working-directory: /tmp/backend-deploy
         run: |
-          (timeout 25 vercel logs "https://hypothetically-speaking-backend.vercel.app" --token=${{ secrets.VERCEL_TOKEN }} > vercel-logs.txt 2>&1 &)
-          sleep 5
+          sleep 3
           curl -s -w "\nHTTP:%{http_code}\n" "https://hypothetically-speaking-backend.vercel.app/api/config" || true
-          sleep 15
-          echo "---runtime logs---"
-          cat vercel-logs.txt || true
