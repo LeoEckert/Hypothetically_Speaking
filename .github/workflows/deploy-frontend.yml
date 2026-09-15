@@ -45,9 +45,17 @@ name: Deploy to Vercel
 # depth catch-all files, checking for a dashboard-level routing override
 # from earlier manual experiments, or asking Vercel support) before any
 # multi-segment /api/* route can be trusted in production.
+# Two branches, two URLs, one Vercel project (no reason for a second project
+# — see docs/DEPLOY.md's "get rid of this two vercel project bullshit"
+# history): `main` deploys as the real Production deployment (the stable
+# hypothetically-speaking.vercel.app alias); `dev` deploys as a Preview
+# deployment that then gets a *stable* alias of its own
+# (hypothetically-speaking-dev.vercel.app) via `vercel alias set` — a plain
+# preview deploy's own auto-generated URL is a fresh, unpredictable hash
+# every time, which isn't useful as "the dev URL" to bookmark/share.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch: {}
 
 jobs:
@@ -77,7 +85,18 @@ jobs:
         run: npm install --global vercel@latest
 
       - name: Deploy to Vercel (production)
+        if: github.ref == 'refs/heads/main'
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
+
+      - name: Deploy to Vercel (dev preview) and alias it
+        if: github.ref == 'refs/heads/dev'
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          DEPLOY_URL=$(vercel deploy --token="${{ secrets.VERCEL_TOKEN }}" --yes)
+          echo "Preview deployment: $DEPLOY_URL"
+          vercel alias set "$DEPLOY_URL" hypothetically-speaking-dev.vercel.app --token="${{ secrets.VERCEL_TOKEN }}"
