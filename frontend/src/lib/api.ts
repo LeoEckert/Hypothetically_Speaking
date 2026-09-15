@@ -1,10 +1,11 @@
-// Production fallback so a fresh deploy works without any Vercel dashboard
-// configuration — set VITE_API_BASE_URL as a project env var to override
-// this (e.g. after moving the backend to a new host), no code change needed
-// either way since the env var always takes precedence when set.
+// The backend is now a Python serverless function inside this same Vercel
+// project (frontend/api/index.py) rather than a separate host — production
+// calls are same-origin, so no base URL at all is the right default.
+// VITE_API_BASE_URL still overrides this if the backend is ever split back
+// out to its own host.
 import type { AdminKeyInfo, AdminUsageHistory, AdminUsageSnapshot, EvaluationResult, ToolInfo } from "@/types"
 
-const PROD_API_BASE_FALLBACK = "https://api-185-175-110-142.sslip.io"
+const PROD_API_BASE_FALLBACK = ""
 
 export const API_BASE =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ||

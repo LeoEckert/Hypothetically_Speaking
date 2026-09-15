@@ -1,4 +1,4 @@
-name: Deploy frontend to Vercel
+name: Deploy frontend + backend to Vercel
 
 # Vercel's native git integration is intentionally disconnected for this
 # project (see docs/DEPLOY.md) to work around a Hobby-plan limitation: any
@@ -8,6 +8,13 @@ name: Deploy frontend to Vercel
 # a personal access token instead — that path checks the token's own
 # permissions on the project, not the pushing GitHub identity, so it isn't
 # subject to that restriction.
+#
+# This project's Root Directory is "frontend" (set in the Vercel dashboard),
+# so a Python serverless function has to live inside frontend/ to be
+# auto-detected alongside the static build. The backend code itself stays at
+# the repo root (same layout as local dev, tests, scripts/run_demo.py) — the
+# "Stage backend for the Vercel function" step below copies it into
+# frontend/ right before deploy rather than duplicating it in the repo.
 on:
   push:
     branches: [main]
@@ -22,6 +29,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Stage backend for the Vercel function
+        run: |
+          cp -r backend frontend/backend
+          grep -v '^pytest' requirements.txt > frontend/requirements.txt
 
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
