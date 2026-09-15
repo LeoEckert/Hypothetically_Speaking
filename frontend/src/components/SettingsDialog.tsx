@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useSyncExternalStore } from "react"
 import { SettingsIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -16,6 +16,7 @@ import { useModel } from "@/hooks/useModel"
 import { useTools } from "@/hooks/useTools"
 import { fetchModels, type ModelInfo } from "@/lib/api"
 import { API_KEY_NAMES, hasUsableLlmKey, type ApiKeyName } from "@/store/apiKeysStore"
+import { getSettingsDialogOpen, setSettingsDialogOpen, subscribeSettingsDialog } from "@/store/settingsDialogStore"
 
 const KEY_LABELS: Record<ApiKeyName, string> = {
   ANTHROPIC_API_KEY: "Anthropic (Claude)",
@@ -36,6 +37,7 @@ const KEY_HINTS: Record<ApiKeyName, string> = {
 }
 
 export function SettingsDialog() {
+  const open = useSyncExternalStore(subscribeSettingsDialog, getSettingsDialogOpen)
   const config = useConfig()
   const { tools } = useTools()
   const { keys, setKey, clearKey } = useApiKeys()
@@ -70,7 +72,7 @@ export function SettingsDialog() {
   }
 
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={setSettingsDialogOpen}>
       <DialogTrigger asChild>
         <Button variant="outline" size="icon-lg" title="Settings — bring your own API keys">
           <SettingsIcon className="size-4" />

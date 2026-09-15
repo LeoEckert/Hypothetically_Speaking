@@ -124,10 +124,25 @@ class SqliteKnowledgeBase:
 
     def __init__(self, path: Path | str = DEFAULT_PATH) -> None:
         if path != ":memory:":
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            try:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                connection = sqlite3.connect(path, check_same_thread=False)
+            except OSError:
+                # Vercel's serverless filesystem is read-only outside /tmp
+                # (confirmed live: "[Errno 30] Read-only file system: 'runs'")
+                # — this knowledge base is a cache/accumulator (LLM replay
+                # cache, co-occurrence graph), not evidence, so falling back
+                # to an in-memory one for this run is safe. Nothing here
+                # needs to survive between requests; same ephemeral-fs
+                # tradeoff already documented for the admin dashboard's
+                # ADMIN_OVERRIDES_PATH.
+                path = ":memory:"
+                connection = sqlite3.connect(path, check_same_thread=False)
+        else:
+            connection = sqlite3.connect(path, check_same_thread=False)
         # L2 verifies links in a thread pool; only the cache methods are
         # reached from those threads, and the lock serialises them.
-        self.connection = sqlite3.connect(path, check_same_thread=False)
+        self.connection = connection
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
         self._lock = threading.Lock()

@@ -3,6 +3,7 @@ import { Switch } from "@/components/ui/switch"
 import { useApiKeys } from "@/hooks/useApiKeys"
 import { useTools } from "@/hooks/useTools"
 import { toolLabel } from "@/lib/toolLabels"
+import { openSettingsDialog } from "@/store/settingsDialogStore"
 
 export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
   const { tools, loading, error, toggle } = useTools()
@@ -52,16 +53,22 @@ export function ToolsPanel({ isRunLive }: { isRunLive: boolean }) {
                 )}
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">{tool.description}</p>
-              {tool.enabled && !hasKey && (
+              {!hasKey && (
                 <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
-                  {tool.paid
-                    ? "Needs your own key in Settings to switch on — no free tier for this one."
-                    : "Runs as a mock — bring your own key in Settings for live results."}
+                  {tool.paid ? "No free tier for this one — add" : "Runs as a mock without"} your own key in{" "}
+                  <button
+                    type="button"
+                    onClick={openSettingsDialog}
+                    className="underline underline-offset-2 hover:text-amber-700 dark:hover:text-amber-300"
+                  >
+                    Settings
+                  </button>{" "}
+                  to switch it on.
                 </p>
               )}
             </div>
             <Switch
-              checked={tool.enabled}
+              checked={usable}
               disabled={!hasKey}
               onCheckedChange={(checked) => toggle(tool.name, checked)}
               className="mt-1 shrink-0"
