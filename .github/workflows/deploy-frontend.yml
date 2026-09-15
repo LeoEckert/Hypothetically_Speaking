@@ -104,15 +104,21 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          # Vercel's default "Vercel Authentication" project setting SSO-gates
-          # every Preview deployment (production is unaffected/never was
-          # gated) — a custom alias on a preview deployment inherits that
-          # gate too, so the dev URL would just redirect to vercel.com/sso-api
-          # for anyone without a login on this Vercel team. Idempotent to
-          # repeat every deploy, so it self-heals if the dashboard setting
-          # ever gets flipped back on.
-          vercel project protection disable --sso --token="${{ secrets.VERCEL_TOKEN }}"
+          # KNOWN ISSUE (2026-09-15): VERCEL_TOKEN is currently a
+          # project-scoped token, which can deploy fine but cannot manage
+          # aliases or protection settings (both are account/team-level
+          # actions — confirmed live: alias set fails with "User not
+          # found", protection disable fails outright). Both of the calls
+          # below are allowed to fail without failing this job/step or
+          # sending a failure notification — the actual deploy (next line)
+          # is what matters, and it works. Fix: replace VERCEL_TOKEN with a
+          # non-project-scoped token (see docs/DEPLOY.md's "Current live
+          # deployment" section), then remove the `|| echo` guards below.
+          vercel project protection disable --sso --token="${{ secrets.VERCEL_TOKEN }}" \
+            || echo "::warning::Preview SSO protection could not be disabled (token lacks account-level permission) — see docs/DEPLOY.md"
 
           DEPLOY_URL=$(vercel deploy --token="${{ secrets.VERCEL_TOKEN }}" --yes)
           echo "Preview deployment: $DEPLOY_URL"
-          vercel alias set "$DEPLOY_URL" hypothetically-speaking-dev.vercel.app --token="${{ secrets.VERCEL_TOKEN }}"
+
+          vercel alias set "$DEPLOY_URL" hypothetically-speaking-dev.vercel.app --token="${{ secrets.VERCEL_TOKEN }}" \
+            || echo "::warning::Could not update the hypothetically-speaking-dev.vercel.app alias (token lacks account-level permission) — it still points at the last successful deploy. See docs/DEPLOY.md"
