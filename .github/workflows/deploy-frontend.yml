@@ -14,7 +14,10 @@ name: Deploy frontend + backend to Vercel
 # auto-detected alongside the static build. The backend code itself stays at
 # the repo root (same layout as local dev, tests, scripts/run_demo.py) — the
 # "Stage backend for the Vercel function" step below copies it into
-# frontend/ right before deploy rather than duplicating it in the repo.
+# frontend/api/backend/ (nested *under* the function's own directory, not
+# beside it — Vercel's Python builder bundles a function's own directory
+# tree, not a sibling reached only via a runtime sys.path append) right
+# before deploy, rather than duplicating it permanently in the repo.
 on:
   push:
     branches: [main]
@@ -32,7 +35,7 @@ jobs:
 
       - name: Stage backend for the Vercel function
         run: |
-          cp -r backend frontend/backend
+          cp -r backend frontend/api/backend
           grep -v '^pytest' requirements.txt > frontend/requirements.txt
 
       - name: Install Vercel CLI
