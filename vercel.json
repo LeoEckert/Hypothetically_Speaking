@@ -4,5 +4,10 @@
   "outputDirectory": "dist",
   "git": {
     "deploymentEnabled": false
+  },
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 300
+    }
   }
 }

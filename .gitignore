@@ -13,6 +13,11 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
+# staged into place by .github/workflows/deploy-frontend.yml right before
+# `vercel deploy` — never committed, this is a deploy-time-only copy
+frontend/api/
+frontend/requirements.txt
+
 create_vm.sh
 secret_*.txt
 

@@ -1,4 +1,4 @@
-name: Deploy frontend to Vercel
+name: Deploy to Vercel
 
 # Vercel's native git integration is intentionally disconnected for this
 # project (see docs/DEPLOY.md) to work around a Hobby-plan limitation: any
@@ -9,9 +9,19 @@ name: Deploy frontend to Vercel
 # permissions on the project, not the pushing GitHub identity, so it isn't
 # subject to that restriction.
 #
-# Backend deploys separately (deploy-backend-vercel.yml, its own Vercel
-# project) — co-locating it here fought this project's Vite framework
-# preset with no clean resolution, so it's a dedicated project instead.
+# One Vercel project serves both: the static Vite build and a Python
+# serverless function for the backend. This project's Root Directory is
+# "frontend" (set in the Vercel dashboard), so the function has to live at
+# frontend/api/index.py to be auto-detected alongside the static build.
+# backend/ itself stays at the repo root (same layout as local dev, tests,
+# scripts/run_demo.py) — the staging step below copies it into
+# frontend/api/backend/ right before deploy rather than duplicating it
+# permanently in the repo. The function bridges the real FastAPI app
+# through a2wsgi's ASGIMiddleware onto Vercel's WSGI pathway rather than
+# exposing bare ASGI — this account's native FastAPI/ASGI auto-detection is
+# broken (confirmed by elimination against a dedicated project; see
+# docs/DEPLOY.md), and api/index.py using the WSGI bridge is what actually
+# gets invoked correctly.
 on:
   push:
     branches: [main]
@@ -26,6 +36,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Stage backend for the Vercel function
+        run: |
+          mkdir -p frontend/api
+          cp -r backend frontend/api/backend
+          grep -v '^pytest' requirements.txt > frontend/requirements.txt
+          cat > frontend/api/index.py <<'EOF'
+          from a2wsgi import ASGIMiddleware
+
+          from backend.server.app import app as _asgi_app
+
+          app = ASGIMiddleware(_asgi_app)
+          EOF
 
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
