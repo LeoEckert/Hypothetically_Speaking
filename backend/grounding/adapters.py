@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from backend.agent.env import env_str
 from backend.grounding.domain import (
     TRIPLE_FIELDS,
     BiologicalEntity,
@@ -48,7 +49,7 @@ from backend.grounding.domain import (
     prompt_hash,
 )
 
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+MODEL = env_str("ANTHROPIC_MODEL", "claude-sonnet-5")
 # Tried and rejected: Haiku for the L2 verdicts. On the same records it called
 # every link ESTABLISHED, including "mitochondrial biogenesis extends human
 # healthspan", which Sonnet consistently and correctly leaves UNVERIFIED — and
@@ -56,9 +57,9 @@ MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 # trust-bearing judgement, so it stays on the main model. Haiku takes the L1
 # probe (a creative elaboration step where a miss costs little); fast mode
 # saves the rest by reading fewer, shorter records.
-FAST_MODEL = os.environ.get("GROUNDING_FAST_MODEL", "claude-haiku-4-5-20251001")
-PROBE_MODEL = os.environ.get("GROUNDING_PROBE_MODEL", FAST_MODEL)
-VERIFY_MODEL = os.environ.get("GROUNDING_VERIFY_MODEL", MODEL)
+FAST_MODEL = env_str("GROUNDING_FAST_MODEL", "claude-haiku-4-5-20251001")
+PROBE_MODEL = env_str("GROUNDING_PROBE_MODEL", FAST_MODEL)
+VERIFY_MODEL = env_str("GROUNDING_VERIFY_MODEL", MODEL)
 # Depths below are sized for a hard 300s-per-run external platform ceiling
 # (Vercel Fluid Compute), scaled down from earlier, VM-era values pending
 # empirical retuning against real timed runs (see scripts/run_demo.py).

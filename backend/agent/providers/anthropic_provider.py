@@ -22,6 +22,12 @@ class AnthropicProvider(LLMProvider):
     name = "anthropic"
 
     def __init__(self, api_key: str | None, model: str) -> None:
+        if not model or not model.strip():
+            # Fail here with the cause named, not later as the API's
+            # "model: String should have at least 1 character".
+            raise ValueError(
+                "Anthropic model name is empty — check the ANTHROPIC_MODEL / GROUNDING_FAST_MODEL env vars"
+            )
         self.client = Anthropic(api_key=api_key)
         self.model = model
 

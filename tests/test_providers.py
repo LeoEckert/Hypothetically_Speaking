@@ -107,3 +107,37 @@ def test_openrouter_provider_handles_malformed_tool_arguments_without_raising():
 
     normalized = provider._normalize(response)
     assert normalized.tool_calls[0].input == {}
+
+
+# --- a blank-but-set env var must read as unset (Vercel declares vars with no value) ---
+
+
+def test_blank_anthropic_model_env_falls_back_to_the_default(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MODEL", "")
+    monkeypatch.setenv("GROUNDING_FAST_MODEL", "   ")
+    main = get_provider({"ANTHROPIC_API_KEY": "user-anthropic-key"}, tier="main")
+    fast = get_provider({"ANTHROPIC_API_KEY": "user-anthropic-key"}, tier="fast")
+    assert main.model == "claude-sonnet-5"
+    assert fast.model == "claude-haiku-4-5-20251001"
+
+
+def test_anthropic_provider_refuses_an_empty_model_name():
+    import pytest
+
+    from backend.agent.providers.anthropic_provider import AnthropicProvider
+
+    with pytest.raises(ValueError, match="ANTHROPIC_MODEL"):
+        AnthropicProvider(api_key="x", model="")
+
+
+def test_env_helpers_treat_blank_as_unset(monkeypatch):
+    from backend.agent.env import env_int, env_str
+
+    monkeypatch.delenv("HS_TEST_VAR", raising=False)
+    assert env_str("HS_TEST_VAR", "d") == "d" and env_int("HS_TEST_INT", 7) == 7
+    monkeypatch.setenv("HS_TEST_VAR", "")
+    monkeypatch.setenv("HS_TEST_INT", "  ")
+    assert env_str("HS_TEST_VAR", "d") == "d" and env_int("HS_TEST_INT", 7) == 7
+    monkeypatch.setenv("HS_TEST_VAR", " set ")
+    monkeypatch.setenv("HS_TEST_INT", " 12 ")
+    assert env_str("HS_TEST_VAR", "d") == "set" and env_int("HS_TEST_INT", 7) == 12

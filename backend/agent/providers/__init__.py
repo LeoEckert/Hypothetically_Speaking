@@ -17,6 +17,7 @@ import os
 
 from backend.agent.providers.anthropic_provider import AnthropicProvider
 from backend.agent.providers.base import LLMProvider, LLMResponse, ToolCall, ToolResult, Transcript
+from backend.agent.env import env_str
 from backend.agent.providers.openrouter_models import best_free_tool_model
 from backend.agent.providers.openrouter_provider import OpenRouterProvider
 
@@ -53,9 +54,9 @@ def get_provider(api_keys: dict[str, str] | None = None, tier: str = "main") -> 
     anthropic_key = user_anthropic_key or os.environ.get("ANTHROPIC_API_KEY")
     if anthropic_key:
         model = (
-            os.environ.get("ANTHROPIC_MODEL", _ANTHROPIC_MAIN_MODEL)
+            env_str("ANTHROPIC_MODEL", _ANTHROPIC_MAIN_MODEL)
             if tier == "main"
-            else os.environ.get("GROUNDING_FAST_MODEL", _ANTHROPIC_FAST_MODEL)
+            else env_str("GROUNDING_FAST_MODEL", _ANTHROPIC_FAST_MODEL)
         )
         provider = AnthropicProvider(api_key=anthropic_key, model=model)
         provider.key_source = "user" if user_anthropic_key else "platform"
@@ -75,9 +76,9 @@ def get_provider(api_keys: dict[str, str] | None = None, tier: str = "main") -> 
     # live-picked default.
     user_model_override = api_keys.get("OPENROUTER_MODEL")
     model = (
-        user_model_override or os.environ.get("OPENROUTER_MODEL") or best_free_tool_model()
+        user_model_override or env_str("OPENROUTER_MODEL") or best_free_tool_model()
         if tier == "main"
-        else user_model_override or os.environ.get("OPENROUTER_FAST_MODEL") or best_free_tool_model()
+        else user_model_override or env_str("OPENROUTER_FAST_MODEL") or best_free_tool_model()
     )
     provider = OpenRouterProvider(api_key=openrouter_key, model=model)
     provider.key_source = "user" if user_openrouter_key else "platform"
