@@ -14,9 +14,9 @@ frontend/.env
 frontend/.env.local
 
 # staged into place by .github/workflows/deploy-frontend.yml right before
-# `vercel deploy` (frontend/api/index.py imports backend from here) — never
+# `vercel deploy` (frontend/pyproject.toml's entrypoint points here) — never
 # committed, this is a deploy-time-only copy
-frontend/api/backend/
+frontend/backend/
 frontend/requirements.txt
 create_vm.sh
 secret_*.txt
