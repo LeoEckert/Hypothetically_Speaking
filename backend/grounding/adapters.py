@@ -117,9 +117,9 @@ def _claude(
     provider=None,
 ) -> tuple[BaseModel, str]:
     """The single LLM entry point. `provider` is a
-    backend.agent.providers.LLMProvider (Anthropic when a key — BYOK or
-    platform — is available, otherwise the shared free-tier Groq default;
-    resolved once per `ground()` call via backend.agent.providers.get_provider).
+    backend.agent.providers.LLMProvider (Anthropic when a key is supplied,
+    otherwise OpenRouter — every key here is BYOK, resolved once per
+    `ground()` call via backend.agent.providers.get_provider).
 
     Returns the parsed object and the prompt hash. With a cache attached, an
     identical prompt replays the stored response byte for byte, so two runs over

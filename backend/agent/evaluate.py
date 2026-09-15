@@ -470,7 +470,7 @@ def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
         "unresolved": unresolved,
     }
 
-    if provider.name == "groq":
+    if provider.name == "openrouter":
         usd, rate_configured = 0.0, True  # genuinely free tier, not an unknown rate
     else:
         usd, rate_configured = anthropic_cost_usd(
@@ -491,7 +491,7 @@ def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
         "cost": {
             "usd": usd,
             "rate_configured": rate_configured,
-            "free_tier": provider.name == "groq",
+            "free_tier": provider.name == "openrouter",
             "key_source": provider.key_source,
             "input_tokens": usage_totals["input_tokens"],
             "output_tokens": usage_totals["output_tokens"],

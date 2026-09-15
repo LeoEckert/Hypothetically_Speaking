@@ -2,9 +2,9 @@
 
 `backend/agent/loop.py` and `backend/grounding/adapters.py` both need to run
 against either Anthropic's Messages API (tool-use, content blocks, prompt
-caching) or an OpenAI-compatible chat-completions API (Groq's free tier,
-selected when no Anthropic key is available) without branching on which one
-is in use. Everything provider-specific — content-block shapes, cache_control,
+caching) or an OpenAI-compatible chat-completions API (OpenRouter, selected
+when no Anthropic key is supplied) without branching on which one is in use.
+Everything provider-specific — content-block shapes, cache_control,
 tool-call wire formats — lives inside the two concrete providers; callers only
 ever see `LLMResponse` and `Transcript`.
 """
@@ -69,11 +69,12 @@ class Transcript:
 
 class LLMProvider:
     """Implemented by providers.anthropic_provider.AnthropicProvider and
-    providers.groq_provider.GroqProvider."""
+    providers.openrouter_provider.OpenRouterProvider."""
 
-    name: str  # "anthropic" | "groq" — set by get_provider(), used by costs.py
+    name: str  # "anthropic" | "openrouter" — set by get_provider(), used by costs.py
     model: str
-    # "user" (BYOK) or "platform" (shared env-var key) — set by get_provider().
+    # "user" (BYOK) or "platform" (a local-dev env var — see providers/__init__.py's
+    # module docstring on why production shouldn't have one). Set by get_provider().
     key_source: str = "platform"
 
     def create(self, system: str, transcript: Transcript, tools: list[dict], max_tokens: int) -> LLMResponse:

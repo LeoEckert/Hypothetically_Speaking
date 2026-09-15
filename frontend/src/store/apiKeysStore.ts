@@ -1,22 +1,27 @@
 // BYOK API keys, kept client-side only. Mirrors runsStore.ts's pattern
 // (versioned localStorage key, try/catch load/save, subscribe/notify, no
 // external state lib) — see docs/DEPLOY.md and CLAUDE.md for why these keys
-// live here rather than on the backend: the platform holds no Anthropic key
-// at all any more (Anthropic is a user-supplied-only upgrade over the
-// shared free-tier Groq default), and the three tool keys are all optional.
+// live here rather than on the backend: there is no platform-held LLM key at
+// all (neither Anthropic nor OpenRouter) — every visitor brings their own,
+// guided by OnboardingDialog.tsx. The three tool keys stay optional.
 //
 // Unlike run history, these are stored in localStorage rather than
 // sessionStorage (the admin token's choice, docs/DEPLOY.md) — they're
-// load-bearing for the app to do anything beyond the free default, not an
-// occasional elevated action, so they should survive a tab close.
+// load-bearing for the app to do anything at all, not an occasional
+// elevated action, so they should survive a tab close.
 const STORAGE_KEY = "hs_api_keys_v1"
 
-export type ApiKeyName = "ANTHROPIC_API_KEY" | "GROQ_API_KEY" | "TAVILY_API_KEY" | "AMASS_API_KEY" | "NEBIUS_API_KEY"
+export type ApiKeyName =
+  | "ANTHROPIC_API_KEY"
+  | "OPENROUTER_API_KEY"
+  | "TAVILY_API_KEY"
+  | "AMASS_API_KEY"
+  | "NEBIUS_API_KEY"
 export type ApiKeys = Partial<Record<ApiKeyName, string>>
 
 export const API_KEY_NAMES: ApiKeyName[] = [
   "ANTHROPIC_API_KEY",
-  "GROQ_API_KEY",
+  "OPENROUTER_API_KEY",
   "TAVILY_API_KEY",
   "AMASS_API_KEY",
   "NEBIUS_API_KEY",
@@ -75,4 +80,10 @@ export function clearApiKey(name: ApiKeyName): void {
   keys = next
   save()
   notify()
+}
+
+/** Is there any usable LLM key at all — the thing that actually gates
+ * whether a run can start (see OnboardingDialog.tsx / App.tsx's handleRun). */
+export function hasUsableLlmKey(k: ApiKeys = keys): boolean {
+  return !!(k.ANTHROPIC_API_KEY?.trim() || k.OPENROUTER_API_KEY?.trim())
 }

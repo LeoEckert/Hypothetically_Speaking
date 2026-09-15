@@ -147,9 +147,9 @@ def ground(
     """L0-L4 with live adapters; the knowledge base caches every LLM call and
     Amass query. `ledger` (adapters.Ledger) receives every external call.
     `api_keys` (env-var-name -> value) is a per-request BYOK override — an
-    Anthropic key (yours or the platform's) selects Claude via
-    backend.agent.providers.get_provider(); otherwise the shared free-tier
-    Groq default is used, same as the main agent loop.
+    Anthropic key selects Claude via backend.agent.providers.get_provider();
+    otherwise an OpenRouter key is used, same as the main agent loop. One of
+    the two is required — there's no platform-held key for either.
 
     L0, L2 verdicts and L4 stay on the "main" tier in both modes (see the note
     on Haiku verdicts in adapters.py); L1 probing runs on the "fast" tier.

@@ -115,7 +115,7 @@ def build_cost_summary(state: RunState, provider, api_keys: dict | None = None) 
 
     llm_usd, llm_priced, llm_free_tier = 0.0, True, False
     llm_models = []
-    if provider_name == "groq":
+    if provider_name == "openrouter":
         # A genuinely free tier, not an unknown rate — $0 with rate_configured
         # True, distinct from "we don't know the price" (rate_configured False).
         llm_usd, llm_priced, llm_free_tier = 0.0, True, True

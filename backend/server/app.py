@@ -37,10 +37,11 @@ from backend.agent import admin  # noqa: E402
 # Nebius VM this used to run on; it is not true of ephemeral/serverless
 # hosting (e.g. Vercel Functions) — this subsystem needs a real persistent
 # store (a small free-tier KV/Postgres) to keep working there. Left as a
-# known gap rather than solved here: with ANTHROPIC_API_KEY now user-supplied
-# (BYOK) rather than platform-held, key *rotation* specifically is likely
-# close to vestigial (GROQ_API_KEY, the one secret the platform still holds,
-# is a free-tier key with no billing risk to rotate away from).
+# known gap rather than solved here. Neither ANTHROPIC_API_KEY nor
+# OPENROUTER_API_KEY is platform-held by default any more (every user brings
+# their own via the frontend's required onboarding popup) — an operator can
+# still optionally set either here via the admin dashboard's key rotation
+# (backend/agent/admin.py's ROTATABLE_KEYS) if they want a platform fallback.
 load_dotenv(admin.ADMIN_OVERRIDES_PATH, override=True)
 
 from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
@@ -91,10 +92,11 @@ class RunRequest(BaseModel):
     question: str
     max_tool_calls: int | None = None
     mode: str = "normal"  # "fast" — small/fast model everywhere, 4 grounding links, no second look — or "normal"
-    # Optional BYOK overrides, env-var-name -> value: ANTHROPIC_API_KEY selects
-    # Claude for this run instead of the shared free-tier Groq default; the
-    # others (GROQ_API_KEY, TAVILY_API_KEY, AMASS_API_KEY, NEBIUS_API_KEY) are
-    # per-request overrides of the platform's own keys for those services.
+    # BYOK overrides, env-var-name -> value. ANTHROPIC_API_KEY or
+    # OPENROUTER_API_KEY selects that LLM for this run — one of the two is
+    # required in practice, since there's no platform-held LLM key (see
+    # frontend's required onboarding popup). TAVILY_API_KEY/AMASS_API_KEY/
+    # NEBIUS_API_KEY are optional per-request overrides of those tools' keys.
     # Never persisted — used only to construct clients/inject into tool args
     # for this one request.
     api_keys: dict[str, str] = {}
@@ -135,8 +137,8 @@ def get_config():
         # is expected to read false by default now: it's a user-supplied-only
         # upgrade, not something the platform funds.
         "anthropic_key_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
-        "groq_key_configured": bool(os.environ.get("GROQ_API_KEY")),
-        "default_provider": "groq",
+        "openrouter_key_configured": bool(os.environ.get("OPENROUTER_API_KEY")),
+        "default_provider": "openrouter",
     }
 
 

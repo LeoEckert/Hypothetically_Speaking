@@ -2,13 +2,22 @@
 
 ## Free-tier-by-default, BYOK, and the planned move off the Nebius VM
 
-The platform now runs on free services by default: the LLM is a shared free-tier
-Groq key (`GROQ_API_KEY`, real signup at console.groq.com, no card) unless a
-user pastes their own Anthropic key into the frontend's Settings menu — the
-platform holds no Claude key of its own any more. The three paid tool APIs
-(Tavily/Amass/Nebius) are all optional BYOK too; every tool already degrades
-to a mock/heuristic result without a key. See `CLAUDE.md`'s "Tools wired into
-the loop" and "The agent loop" sections for the code-level detail.
+The platform now runs on free services with **no platform-held LLM key at
+all**: every visitor brings their own — a free OpenRouter key (real signup at
+openrouter.ai/keys, no card) or their own Anthropic key — guided by a
+required first-run onboarding popup in the frontend
+(`frontend/src/components/OnboardingDialog.tsx`). This isn't a soft default;
+a platform-wide key for either provider was tried and rejected, since it's a
+shared resource a handful of concurrent visitors can exhaust (OpenRouter's
+free tier is 50 requests/day *per account* — worse to share across every
+visitor than to hand out individually). The three paid tool APIs
+(Tavily/Amass/Nebius) are unaffected — still all-optional BYOK, every tool
+already degrades to a mock/heuristic result without a key, and an operator
+*can* still optionally set any of these five (including the two LLM keys)
+as a platform fallback through the admin dashboard's key rotation
+(`backend/agent/admin.py`'s `ROTATABLE_KEYS`) if they want one — it's just
+not required or set by default. See `CLAUDE.md`'s "Tools wired into the
+loop" and "The agent loop" sections for the code-level detail.
 
 As part of this, every run budget (`MAX_TOOL_CALLS`, `MAX_RUN_SECONDS`,
 grounding depth) was re-derived to fit inside a **hard 300-second-per-run
@@ -37,13 +46,15 @@ CI/CD and needs the project owner's own Vercel/Nebius account access, so
 it's deliberately left as an explicit next step rather than something to
 execute automatically alongside a code refactor. Until that migration
 happens, follow the Nebius VM instructions below exactly as before; the only
-change is which env vars matter (`GROQ_API_KEY` now, `ANTHROPIC_API_KEY`
-now optional/BYOK-only).
+change is that neither `ANTHROPIC_API_KEY` nor `OPENROUTER_API_KEY` needs to
+be set there any more — the deployed backend doesn't need either (BYOK from
+each visitor is what actually supplies one per request); set either only if
+you deliberately want a local-dev-style fallback on that VM too.
 
 **Planned backend-migration checklist**, for whoever picks this up:
 1. New Vercel project, Python runtime (`@vercel/python` / the `frontend/DEPLOY`-style FastAPI preset), root pointed at the repo (backend has no separate subfolder today — may need `api/` restructuring depending on the preset chosen).
 2. `vercel.json` for that project: route everything to the FastAPI ASGI app, `"maxDuration": 300`, Fluid Compute enabled in Project Settings → Functions.
-3. Set `GROQ_API_KEY` (required) and any optional BYOK-adjacent platform env vars in that project's Environment Variables — **not** `ANTHROPIC_API_KEY`, which should stay unset there by design.
+3. Leave `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` **unset** in that project's Environment Variables by design — every request supplies its own via BYOK. Set any optional tool-key platform env vars (Tavily/Amass/Nebius) if desired.
 4. Verify SSE actually streams end-to-end through Vercel's Python runtime for a real run (not just locally) before cutting over — this wasn't verified against live Vercel infrastructure as part of this change, only against a local `uvicorn` process.
 5. Point the frontend's `VITE_API_BASE_URL` at the new backend URL, redeploy.
 6. Only once the new backend is confirmed working: decommission the Nebius VM and remove/retire `.github/workflows/deploy-backend.yml`, `Dockerfile`, `docker-compose.yml`, `Caddyfile`.

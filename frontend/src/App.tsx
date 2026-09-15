@@ -4,6 +4,7 @@ import { ComposeDialog } from "@/components/ComposeDialog"
 import { HistoryPanel } from "@/components/HistoryPanel"
 import { HypothesisDetailsView } from "@/components/HypothesisDetailsView"
 import { LiveRunBar } from "@/components/LiveRunBar"
+import { OnboardingDialog } from "@/components/OnboardingDialog"
 import { ProgressView } from "@/components/ProgressView"
 import { ResultsView } from "@/components/ResultsView"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -12,7 +13,7 @@ import { useRunsStore } from "@/hooks/useRunsStore"
 import { evaluateHypothesis } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
 import { cancelCurrentStream, currentLiveRunId, onStreamFinished, startAndStream } from "@/lib/runStream"
-import { loadApiKeys } from "@/store/apiKeysStore"
+import { getApiKeysSnapshot, hasUsableLlmKey, loadApiKeys } from "@/store/apiKeysStore"
 import { appendEvaluation, createRun, deleteRun, getRun } from "@/store/runsStore"
 import type { SseEvent, RunMode } from "@/types"
 
@@ -25,6 +26,7 @@ function App() {
   const [showDetails, setShowDetails] = useState(false)
   const [composeOpen, setComposeOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [onboardingOpen, setOnboardingOpen] = useState(() => !hasUsableLlmKey(getApiKeysSnapshot()))
   const [question, setQuestion] = useState("")
   const [maxToolCalls, setMaxToolCalls] = useState(8)
   const [mode, setMode] = useState<RunMode>("fast")
@@ -79,6 +81,11 @@ function App() {
   async function handleRun() {
     const trimmed = question.trim()
     if (!trimmed || liveRunId) return
+
+    if (!hasUsableLlmKey(getApiKeysSnapshot())) {
+      setOnboardingOpen(true)
+      return
+    }
 
     const forkedFrom = viewedRunId && viewedRunId !== liveRunId ? viewedRunId : null
     const runId = await startAndStream({ question: trimmed, maxToolCalls, mode, apiKeys: loadApiKeys() })
@@ -151,6 +158,8 @@ function App() {
             onOpenHistory={() => setHistoryOpen(true)}
             onNewRequest={handleNewRequest}
           />
+
+          <OnboardingDialog open={onboardingOpen} onOpenChange={setOnboardingOpen} />
 
           <HistoryPanel
             runs={runs}

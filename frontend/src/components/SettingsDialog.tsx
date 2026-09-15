@@ -13,20 +13,20 @@ import { Separator } from "@/components/ui/separator"
 import { useApiKeys } from "@/hooks/useApiKeys"
 import { useConfig } from "@/hooks/useConfig"
 import { useTools } from "@/hooks/useTools"
-import { API_KEY_NAMES, type ApiKeyName } from "@/store/apiKeysStore"
+import { API_KEY_NAMES, hasUsableLlmKey, type ApiKeyName } from "@/store/apiKeysStore"
 
 const KEY_LABELS: Record<ApiKeyName, string> = {
   ANTHROPIC_API_KEY: "Anthropic (Claude)",
-  GROQ_API_KEY: "Groq",
+  OPENROUTER_API_KEY: "OpenRouter",
   TAVILY_API_KEY: "Tavily",
   AMASS_API_KEY: "Amass",
   NEBIUS_API_KEY: "Nebius",
 }
 
 const KEY_HINTS: Record<ApiKeyName, string> = {
-  ANTHROPIC_API_KEY:
-    "Optional — the platform runs on a free-tier default and holds no Claude key of its own. Add yours to run on Claude instead.",
-  GROQ_API_KEY: "Optional — the platform provides a shared free-tier Groq key by default; add your own only if it's rate-limited.",
+  ANTHROPIC_API_KEY: "Runs your questions on Claude. One of Anthropic or OpenRouter is required — there's no shared key.",
+  OPENROUTER_API_KEY:
+    "Free, no credit card (openrouter.ai/keys) — 50 requests/day per account, 1,000/day after ever buying $10 of credits once. One of Anthropic or OpenRouter is required — there's no shared key.",
   TAVILY_API_KEY: "Optional — enables live web/paper/trial search instead of a mock result.",
   AMASS_API_KEY: "Optional — enables live Amass Core lookups instead of a mock result.",
   NEBIUS_API_KEY: "Optional — improves gene/protein extraction quality over the built-in regex heuristic.",
@@ -40,7 +40,7 @@ export function SettingsDialog() {
 
   function platformConfigured(name: ApiKeyName): boolean {
     if (name === "ANTHROPIC_API_KEY") return config?.anthropic_key_configured ?? false
-    if (name === "GROQ_API_KEY") return config?.groq_key_configured ?? false
+    if (name === "OPENROUTER_API_KEY") return config?.openrouter_key_configured ?? false
     return tools.find((t) => t.key_env_var === name)?.key_configured ?? false
   }
 
@@ -62,10 +62,17 @@ export function SettingsDialog() {
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Bring your own API keys. Everything here is optional, stored only in this browser, and sent to the
-            backend with each run's request — never saved server-side.
+            Bring your own API keys. An Anthropic or OpenRouter key is required to run anything — there's no
+            platform-held key. Everything here is stored only in this browser and sent to the backend with each
+            run's request, never saved server-side.
           </DialogDescription>
         </DialogHeader>
+
+        {!hasUsableLlmKey(keys) && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            No LLM key set yet — add Anthropic or OpenRouter below before starting a run.
+          </p>
+        )}
 
         <div className="space-y-4">
           {API_KEY_NAMES.map((name) => {
@@ -109,8 +116,7 @@ export function SettingsDialog() {
 
         <Separator />
         <p className="text-xs text-muted-foreground">
-          Default provider: {config?.default_provider ?? "groq"} (free tier, no key needed from you). Adding your own
-          Anthropic key runs your next question on Claude instead.
+          No key is billed or held by the platform — this app doesn't work until you've added one above.
         </p>
       </DialogContent>
     </Dialog>

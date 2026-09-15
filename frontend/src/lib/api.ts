@@ -16,7 +16,7 @@ export interface ConfigResponse {
   max_tool_calls_default: number
   max_tool_calls_ceiling: number
   anthropic_key_configured: boolean
-  groq_key_configured: boolean
+  openrouter_key_configured: boolean
   default_provider: string
 }
 

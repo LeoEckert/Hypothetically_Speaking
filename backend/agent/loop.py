@@ -3,9 +3,9 @@
 A manual, provider-agnostic tool-use loop (see docs/ARCHITECTURE.md for why
 this was chosen over the Claude Agent SDK for this build). Every LLM call
 goes through backend.agent.providers.get_provider(), which picks Anthropic
-when a key (BYOK or platform) is available and otherwise falls back to the
-shared free-tier Groq default — loop.py itself never branches on which
-provider is in use. `on_event` is called with small dicts describing each
+or OpenRouter depending on which key was supplied (BYOK from the frontend's
+required onboarding popup, or a local-dev env var) — loop.py itself never
+branches on which provider is in use. `on_event` is called with small dicts describing each
 step, so a caller (the FastAPI SSE endpoint, or scripts/run_demo.py) can
 stream/record the run live.
 """
@@ -53,8 +53,9 @@ HARD_MAX_TOOL_CALLS = 12
 # REVISE (~2048 max_tokens) and REPORT (~8192 max_tokens) run unconditionally
 # once the ACT loop exits — neither is bounded by max_run_seconds on its own —
 # so the ACT loop must stop early enough to leave room for both. Sized for
-# Anthropic's slower streaming case; Groq's free-tier default path finishes
-# these well under this reserve.
+# Anthropic's slower streaming case; OpenRouter's actual latency depends on
+# which underlying free model it routes to, so re-verify this reserve is
+# still enough once real timed runs exist (see CLAUDE.md).
 REPORT_RESERVE_SECONDS = 100
 
 _NUDGE_NO_TOOLS = (
@@ -84,8 +85,8 @@ def _has_llm_key(api_keys: dict) -> bool:
     return bool(
         api_keys.get("ANTHROPIC_API_KEY")
         or os.environ.get("ANTHROPIC_API_KEY")
-        or api_keys.get("GROQ_API_KEY")
-        or os.environ.get("GROQ_API_KEY")
+        or api_keys.get("OPENROUTER_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
     )
 
 
@@ -125,7 +126,7 @@ def _grounding_payload(
     amass_key = api_keys.get("AMASS_API_KEY") or os.environ.get("AMASS_API_KEY")
     missing = []
     if not _has_llm_key(api_keys):
-        missing.append("an LLM provider key (your own, or the platform's shared one)")
+        missing.append("an LLM provider key (Anthropic or OpenRouter, from Settings)")
     if not amass_key:
         missing.append("AMASS_API_KEY")
     empty = {"coherent": None, "triples": [], "destination": "", "premises": [], "knowledge_graph": "", "hypotheses": [], "rejected": []}
@@ -455,7 +456,7 @@ def run_agent(
     if run_id:
         state.run_id = run_id
     state.enabled_tools = set(enabled_tool_names())
-    tools = get_specs()
+    tools = get_specs(api_keys)
     messages_seed = f"Research question: {question}"
     transcript = Transcript()
     transcript.add_user_text(messages_seed)
@@ -687,10 +688,9 @@ def run_agent(
         state.partial = True
         report_text = (
             "## LLM Key Invalid\n\n"
-            f"The configured API key was rejected by the provider (`{exc}`). "
-            "If you supplied your own key in Settings, double-check it; otherwise "
-            "the platform's shared free-tier key may be exhausted or misconfigured — "
-            "try again later, or add your own key.\n\n"
+            f"The API key in Settings was rejected by the provider (`{exc}`). "
+            "Double-check it, or generate a fresh one (Anthropic Console, or "
+            "openrouter.ai/keys for a free OpenRouter key) and paste it into Settings.\n\n"
             f"Evidence gathered before the failure ({len(state.evidence)} items) is listed below "
             "for debugging; no hypothesis ranking was completed.\n\n" + state.citation_index()
         )

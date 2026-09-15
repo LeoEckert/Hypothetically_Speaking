@@ -65,12 +65,33 @@ def test_enrichment_empty_gene_list_is_handled():
 
 def test_registry_respects_enabled_tools(monkeypatch):
     monkeypatch.setenv("ENABLED_TOOLS", "tavily,pubmed")
+    monkeypatch.setenv("TAVILY_API_KEY", "x")  # this test is about ENABLED_TOOLS, not key availability
     assert set(enabled_tool_names()) == {"tavily", "pubmed"}
     specs = get_specs()
     assert {s["name"] for s in specs} == {"tavily", "pubmed"}
 
     disabled_result = run_tool("open_targets", {"target_symbol": "SIRT1"})
     assert disabled_result["error"] == "tool_disabled"
+
+
+def test_get_specs_excludes_keyed_tools_with_no_usable_key(monkeypatch):
+    """A keyed tool with no key anywhere (platform or this run's BYOK) is
+    never offered to the model — it can only ever mock, and under the tight
+    per-run tool-call budget that call would be wasted."""
+    monkeypatch.setenv("ENABLED_TOOLS", "tavily,amass,extract_genes,pubmed")
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("AMASS_API_KEY", raising=False)
+    monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
+
+    names = {s["name"] for s in get_specs()}
+    assert names == {"pubmed"}  # the three keyed tools are all excluded
+
+    names_with_byok = {s["name"] for s in get_specs(api_keys={"TAVILY_API_KEY": "user-key"})}
+    assert names_with_byok == {"pubmed", "tavily"}  # BYOK unblocks just the one it's for
+
+    monkeypatch.setenv("AMASS_API_KEY", "platform-key")
+    names_with_platform_key = {s["name"] for s in get_specs()}
+    assert names_with_platform_key == {"pubmed", "amass"}
 
 
 def test_registry_tool_exception_is_caught(monkeypatch):

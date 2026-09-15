@@ -1,10 +1,14 @@
-"""Groq's OpenAI-compatible chat-completions API behind the LLMProvider
-interface — the free-tier default execution path when no Anthropic key is
-configured (platform or user).
+"""OpenRouter's OpenAI-compatible chat-completions API behind the
+LLMProvider interface — the required BYOK path when no Anthropic key is
+supplied. OpenRouter's free tier needs no credit card to sign up (see
+frontend/src/components/OnboardingDialog.tsx), but it's a per-account
+allowance (50 requests/day free, 1,000/day after ever buying $10 of credits
+once) — there is deliberately no platform-held OpenRouter key funding every
+visitor from one shared allowance; each user brings their own.
 
 No prompt-caching equivalent (no-op vs. AnthropicProvider's cache_control).
-429s (rate/token/day limits) are the *normal* failure mode on a free tier,
-not an edge case, so retry-with-backoff is built in rather than left to the
+429s (rate/daily limits) are the *normal* failure mode on a free tier, not
+an edge case, so retry-with-backoff is built in rather than left to the
 caller.
 """
 from __future__ import annotations
@@ -16,7 +20,7 @@ from openai import OpenAI, RateLimitError
 
 from backend.agent.providers.base import LLMProvider, LLMResponse, ToolCall, Transcript
 
-DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 2.0
 
@@ -41,8 +45,8 @@ def _safe_json(raw: str) -> dict:
         return {}
 
 
-class GroqProvider(LLMProvider):
-    name = "groq"
+class OpenRouterProvider(LLMProvider):
+    name = "openrouter"
 
     def __init__(self, api_key: str, model: str, base_url: str = DEFAULT_BASE_URL) -> None:
         self.client = OpenAI(api_key=api_key, base_url=base_url)

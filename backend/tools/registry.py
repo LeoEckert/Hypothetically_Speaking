@@ -76,8 +76,19 @@ def set_tool_enabled(name: str, enabled: bool) -> None:
     _runtime_override[name] = enabled
 
 
-def get_specs() -> list[dict]:
-    return [_ALL_TOOLS[name].SPEC for name in enabled_tool_names()]
+def _has_key(name: str, api_keys: dict[str, str] | None) -> bool:
+    """A keyless tool always has what it needs. A keyed tool needs either a
+    per-run BYOK override or a platform env var — otherwise it can only ever
+    return a mock, so it isn't worth offering to the model at all (wastes a
+    call against the tight per-run tool-call budget)."""
+    env_var = KEY_ENV_VAR.get(name)
+    if env_var is None:
+        return True
+    return bool((api_keys or {}).get(env_var) or os.environ.get(env_var))
+
+
+def get_specs(api_keys: dict[str, str] | None = None) -> list[dict]:
+    return [_ALL_TOOLS[name].SPEC for name in enabled_tool_names() if _has_key(name, api_keys)]
 
 
 def all_specs() -> list[dict]:

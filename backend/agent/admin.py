@@ -31,7 +31,7 @@ from fastapi import Header, HTTPException, Request
 from backend.agent import costs
 from backend.tools import amass_tool
 
-ROTATABLE_KEYS = {"ANTHROPIC_API_KEY", "TAVILY_API_KEY", "AMASS_API_KEY", "NEBIUS_API_KEY"}
+ROTATABLE_KEYS = {"ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "AMASS_API_KEY", "NEBIUS_API_KEY"}
 
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 

@@ -14,8 +14,8 @@ export function useConfig() {
           max_tool_calls_default: 8,
           max_tool_calls_ceiling: 12,
           anthropic_key_configured: false,
-          groq_key_configured: false,
-          default_provider: "groq",
+          openrouter_key_configured: false,
+          default_provider: "openrouter",
         })
       )
   }, [])
