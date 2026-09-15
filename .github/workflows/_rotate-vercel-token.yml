@@ -15,11 +15,6 @@ jobs:
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 
-      - name: List existing tokens (to find the current one's id/name)
-        # Token management is account-level, not team-level — VERCEL_ORG_ID
-        # (team scope) makes this endpoint reject the request.
-        run: vercel tokens ls --token="${{ secrets.VERCEL_TOKEN }}"
-
       - name: Create a new project-scoped token
         run: |
           vercel tokens add "github-actions-deploy-scoped" --project "${{ secrets.VERCEL_PROJECT_ID }}" --token="${{ secrets.VERCEL_TOKEN }}"
