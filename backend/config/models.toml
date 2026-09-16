@@ -1,7 +1,7 @@
 # Which Claude models a deployment uses, per tier, when a run is on the
 # Anthropic provider — either because only an Anthropic key was supplied, or
-# because OpenRouter (the free path, always tried first when both keys exist)
-# failed and the run fell back to Claude.
+# because Claude is the primary path whenever an Anthropic key exists (see
+# backend/agent/providers/__init__.py — OpenRouter is the fallback there).
 #
 # The section is picked by deployment environment: APP_ENV if set, else
 # Vercel's own VERCEL_ENV ("production" for the main deploy, "preview" for the
@@ -14,15 +14,15 @@
 
 [production.anthropic]
 main = "claude-sonnet-5"
-fast = "claude-haiku-4-5-20251001"
+fast = "claude-haiku-4-5"
 allow_override = true
 
 [preview.anthropic]
-main = "claude-haiku-4-5-20251001"
-fast = "claude-haiku-4-5-20251001"
+main = "claude-haiku-4-5"
+fast = "claude-haiku-4-5"
 allow_override = false
 
 [development.anthropic]
 main = "claude-sonnet-5"
-fast = "claude-haiku-4-5-20251001"
+fast = "claude-haiku-4-5"
 allow_override = true

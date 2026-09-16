@@ -61,6 +61,24 @@ export function ReportView({
 }) {
   const sections = splitReportSections(report)
 
+  // The card chrome sits outside the map below, so zero sections used to
+  // paint a bordered, empty box with no explanation — the visible symptom of
+  // a run whose REPORT call returned nothing. The backend now always sends a
+  // body (backend/agent/loop.py's "## Report Unavailable"), so this is the
+  // second line of defence, and it also covers history entries saved before
+  // that guard existed, whose `report` can be missing entirely.
+  if (sections.length === 0) {
+    return (
+      <div className="mt-4 rounded-xl border bg-card p-6 text-sm text-muted-foreground shadow-md">
+        <p className="font-medium text-foreground">No report was returned for this run.</p>
+        <p className="mt-1">
+          The model finished without writing a report body. Running the question again usually works; if it keeps
+          happening, pick a different model in Settings.
+        </p>
+      </div>
+    )
+  }
+
   return (
     <div className="mt-4 space-y-4 rounded-xl border bg-card p-6 shadow-md">
       {sections.map((s, i) =>

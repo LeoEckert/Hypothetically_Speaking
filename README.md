@@ -118,7 +118,7 @@ in how the backend's Python function is bridged). No LLM key is
 platform-held — every visitor brings their own free OpenRouter key (or an
 Anthropic key) via a required onboarding popup — keys and model picks are
 remembered by the browser (Settings), and with both keys a run starts on
-OpenRouter and falls back to Claude only if OpenRouter fails; see
+Claude and falls back to the free OpenRouter models only if Claude fails; see
 `docs/DEPLOY.md`. See
 `docs/ARCHITECTURE.md` for open TODOs — notably that `NEBIUS_API_KEY` is
 unset by default, so `extract_genes` runs on its regex-heuristic fallback

@@ -13,6 +13,8 @@ for the rest; OpenAI-, DeepSeek- and Grok-hosted models cache the shared
 prefix automatically. Whatever was served from cache comes back in
 `usage.prompt_tokens_details.cached_tokens` and is reported as
 `cache_read_input_tokens`, same field the Anthropic provider fills.
+A provider that rejects the content-part array gets one plain-string retry
+(see `_call_with_retry`) so caching can never be what kills a run.
 429s (rate/daily limits) are the *normal* failure mode on a free tier, not
 an edge case, so retry-with-backoff is built in rather than left to the
 caller; what still fails after that is FallbackProvider's business.
@@ -22,7 +24,7 @@ from __future__ import annotations
 import json
 import time
 
-from openai import OpenAI, RateLimitError
+from openai import BadRequestError, OpenAI, RateLimitError
 
 from backend.agent.providers.base import LLMProvider, LLMResponse, ToolCall, Transcript
 
@@ -77,6 +79,25 @@ class OpenRouterProvider(LLMProvider):
         self.model = model
 
     @staticmethod
+    def _assistant_message(response: LLMResponse) -> dict:
+        """Rebuild one assistant turn in OpenAI wire format from the
+        provider-neutral fields — never from `response.raw`, which holds
+        whichever provider wrote the turn. A run can switch providers
+        mid-way (providers/fallback.py), so this transcript may have been
+        written by the Anthropic adapter."""
+        message: dict = {"role": "assistant", "content": response.text or ""}
+        if response.tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": json.dumps(call.input)},
+                }
+                for call in response.tool_calls
+            ]
+        return message
+
+    @staticmethod
     def _to_native_messages(system: str, transcript: Transcript) -> list[dict]:
         messages: list[dict] = []
         if system:
@@ -85,15 +106,40 @@ class OpenRouterProvider(LLMProvider):
             messages.append(
                 {"role": "system", "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]}
             )
+        # The newest tool result carries the second breakpoint and the
+        # previous one gives it up, so the cached prefix grows with the
+        # transcript instead of pinning an early turn — same rolling scheme
+        # as AnthropicProvider, and the ACT loop resends the whole
+        # conversation every turn, so this is where the saving is.
+        last_tool_message: dict | None = None
         for turn in transcript.turns:
             if turn["role"] == "user":
                 messages.append({"role": "user", "content": turn["text"]})
             elif turn["role"] == "assistant":
-                messages.append(turn["response"].raw)
+                messages.append(OpenRouterProvider._assistant_message(turn["response"]))
             elif turn["role"] == "tool_results":
                 for r in turn["results"]:
                     messages.append({"role": "tool", "tool_call_id": r.tool_call_id, "content": r.content})
+                if turn["results"]:
+                    if last_tool_message is not None:
+                        last_tool_message["content"] = last_tool_message["content"][0]["text"]
+                    last_tool_message = messages[-1]
+                    last_tool_message["content"] = [
+                        {"type": "text", "text": last_tool_message["content"], "cache_control": {"type": "ephemeral"}}
+                    ]
         return messages
+
+    @staticmethod
+    def _without_cache_control(messages: list[dict]) -> list[dict]:
+        """The same messages with every content-part array flattened back to
+        a plain string — i.e. the request as it looked before prompt caching."""
+        plain = []
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                message = {**message, "content": "".join(part.get("text", "") for part in content)}
+            plain.append(message)
+        return plain
 
     def _call_with_retry(self, **kwargs):
         for attempt in range(MAX_RETRIES):
@@ -103,6 +149,20 @@ class OpenRouterProvider(LLMProvider):
                 if attempt == MAX_RETRIES - 1:
                     raise
                 time.sleep(RETRY_BACKOFF_SECONDS * (2**attempt))
+            except BadRequestError:
+                # Caching is an optimization; it is never worth a dead run.
+                # OpenRouter fans requests out to many upstreams, and the
+                # content-part array that carries `cache_control` is not
+                # something every one of them accepts. If a 400 arrives and
+                # we sent parts, retry once with plain strings and continue
+                # uncached rather than failing the run. A 400 for any other
+                # reason re-raises unchanged on that second attempt.
+                messages = kwargs.get("messages") or []
+                if not any(isinstance(m.get("content"), list) for m in messages):
+                    raise
+                return self.client.chat.completions.create(
+                    **{**kwargs, "messages": self._without_cache_control(messages)}
+                )
 
     def _normalize(self, response) -> LLMResponse:
         message = response.choices[0].message
@@ -139,6 +199,15 @@ class OpenRouterProvider(LLMProvider):
         return self._normalize(response)
 
     def stream(self, system: str, transcript: Transcript, max_tokens: int, on_chunk) -> LLMResponse:
+        """Collects everything a turn can carry, not just `delta.content`.
+
+        Reading content alone made this path lie in two directions. Models
+        that stream their answer into `delta.reasoning` (common on the free
+        roster) came back as an empty response with `stop_reason: "end_turn"`
+        — a silent blank report. And a turn that was really a tool call, or
+        was truncated at `max_tokens`, reported the same cheerful
+        "end_turn". `create()`'s `_normalize` always handled all three; this
+        is the streaming path catching up."""
         stream = self._call_with_retry(
             model=self.model,
             max_tokens=max_tokens,
@@ -147,22 +216,54 @@ class OpenRouterProvider(LLMProvider):
             stream_options={"include_usage": True},
         )
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        partial_calls: dict[int, dict] = {}
+        finish_reason = None
         usage = None
         model_name = self.model
         for chunk in stream:
-            if chunk.model:
+            if getattr(chunk, "model", None):
                 model_name = chunk.model
-            if chunk.choices and chunk.choices[0].delta.content:
-                delta = chunk.choices[0].delta.content
-                text_parts.append(delta)
-                on_chunk(delta)
             if getattr(chunk, "usage", None):
                 usage = chunk.usage
-        text = "".join(text_parts)
+            if not getattr(chunk, "choices", None):
+                continue
+            choice = chunk.choices[0]
+            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            if getattr(delta, "content", None):
+                text_parts.append(delta.content)
+                on_chunk(delta.content)
+            else:
+                reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+                    on_chunk(reasoning)
+            for call_delta in getattr(delta, "tool_calls", None) or []:
+                slot = partial_calls.setdefault(getattr(call_delta, "index", 0), {"id": "", "name": "", "arguments": ""})
+                if getattr(call_delta, "id", None):
+                    slot["id"] = call_delta.id
+                function = getattr(call_delta, "function", None)
+                if function is not None:
+                    if getattr(function, "name", None):
+                        slot["name"] = function.name
+                    if getattr(function, "arguments", None):
+                        slot["arguments"] += function.arguments
+
+        tool_calls = [
+            ToolCall(id=slot["id"], name=slot["name"], input=_safe_json(slot["arguments"]))
+            for _, slot in sorted(partial_calls.items())
+            if slot["name"]
+        ]
+        # Reasoning is a fallback body, never an addition: when real content
+        # arrived, the reasoning trace is not part of the answer.
+        text = "".join(text_parts) or "".join(reasoning_parts)
         return LLMResponse(
             text=text,
-            tool_calls=[],
-            stop_reason="end_turn",
+            tool_calls=tool_calls,
+            stop_reason="tool_use" if tool_calls else (finish_reason or "end_turn"),
             usage=_usage_dict(usage),
             model=model_name,
             raw={"role": "assistant", "content": text},

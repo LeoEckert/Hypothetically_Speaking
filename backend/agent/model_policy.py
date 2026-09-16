@@ -25,7 +25,7 @@ from backend.agent.env import env_str
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "models.toml"
 
 DEFAULT_MAIN = "claude-sonnet-5"
-DEFAULT_FAST = "claude-haiku-4-5-20251001"
+DEFAULT_FAST = "claude-haiku-4-5"
 ENVIRONMENTS = ("production", "preview", "development")
 OVERRIDE_KEYS = {"main": "ANTHROPIC_MODEL", "fast": "GROUNDING_FAST_MODEL"}
 

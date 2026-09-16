@@ -49,7 +49,7 @@ const KEY_HINTS: Record<ApiKeyName, string> = {
 const CLAUDE_MODELS: { id: string; name: string }[] = [
   { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
   { id: "claude-opus-5", name: "Claude Opus 5" },
-  { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+  { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
 ]
 
 const CLAUDE_TIERS: { pref: ModelPrefName; policyKey: "main" | "fast"; label: string; hint: string }[] = [

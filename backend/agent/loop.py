@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,7 @@ import openai
 from backend.agent.prompts import (
     CANCELLED_RUN_NOTICE,
     PARTIAL_RUN_NOTICE,
+    REPORT_RETRY_PROMPT,
     REVISE_PROMPT,
     SYSTEM_PROMPT,
     final_report_prompt,
@@ -314,15 +316,44 @@ def _parse_hypotheses(text: str) -> list[dict]:
 
 
 def _extract_hypotheses(report_text: str) -> tuple[str, list[dict]]:
-    """Split a trailing ```json {"hypotheses": [...]} fence off the end of
-    free-text prose. The fence region is always stripped once found, even
-    if it fails to parse — a broken/dangling code block must never leak
-    into what's shown to the user."""
+    """Split the ```json {"hypotheses": [...]} fence out of the report prose.
+    The fence region is always removed once found, even if it fails to parse
+    — a broken/dangling code block must never leak into what's shown to the
+    user.
+
+    The fence is *cut out*, not truncated at. The prompt asks for prose
+    first and the fence last, but a weaker model often emits the fence first
+    or puts prose on both sides of it; truncating at the fence threw that
+    prose away and shipped an empty report (which the UI drew as a blank
+    card), even though the hypotheses parsed perfectly."""
     match = _HYPOTHESES_FENCE_RE.search(report_text)
     if not match:
         return report_text, []
-    stripped = report_text[: match.start()].rstrip()
+    stripped = (report_text[: match.start()].rstrip() + "\n\n" + report_text[match.end():].lstrip()).strip()
     return stripped, _parse_hypotheses(report_text)
+
+
+def _report_unavailable(model: str, state: RunState) -> str:
+    """A last-resort report body, used only when the REPORT call and its
+    re-ask both came back with no prose. Anything is better than an empty
+    string here: `done.report` feeds the results view directly, and a blank
+    one renders as an empty card with no explanation (see
+    frontend/src/components/ReportView.tsx). Shaped like the other failure
+    reports in this module — a `##` heading the frontend renders as a
+    section, then the evidence that was actually gathered."""
+    named_model = f"`{model}`" if model else "the configured model"
+    return (
+        "## Report Unavailable\n\n"
+        f"{named_model} returned no report text, twice in a row — the run itself "
+        "completed and everything it gathered is below, but the write-up step "
+        "produced nothing to show.\n\n"
+        "This is usually the model, not your question: some free models spend "
+        "their whole output budget on reasoning, or answer with only the "
+        "machine-readable block. Re-running, or picking a different model in "
+        "Settings, normally fixes it.\n\n"
+        f"Evidence gathered during this run ({len(state.evidence)} items):\n\n"
+        + state.citation_index()
+    )
 
 
 def _normalize_hypotheses(
@@ -500,8 +531,27 @@ def run_agent(
         return result
 
     _emit(on_event, {"type": "phase", "phase": "grounding"})
-    grounding = _grounding_payload(question, state, on_event, mode, amass_credits_thread, amass_credits_box, api_keys)
-    grounding_text = _grounding_text(grounding)
+    # Grounding runs before the main try below, so anything that escapes here
+    # escapes run_agent itself — and the SSE endpoint's `finally` only sends
+    # `stream_end`, never a `done`. The frontend would then sit on "running"
+    # forever with no error shown anywhere. `_grounding_payload` catches its
+    # own failures, but `_grounding_text` reads keys straight off the payload,
+    # so a payload in an unexpected shape used to kill the whole run. Grounding
+    # is an input to the PLAN prompt, not a hard requirement: degrade it.
+    try:
+        grounding = _grounding_payload(
+            question, state, on_event, mode, amass_credits_thread, amass_credits_box, api_keys
+        )
+        grounding_text = _grounding_text(grounding)
+    except Exception as exc:  # noqa: BLE001 — grounding must never cost the run
+        print(f"grounding failed before PLAN, continuing without it: {exc!r}", file=sys.stderr)
+        grounding = {
+            "status": "failed",
+            "why": f"Grounding could not be completed ({exc}). The run continued without it.",
+            "coherent": None, "triples": [], "destination": "", "premises": [],
+            "knowledge_graph": "", "hypotheses": [], "rejected": [],
+        }
+        grounding_text = _grounding_text(grounding)
     _emit(on_event, {"type": "grounding", **grounding})
 
     no_tool_nudges = 0
@@ -681,6 +731,23 @@ def run_agent(
         )
         state.record_anthropic_tokens(report_resp.usage, report_resp.model)
         report_text, raw_final_hyps = _extract_hypotheses(report_resp.text)
+        if not report_text.strip():
+            # The model returned no prose at all — either an empty completion
+            # (a free model that streamed only reasoning, or truncated before
+            # any content) or nothing but the hypotheses fence. Ask once more
+            # for the body alone, mirroring the re-ask-once pattern in
+            # backend/grounding/adapters.py. Smaller budget: this is a second
+            # call against the same 300s run ceiling.
+            transcript.add_user_text(REPORT_RETRY_PROMPT)
+            retry_resp = _stream_message(
+                provider, on_event, "report", report_detail, transcript=transcript, max_tokens=4096,
+            )
+            state.record_anthropic_tokens(retry_resp.usage, retry_resp.model)
+            retry_text, retry_hyps = _extract_hypotheses(retry_resp.text)
+            report_text = retry_text
+            raw_final_hyps = raw_final_hyps or retry_hyps
+        if not report_text.strip():
+            report_text = _report_unavailable(getattr(provider, "model", "") or "", state)
         normalized_final = _normalize_hypotheses(
             raw_final_hyps, "final", {h["id"]: h for h in state.hypotheses}, set(state.evidence)
         )
@@ -708,10 +775,27 @@ def run_agent(
         )
         _emit(on_event, {"type": "error", "error": str(exc)})
 
-    if state.amass_credits_before is not None:
-        state.amass_credits_after = amass_tool.get_credits(amass_key)
-    cost_summary = build_cost_summary(state, provider, api_keys)
-    evidence_dict = {k: vars(v) for k, v in state.evidence.items()}
+    # Everything from here to the `done` emit is best-effort. It used to sit
+    # outside the try above, so a raise in the credit lookup or in cost
+    # accounting took the whole `done` event with it: the finished report
+    # vanished and the UI showed no error at all, because the SSE endpoint's
+    # `finally` only sends `stream_end`. Cost is allowed to degrade; the
+    # report is not.
+    cost_summary = None
+    evidence_dict: dict = {}
+    try:
+        if state.amass_credits_before is not None:
+            state.amass_credits_after = amass_tool.get_credits(amass_key)
+    except Exception as exc:  # noqa: BLE001 — accounting must never cost the report
+        print(f"amass credit lookup failed, cost panel will be incomplete: {exc}", file=sys.stderr)
+    try:
+        cost_summary = build_cost_summary(state, provider, api_keys)
+    except Exception as exc:  # noqa: BLE001 — same
+        print(f"cost summary failed, reporting the run without it: {exc}", file=sys.stderr)
+    try:
+        evidence_dict = {k: vars(v) for k, v in state.evidence.items()}
+    except Exception as exc:  # noqa: BLE001 — same
+        print(f"evidence serialization failed: {exc}", file=sys.stderr)
 
     result = {
         "run_id": state.run_id,

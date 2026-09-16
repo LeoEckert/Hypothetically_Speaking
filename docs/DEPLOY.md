@@ -193,8 +193,9 @@ by Vercel's own `VERCEL_ENV` (`production` for `main`, `preview` for `dev`):
 production runs the Sonnet/Haiku mix and honours a user's Settings pick,
 the `dev` preview pins both tiers to Haiku and ignores picks — so nobody
 testing `dev` on their own Anthropic key is billed Sonnet. And whenever a
-request carries both keys, the run starts on OpenRouter (free) and moves to
-Claude only if OpenRouter fails (`backend/agent/providers/fallback.py`).
+request carries both keys, the run starts on Claude and moves to OpenRouter's
+free models only if Claude fails — including when it returns a completion
+with no text and no tool calls (`backend/agent/providers/fallback.py`).
 
 **Project Root Directory** stays at its existing value (`frontend`) — no
 dashboard change was needed once the three bugs above were fixed. This

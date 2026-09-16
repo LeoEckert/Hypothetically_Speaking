@@ -185,6 +185,15 @@ Rules:
 - Emit nothing after the closing ``` of the json block.
 """
 
+REPORT_RETRY_PROMPT = """\
+Your last message contained no report body — only the json block, or
+nothing at all. Write the markdown report now: the same fixed sections from
+your system prompt, with the same citation rules.
+
+This time output the markdown **only**. Do not append a json block, and do
+not repeat the hypotheses list — it has already been recorded.
+"""
+
 PARTIAL_RUN_NOTICE = """\
 NOTE: the tool-call or time budget for this run was reached before
 evidence-gathering was complete. Write the final report from the evidence

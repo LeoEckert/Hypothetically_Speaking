@@ -1,6 +1,10 @@
 """Anthropic Messages API behind the LLMProvider interface. Owns everything
 Anthropic-specific: content-block conversion, prompt caching (cache_control),
 and the empty-text-block guard — none of that leaks into loop.py/adapters.py.
+
+Every request is built from the provider-neutral `Transcript`/`LLMResponse`
+fields, so this adapter can pick up a conversation another adapter started
+(see providers/fallback.py).
 """
 from __future__ import annotations
 
@@ -9,13 +13,26 @@ from anthropic import Anthropic
 from backend.agent.providers.base import LLMProvider, LLMResponse, ToolCall, Transcript
 
 
-def _strip_empty_text_blocks(content_blocks):
-    """Claude sometimes returns a text block with empty/whitespace-only text
-    alongside a tool_use or thinking block in the same turn. Resending that
-    verbatim on the next request gets rejected with a 400 ("text content
-    blocks must be non-empty"), which otherwise aborts the whole run. Drop
-    only truly empty text blocks; everything else passes through untouched."""
-    return [b for b in content_blocks if not (getattr(b, "type", None) == "text" and not b.text.strip())]
+def _assistant_blocks(response: LLMResponse) -> list[dict]:
+    """Rebuild one assistant turn as Anthropic content blocks from the
+    provider-neutral fields of `LLMResponse` — never from `response.raw`,
+    which holds whichever provider produced the turn's own wire format. A
+    run can switch providers mid-way (providers/fallback.py), so the
+    transcript we are handed may well have been written by the OpenAI-shaped
+    adapter; rebuilding is what makes the two interchangeable.
+
+    Dropping empty text also keeps an old guard alive for free: Claude
+    sometimes returns a whitespace-only text block next to a tool_use block,
+    and resending that verbatim is a 400 ("text content blocks must be
+    non-empty") that used to abort the whole run."""
+    blocks: list[dict] = []
+    if response.text and response.text.strip():
+        blocks.append({"type": "text", "text": response.text})
+    blocks.extend(
+        {"type": "tool_use", "id": call.id, "name": call.name, "input": call.input}
+        for call in response.tool_calls
+    )
+    return blocks
 
 
 class AnthropicProvider(LLMProvider):
@@ -53,8 +70,12 @@ class AnthropicProvider(LLMProvider):
             if turn["role"] == "user":
                 messages.append({"role": "user", "content": turn["text"]})
             elif turn["role"] == "assistant":
-                response: LLMResponse = turn["response"]
-                messages.append({"role": "assistant", "content": _strip_empty_text_blocks(response.raw)})
+                blocks = _assistant_blocks(turn["response"])
+                # An assistant turn with neither text nor tool calls has no
+                # valid representation here — the API rejects empty content —
+                # so it is left out rather than sent as a broken message.
+                if blocks:
+                    messages.append({"role": "assistant", "content": blocks})
             elif turn["role"] == "tool_results":
                 content = [
                     {"type": "tool_result", "tool_use_id": r.tool_call_id, "content": r.content}

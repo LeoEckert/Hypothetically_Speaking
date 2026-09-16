@@ -34,7 +34,8 @@ def _env_float(name: str) -> float | None:
 
 
 def _pricing_for(model: str) -> dict | None:
-    """Dated ids ("claude-haiku-4-5-20251001") price as their family."""
+    """A dated or suffixed id prices as its family; the ids this repo uses
+    are the plain current ones, which match the table exactly."""
     if model in ANTHROPIC_PRICING_PER_1M:
         return ANTHROPIC_PRICING_PER_1M[model]
     for family, pricing in ANTHROPIC_PRICING_PER_1M.items():

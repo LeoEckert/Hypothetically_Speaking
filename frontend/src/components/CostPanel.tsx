@@ -107,7 +107,19 @@ export function CostPanel({ cost }: { cost: CostSummary }) {
               model: {cost.anthropic.model}
             </Badge>
           )}
+          {cost.anthropic.cache_read_input_tokens > 0 && (
+            <Badge variant="outline" className="text-xs font-normal" title="Prompt tokens served from cache at a fraction of the input rate">
+              {cost.anthropic.cache_read_input_tokens.toLocaleString()} cached
+            </Badge>
+          )}
         </CardTitle>
+        {cost.anthropic.fell_back_from && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Started on {llmLabel(cost.anthropic.fell_back_from)} and switched to{" "}
+            {llmLabel(cost.anthropic.provider)} mid-run
+            {cost.anthropic.fallback_reason ? `: ${cost.anthropic.fallback_reason}` : "."}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         <div>
