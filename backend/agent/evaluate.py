@@ -343,7 +343,15 @@ def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
     report_sections = split_report_sections(run_result.get("report", ""))
     evidence = run_result.get("evidence", {})
 
-    cited_ids = set(hypothesis.get("evidence_ids", [])) | set(hypothesis.get("contradicting_ids", []))
+    # What the original report already put in front of the reader, across the
+    # whole document — not just the five rubric sections, since ## Hypothesis
+    # carries citations too. Used to tell a citation the reviser *invented*
+    # apart from one it faithfully carried over, which are very different
+    # failures and used to be reported as the same one.
+    originally_cited = set(hypothesis.get("evidence_ids", [])) | set(hypothesis.get("contradicting_ids", []))
+    originally_cited |= set(_CITATION_RE.findall(run_result.get("report", "") or ""))
+
+    cited_ids = set(originally_cited)
     for body in report_sections.values():
         cited_ids |= set(_CITATION_RE.findall(body))
     cited_ids &= set(evidence)  # only ids that actually resolve in this run's registry
@@ -449,12 +457,25 @@ def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
     produced_ids: set[str] = set()
     for text in ordered_sections.values():
         produced_ids |= set(_CITATION_RE.findall(text))
-    invented = sorted(produced_ids - cited_ids)
+    # Two different failures, told apart by whether the original report had
+    # already made the citation. Blaming the reviser for a marker it merely
+    # carried over sends a reader hunting in the wrong place -- and reads as
+    # if the evaluation itself is broken.
+    unsupported = produced_ids - cited_ids
+    invented = sorted(unsupported - originally_cited)
+    carried_over = sorted(unsupported & originally_cited)
     if invented:
         unresolved.append(
             "FABRICATION CHECK FAILED: the revision cites " + ", ".join(invented) + ", "
-            "which appear nowhere in this hypothesis's evidence -- treat these claims as "
-            "unsupported."
+            "which appear nowhere in this run's evidence and were not in the original "
+            "report either -- treat these claims as unsupported."
+        )
+    if carried_over:
+        unresolved.append(
+            "The revision repeats " + ", ".join(carried_over) + " from the original report, "
+            "but no such entry exists in this run's evidence registry -- the original "
+            "report cited a source it never retrieved, so those claims are unsupported "
+            "in either version."
         )
 
     confidence = revise_payload.get("confidence")

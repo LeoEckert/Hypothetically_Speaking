@@ -189,3 +189,64 @@ def test_every_rubric_section_gets_exactly_one_critique():
 ```"""
     result = _run(revise_response)
     assert [c["section"] for c in result["critiques"]] == [rs["section"] for rs in RUBRIC]
+
+
+def test_a_citation_carried_over_from_the_report_is_not_called_a_fabrication():
+    """The original report cited a source that never made it into the run's
+    evidence registry — a hallucination by the *report* model. When the
+    reviser faithfully repeats it, the old check announced "FABRICATION CHECK
+    FAILED: the revision cites ...", which points a reader at the wrong step
+    and reads as though the evaluation itself is broken. Seen for real while
+    running the app locally."""
+    report = REPORT + "\n\n## Failure Modes\n\nOff-target effects [PMID:404404]\n"
+    revise_response = """```json
+{
+  "statement": "Revised statement.",
+  "confidence": "medium",
+  "confidence_reason": "still thin",
+  "sections": {
+    "evidence_for": "- Strong data [PMID:111]",
+    "evidence_against": "- Some caveats [PMID:222]",
+    "confidence_uncertainty": "Medium confidence [PMID:111].",
+    "failure_modes": "- Off-target effects [PMID:404404]",
+    "next_experiment": "Run a cohort study [PMID:111]."
+  },
+  "change_log": [],
+  "unresolved": []
+}
+```"""
+    unresolved = _run(revise_response, {"report": report, "hypotheses": [dict(HYPOTHESIS)], "evidence": dict(EVIDENCE)})[
+        "revised"
+    ]["unresolved"]
+
+    assert not any("FABRICATION CHECK FAILED" in u for u in unresolved), (
+        "the reviser did not invent this — the report did"
+    )
+    carried = [u for u in unresolved if "PMID:404404" in u]
+    assert carried, "it is still flagged as unsupported, just attributed correctly"
+    assert "repeats" in carried[0] and "original report cited a source it never retrieved" in carried[0]
+
+
+def test_a_genuinely_invented_citation_is_still_called_a_fabrication():
+    """The other half of the split: an id in neither the registry nor the
+    original report is still the reviser's doing."""
+    revise_response = """```json
+{
+  "statement": "Revised statement.",
+  "confidence": "medium",
+  "confidence_reason": "still thin",
+  "sections": {
+    "evidence_for": "- Strong data [PMID:111]",
+    "evidence_against": "- Invented support [PMID:987654]",
+    "confidence_uncertainty": "Medium confidence [PMID:111].",
+    "failure_modes": "- Off-target effects [PMID:333]",
+    "next_experiment": "Run a cohort study [PMID:111]."
+  },
+  "change_log": [],
+  "unresolved": []
+}
+```"""
+    unresolved = _run(revise_response)["revised"]["unresolved"]
+    fabrication = [u for u in unresolved if "FABRICATION CHECK FAILED" in u]
+    assert fabrication and "PMID:987654" in fabrication[0]
+    assert "not in the original report either" in fabrication[0]
