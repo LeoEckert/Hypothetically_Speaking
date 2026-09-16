@@ -116,7 +116,20 @@ trial-and-error by then to have already found the `a2wsgi`/staging fixes).
 first** — a traceback-catching diagnostic function is the fastest way back
 to a real Python exception when `vercel logs` comes up empty.
 
-## Routing: KNOWN UNRESOLVED BUG — multi-segment `/api/*` routes 404
+## Routing: multi-segment `/api/*` routes 404 — worked around, not fixed
+
+**The workaround in force**: every route the frontend calls is one segment
+past `/api`, with any identifier moved into the request body. `POST
+/api/evaluate` replaced `POST /api/run/<id>/evaluate` (the run id was never
+read server-side) and `POST /api/tool` replaced `PUT /api/tools/<name>`. The
+deeper originals stay registered for local dev. `tests/test_api_routes.py`
+holds the line, and also scans the frontend's `fetch` calls, so a new deep
+route fails CI instead of 404ing in production — which is how "Evaluate with
+AI" broke twice, since `uvicorn` serves every depth happily in local dev.
+`/api/admin/*` and `/api/trajectory/view` are still unreachable in
+production; neither is fetched by the app.
+
+The underlying platform bug is unchanged:
 
 A plain `api/index.py` in this project only auto-routes the *literal* `/api`
 path, not the whole `/api/*` prefix (confirmed: `/api` reached the function,

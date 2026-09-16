@@ -107,11 +107,18 @@ class RunRequest(BaseModel):
 
 class ToolToggleRequest(BaseModel):
     enabled: bool
+    # Only read by the single-segment POST /api/tool route below; the older
+    # PUT /api/tools/{name} takes it from the path instead.
+    name: str = ""
 
 
 class EvaluateRequest(BaseModel):
     comment: str = ""
     api_keys: dict[str, str] = {}
+    # Which run this evaluates. Nothing server-side looks it up (there is no
+    # run cache); it rides the body so the route can stay one segment deep —
+    # see the note on POST /api/evaluate below.
+    run_id: str = ""
     # The finished run this evaluates (report/hypotheses/evidence) — the
     # client already received all of this in the `done` event at the end of
     # its streaming run; there is no server-side run cache to look it up
@@ -188,16 +195,30 @@ def get_tools():
     ]
 
 
-@app.put("/api/tools/{name}")
-def set_tool(name: str, req: ToolToggleRequest):
+def _set_tool(name: str, enabled: bool) -> dict:
     """Runtime-only toggle, snapshotted into RunState.enabled_tools at the
     start of each run — an in-flight run is never affected, only the next one."""
     try:
-        registry.set_tool_enabled(name, req.enabled)
+        registry.set_tool_enabled(name, enabled)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"unknown tool: {name}")
-    enabled = set(enabled_tool_names())
-    return {"name": name, "enabled": name in enabled}
+    return {"name": name, "enabled": name in set(enabled_tool_names())}
+
+
+@app.post("/api/tool")
+def set_tool_flat(req: ToolToggleRequest):
+    """One segment past /api on purpose — see POST /api/evaluate's note."""
+    if not req.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    return _set_tool(req.name, req.enabled)
+
+
+@app.put("/api/tools/{name}")
+def set_tool(name: str, req: ToolToggleRequest):
+    """The original shape, kept for local dev and any existing caller. Two
+    segments past /api, so it 404s on the production host — the frontend
+    calls POST /api/tool instead."""
+    return _set_tool(name, req.enabled)
 
 
 async def _watch_disconnect(request: Request, cancel_event: threading.Event) -> None:
@@ -275,12 +296,11 @@ async def start_run(req: RunRequest, request: Request):
     )
 
 
-@app.post("/api/run/{run_id}/evaluate")
-def evaluate_run(run_id: str, req: EvaluateRequest):
+def _evaluate(req: EvaluateRequest) -> dict:
     """Critique + revise the run's selected hypothesis via a fresh, one-off
     LLM judge+revise pass (see backend/agent/evaluate.py). `req.run_result`
     carries the finished run the client already has — there's no server-side
-    run cache to look `run_id` up in any more."""
+    run cache to look a run id up in."""
     try:
         provider = get_provider(req.api_keys, tier="main")
     except Exception as exc:
@@ -289,6 +309,29 @@ def evaluate_run(run_id: str, req: EvaluateRequest):
         return evaluate_hypothesis(req.run_result, req.comment, provider)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/evaluate")
+def evaluate_flat(req: EvaluateRequest):
+    """Deliberately one segment past /api.
+
+    On this Vercel account the catch-all function file only matches a single
+    path segment, so anything deeper — the old
+    `POST /api/run/{run_id}/evaluate` — 404s at the platform level before the
+    function is ever invoked (see docs/DEPLOY.md's routing section; two
+    attempts at a `vercel.json` rewrites fix both failed, the second taking
+    working routes down with it). The run id was never used server-side, so
+    flattening the route sidesteps the platform bug entirely with no
+    behaviour change. Keep every user-facing route one segment deep —
+    tests/test_api_routes.py enforces it."""
+    return _evaluate(req)
+
+
+@app.post("/api/run/{run_id}/evaluate")
+def evaluate_run(run_id: str, req: EvaluateRequest):
+    """The original shape, kept for local dev and any existing caller. Two
+    segments past /api, so it 404s on the production host."""
+    return _evaluate(req)
 
 
 def _trajectory(question: str | None, walk: str, depth: int, records: bool) -> dict:

@@ -61,11 +61,16 @@ export async function fetchTools(): Promise<ToolInfo[]> {
   return res.json()
 }
 
+// Every path below stays ONE segment past /api. On this Vercel account the
+// catch-all Python function only matches a single segment, so anything
+// deeper 404s at the platform level before the backend is ever invoked —
+// that is what broke "Evaluate with AI" in production. See docs/DEPLOY.md's
+// routing section; the identifier goes in the body instead of the path.
 export async function setToolEnabled(name: string, enabled: boolean) {
-  const res = await fetch(`${API_BASE}/api/tools/${encodeURIComponent(name)}`, {
-    method: "PUT",
+  const res = await fetch(`${API_BASE}/api/tool`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify({ name, enabled }),
   })
   return res.json()
 }
@@ -83,10 +88,10 @@ export async function evaluateHypothesis(
   comment: string,
   apiKeys: Record<string, string> = {}
 ): Promise<EvaluationResult> {
-  const res = await fetch(`${API_BASE}/api/run/${runId}/evaluate`, {
+  const res = await fetch(`${API_BASE}/api/evaluate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ comment, run_result: runResult, api_keys: apiKeys }),
+    body: JSON.stringify({ comment, run_result: runResult, api_keys: apiKeys, run_id: runId }),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
