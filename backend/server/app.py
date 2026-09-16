@@ -296,7 +296,30 @@ async def start_run(req: RunRequest, request: Request):
     )
 
 
-def _evaluate(req: EvaluateRequest) -> dict:
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, default=str)}\n\n"
+
+
+def _stream_worker(work, on_event, loop, queue):
+    """Runs a synchronous job on a thread, bridging its events onto `queue`
+    and always closing the stream — the same shape POST /api/run uses, so a
+    failure can never leave the client waiting on a stream that has stopped
+    producing."""
+    def _run() -> None:
+        try:
+            result = work(on_event)
+            on_event(result)
+        except HTTPException as exc:
+            on_event({"type": "error", "error": str(exc.detail)})
+        except Exception as exc:  # noqa: BLE001 — surfaced to the client, not swallowed
+            on_event({"type": "error", "error": str(exc)})
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "stream_end"})
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _evaluate(req: EvaluateRequest, on_event=None) -> dict:
     """Critique + revise the run's selected hypothesis via a fresh, one-off
     LLM judge+revise pass (see backend/agent/evaluate.py). `req.run_result`
     carries the finished run the client already has — there's no server-side
@@ -306,7 +329,7 @@ def _evaluate(req: EvaluateRequest) -> dict:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
-        return evaluate_hypothesis(req.run_result, req.comment, provider)
+        return evaluate_hypothesis(req.run_result, req.comment, provider, on_event=on_event)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except _KEY_INVALID_ERRORS:
@@ -327,7 +350,7 @@ def _evaluate(req: EvaluateRequest) -> dict:
 
 
 @app.post("/api/evaluate")
-def evaluate_flat(req: EvaluateRequest):
+async def evaluate_flat(req: EvaluateRequest):
     """Deliberately one segment past /api.
 
     On this Vercel account the catch-all function file only matches a single
@@ -338,8 +361,49 @@ def evaluate_flat(req: EvaluateRequest):
     working routes down with it). The run id was never used server-side, so
     flattening the route sidesteps the platform bug entirely with no
     behaviour change. Keep every user-facing route one segment deep —
-    tests/test_api_routes.py enforces it."""
-    return _evaluate(req)
+    tests/test_api_routes.py enforces it.
+
+    Streams SSE for the same reason POST /api/run does: the judge and revise
+    passes are two long single calls, and a plain request/response left the
+    button reading "Evaluating…" with no way to tell work from a hang. The
+    provider is resolved *before* the stream opens so a missing or rejected
+    key is still a plain 400 rather than an error buried in a 200 stream.
+    The result arrives as an `evaluation` event, then `stream_end`."""
+    provider_error = None
+    try:
+        get_provider(req.api_keys, tier="main")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        provider_error = exc
+    if provider_error is not None:
+        raise HTTPException(status_code=400, detail=str(provider_error))
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def on_event(event: dict) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    _stream_worker(
+        lambda emit: {"type": "evaluation", "evaluation": _evaluate(req, on_event=emit)},
+        on_event,
+        loop,
+        queue,
+    )
+
+    async def event_gen():
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            yield _sse(event)
+            if event.get("type") == "stream_end":
+                return
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @app.post("/api/run/{run_id}/evaluate")

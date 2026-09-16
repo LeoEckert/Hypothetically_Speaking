@@ -10,7 +10,7 @@ import { ResultsView } from "@/components/ResultsView"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useConfig } from "@/hooks/useConfig"
 import { useRunsStore } from "@/hooks/useRunsStore"
-import { evaluateHypothesis } from "@/lib/api"
+import { evaluateHypothesis, type EvaluateProgress } from "@/lib/api"
 import { deriveLiveStatus } from "@/lib/liveStatus"
 import { cancelCurrentStream, currentLiveRunId, onStreamFinished, startAndStream } from "@/lib/runStream"
 import { getApiKeysSnapshot, hasUsableLlmKey, loadApiKeys } from "@/store/apiKeysStore"
@@ -129,13 +129,14 @@ function App() {
     setComposeOpen(true)
   }
 
-  async function handleEvaluate(comment: string) {
+  async function handleEvaluate(comment: string, onProgress?: (p: EvaluateProgress) => void) {
     if (!viewedRunId || !doneEvent) return
     const result = await evaluateHypothesis(
       viewedRunId,
       { report: doneEvent.report, hypotheses: doneEvent.hypotheses, evidence: doneEvent.evidence },
       comment,
-      apiKeysForRequest()
+      apiKeysForRequest(),
+      onProgress
     )
     appendEvaluation(viewedRunId, result)
   }
