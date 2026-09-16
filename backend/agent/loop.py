@@ -531,8 +531,27 @@ def run_agent(
         return result
 
     _emit(on_event, {"type": "phase", "phase": "grounding"})
-    grounding = _grounding_payload(question, state, on_event, mode, amass_credits_thread, amass_credits_box, api_keys)
-    grounding_text = _grounding_text(grounding)
+    # Grounding runs before the main try below, so anything that escapes here
+    # escapes run_agent itself — and the SSE endpoint's `finally` only sends
+    # `stream_end`, never a `done`. The frontend would then sit on "running"
+    # forever with no error shown anywhere. `_grounding_payload` catches its
+    # own failures, but `_grounding_text` reads keys straight off the payload,
+    # so a payload in an unexpected shape used to kill the whole run. Grounding
+    # is an input to the PLAN prompt, not a hard requirement: degrade it.
+    try:
+        grounding = _grounding_payload(
+            question, state, on_event, mode, amass_credits_thread, amass_credits_box, api_keys
+        )
+        grounding_text = _grounding_text(grounding)
+    except Exception as exc:  # noqa: BLE001 — grounding must never cost the run
+        print(f"grounding failed before PLAN, continuing without it: {exc!r}", file=sys.stderr)
+        grounding = {
+            "status": "failed",
+            "why": f"Grounding could not be completed ({exc}). The run continued without it.",
+            "coherent": None, "triples": [], "destination": "", "premises": [],
+            "knowledge_graph": "", "hypotheses": [], "rejected": [],
+        }
+        grounding_text = _grounding_text(grounding)
     _emit(on_event, {"type": "grounding", **grounding})
 
     no_tool_nudges = 0

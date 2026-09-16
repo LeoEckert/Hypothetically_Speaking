@@ -77,3 +77,14 @@ def test_no_model_id_in_the_repo_carries_a_date_suffix():
             if dated.search(line):
                 offenders.append(f"{path.relative_to(root)}:{number}")
     assert not offenders, f"date-suffixed Claude model ids: {offenders}"
+
+
+def test_config_advertises_the_same_provider_order_the_code_uses():
+    """`/api/config.provider_order` is what the frontend tells users about
+    which key a run starts on — it drifted out of step with get_provider()
+    once already."""
+    from fastapi.testclient import TestClient
+
+    from backend.server.app import app
+
+    assert TestClient(app).get("/api/config").json()["provider_order"] == ["anthropic", "openrouter"]

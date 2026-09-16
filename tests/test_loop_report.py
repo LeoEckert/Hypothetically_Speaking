@@ -146,3 +146,32 @@ def test_amass_credit_lookup_failure_still_emits_the_report(monkeypatch):
     monkeypatch.setattr(loop.amass_tool, "get_credits", _boom)
     done, _ = _run(monkeypatch, ["plan", "revise", "## Hypothesis\n\nStill here."])
     assert "Still here." in done["report"]
+
+
+def test_a_broken_grounding_payload_does_not_kill_the_run(monkeypatch):
+    """Grounding runs *before* the main try block in run_agent, so anything
+    escaping there escaped run_agent itself — and the SSE endpoint only sends
+    `stream_end` after that, never a `done`. The UI's spinner then ran
+    forever with no error. Found by running the app locally against a
+    payload whose premises used the wrong key."""
+    monkeypatch.setattr(
+        loop,
+        "_grounding_payload",
+        lambda *args, **kwargs: {
+            "status": "complete", "why": "", "coherent": True, "destination": "x",
+            # `premises` entries are missing the "status" key _grounding_text reads.
+            "premises": [{"premise_id": "p1", "subject": "a", "predicate": "b", "object": "c"}],
+            "triples": [], "knowledge_graph": "", "hypotheses": [], "rejected": [],
+        },
+    )
+    done, _ = _run(monkeypatch, ["plan", "revise", "## Hypothesis\n\nThe run still finished."])
+    assert "The run still finished." in done["report"]
+
+
+def test_grounding_blowing_up_entirely_does_not_kill_the_run(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise RuntimeError("grounding exploded")
+
+    monkeypatch.setattr(loop, "_grounding_payload", _boom)
+    done, _ = _run(monkeypatch, ["plan", "revise", "## Hypothesis\n\nStill finished."])
+    assert "Still finished." in done["report"]

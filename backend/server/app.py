@@ -142,9 +142,9 @@ def get_config():
         "anthropic_key_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "openrouter_key_configured": bool(os.environ.get("OPENROUTER_API_KEY")),
         "default_provider": "openrouter",
-        # With both keys a run starts on OpenRouter and falls back to Claude
-        # only if OpenRouter fails (backend/agent/providers/fallback.py).
-        "provider_order": ["openrouter", "anthropic"],
+        # With both keys a run starts on Claude and falls back to OpenRouter's
+        # free models only if Claude fails (backend/agent/providers/fallback.py).
+        "provider_order": ["anthropic", "openrouter"],
         # Which Claude models this deployment uses per tier, and whether the
         # user's Settings may override them — from backend/config/models.toml
         # (backend/agent/model_policy.py); the frontend shows it next to its

@@ -54,8 +54,14 @@ export function StageRail({ active }: { active?: string }) {
   )
 }
 
-function EntityBox({ name, destination }: { name: string; destination?: string }) {
-  const isDestination = !!destination && name.toLowerCase() === destination.toLowerCase()
+function EntityBox({ name, destination }: { name?: string; destination?: string }) {
+  // Everything drawn here came out of a model as JSON. One missing key used
+  // to take the whole page down to a white screen mid-run, which on this
+  // view — the grounding trace — is the most visible thing in the app. Same
+  // reasoning as the backend's schema hardening: degrade the one box, never
+  // the page.
+  const label = name ?? ""
+  const isDestination = !!destination && label.toLowerCase() === destination.toLowerCase()
   return (
     <div
       className={`rounded-md border px-3 py-2 text-center text-xs font-medium ${
@@ -64,7 +70,7 @@ function EntityBox({ name, destination }: { name: string; destination?: string }
       title={isDestination ? "Destination — the outcome your question asks about" : undefined}
     >
       {isDestination && <span className="mb-0.5 block text-[9px] uppercase tracking-wide text-primary">destination</span>}
-      {name}
+      {label || <span className="text-muted-foreground">(unnamed)</span>}
     </div>
   )
 }
@@ -84,10 +90,11 @@ export function TripleGraph({ triple, destination }: { triple: GroundingTriple; 
   )
 }
 
-function StatusBadge({ status }: { status: LinkVerdict }) {
+function StatusBadge({ status }: { status?: LinkVerdict }) {
+  const verdict = status ?? "error"
   return (
-    <Badge variant="outline" className={`text-[10px] ${STATUS_STYLES[status]}`}>
-      {status === "error" ? "no verdict" : status.toLowerCase()}
+    <Badge variant="outline" className={`text-[10px] ${STATUS_STYLES[verdict] ?? ""}`}>
+      {verdict === "error" ? "no verdict" : verdict.toLowerCase()}
     </Badge>
   )
 }
@@ -104,14 +111,14 @@ function PremiseRow({ premise, destination }: { premise: GroundingPremise; desti
         <StatusBadge status={premise.status} />
       </div>
       <TripleGraph triple={premise} destination={destination} />
-      {premise.evidence.length > 0 && (
+      {(premise.evidence?.length ?? 0) > 0 && (
         <details className="border-t pt-2">
           <summary className="cursor-pointer text-[10px] text-muted-foreground">
-            {premise.evidence.length} records — how each verified the link
+            {premise.evidence?.length ?? 0} records — how each verified the link
           </summary>
           <ul className="mt-1 space-y-1">
-            {premise.evidence.map((evidence) => (
-              <li key={evidence.amass_id} className="text-[10px] text-muted-foreground">
+            {(premise.evidence ?? []).map((evidence, index) => (
+              <li key={evidence.amass_id || `evidence-${index}`} className="text-[10px] text-muted-foreground">
                 {evidence.url ? (
                   <a href={evidence.url} target="_blank" rel="noreferrer" className="font-mono hover:underline">
                     {evidenceLabel(evidence)}
@@ -307,8 +314,8 @@ export function GroundingTrace({
                 One per weak link into the destination, each with an intervention, readout, model system and the observation that would reject it.
               </p>
             </div>
-            {grounding.hypotheses.map((hypothesis) => (
-              <HypothesisRow key={hypothesis.id} hypothesis={hypothesis} destination={destination} />
+            {grounding.hypotheses.map((hypothesis, index) => (
+              <HypothesisRow key={hypothesis.id || `hypothesis-${index}`} hypothesis={hypothesis} destination={destination} />
             ))}
           </div>
         )}
