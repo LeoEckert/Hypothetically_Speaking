@@ -75,6 +75,10 @@ export interface CostSummary {
     output_tokens: number
     cache_creation_input_tokens: number
     cache_read_input_tokens: number
+    // Set when a run started on one provider and finished on the other
+    // (backend/agent/providers/fallback.py): the provider it left, and why.
+    fell_back_from?: string | null
+    fallback_reason?: string | null
   }
   nebius: ProviderCost & { prompt_tokens: number; completion_tokens: number }
   amass: ProviderCost & {

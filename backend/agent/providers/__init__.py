@@ -10,9 +10,15 @@ Which provider a run gets:
 - only an OpenRouter key -> OpenRouterProvider (free models);
 - only an Anthropic key  -> AnthropicProvider, model per
   backend/config/models.toml for this deployment (see model_policy.py);
-- both                   -> FallbackProvider: OpenRouter first, and the run
-  moves to Claude only if OpenRouter fails (rate/daily limit, model gone,
-  5xx, transport) — sticky for the rest of that run.
+- both                   -> FallbackProvider: Claude first, and the run moves
+  to OpenRouter's free models only if Claude fails (rate limit, credit
+  exhaustion, 5xx, transport, or a completion with nothing in it) — sticky
+  for the rest of that run.
+
+Claude leads when both keys are present because the free roster could not be
+relied on for the hardest generation in a run, the final report: models there
+routinely answered it with an empty completion or with the machine-readable
+block alone, which is a quality failure no status code announces.
 
 This is the one place that decides; loop.py, adapters.py and evaluate.py all
 call get_provider() instead of constructing an SDK client directly.
@@ -89,5 +95,5 @@ def get_provider(api_keys: dict[str, str] | None = None, tier: str = "main") -> 
     openrouter = _openrouter(api_keys, tier, openrouter_key, bool(user_openrouter_key)) if openrouter_key else None
     anthropic = _anthropic(api_keys, tier, anthropic_key, bool(user_anthropic_key)) if anthropic_key else None
     if openrouter and anthropic:
-        return FallbackProvider(primary=openrouter, fallback=anthropic)
+        return FallbackProvider(primary=anthropic, fallback=openrouter)
     return openrouter or anthropic  # type: ignore[return-value]

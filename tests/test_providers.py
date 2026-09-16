@@ -38,13 +38,15 @@ def test_local_dev_openrouter_env_var_is_used_when_no_anthropic_key(monkeypatch)
     assert provider.key_source == "platform"
 
 
-def test_both_keys_start_on_openrouter_with_claude_as_the_fallback(monkeypatch):
+def test_both_keys_run_on_claude_with_openrouter_as_the_fallback(monkeypatch):
+    """Claude writes the report; the free path stays as a safety net for a
+    rate limit or an outage on the Anthropic side."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "local-dev-openrouter")
     provider = get_provider({"ANTHROPIC_API_KEY": "user-anthropic-key"})
     assert isinstance(provider, FallbackProvider)
-    assert isinstance(provider.primary, OpenRouterProvider) and isinstance(provider.fallback, AnthropicProvider)
-    assert provider.name == "openrouter" and not provider.switched
-    assert provider.primary.key_source == "platform" and provider.fallback.key_source == "user"
+    assert isinstance(provider.primary, AnthropicProvider) and isinstance(provider.fallback, OpenRouterProvider)
+    assert provider.name == "anthropic" and not provider.switched
+    assert provider.primary.key_source == "user" and provider.fallback.key_source == "platform"
 
 
 def test_user_openrouter_key_is_used_when_no_anthropic_key(monkeypatch):
@@ -120,7 +122,7 @@ def test_blank_anthropic_model_env_falls_back_to_the_default(monkeypatch):
     main = get_provider({"ANTHROPIC_API_KEY": "user-anthropic-key"}, tier="main")
     fast = get_provider({"ANTHROPIC_API_KEY": "user-anthropic-key"}, tier="fast")
     assert main.model == "claude-sonnet-5"
-    assert fast.model == "claude-haiku-4-5-20251001"
+    assert fast.model == "claude-haiku-4-5"
 
 
 def test_anthropic_provider_refuses_an_empty_model_name():
@@ -148,7 +150,7 @@ def test_env_helpers_treat_blank_as_unset(monkeypatch):
 # --- FallbackProvider: free first, Claude only when OpenRouter actually fails ---
 
 
-def _fake_provider(name, model, fail_with=None, calls=None):
+def _fake_provider(name, model, fail_with=None, calls=None, response=None):
     from backend.agent.providers.base import LLMProvider, LLMResponse
 
     class _P(LLMProvider):
@@ -158,7 +160,7 @@ def _fake_provider(name, model, fail_with=None, calls=None):
             (calls if calls is not None else []).append(name)
             if fail_with is not None:
                 raise fail_with
-            return LLMResponse(text=f"from {name}", model=model)
+            return response if response is not None else LLMResponse(text=f"from {name}", model=model)
 
         def stream(self, system, transcript, max_tokens, on_chunk):
             on_chunk("x")
@@ -180,12 +182,12 @@ def _status_error(code):
 def test_fallback_switches_on_a_rate_limit_and_stays_switched():
     calls = []
     primary = _fake_provider("openrouter", "free-model:free", fail_with=_status_error(429), calls=calls)
-    fallback = _fake_provider("anthropic", "claude-haiku-4-5-20251001", calls=calls)
+    fallback = _fake_provider("anthropic", "claude-haiku-4-5", calls=calls)
     provider = FallbackProvider(primary, fallback)
 
     first = provider.complete("hi", 100)
     assert first.text == "from anthropic" and provider.switched
-    assert provider.name == "anthropic" and provider.model == "claude-haiku-4-5-20251001"
+    assert provider.name == "anthropic" and provider.model == "claude-haiku-4-5"
     assert "429" in (provider.fallback_reason or "")
     provider.complete("again", 100)
     assert calls == ["openrouter", "anthropic", "anthropic"], "after the switch the primary is never retried"
@@ -225,3 +227,174 @@ def test_openrouter_system_prompt_carries_a_cache_breakpoint():
     assert messages[0]["role"] == "system"
     assert messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert messages[1] == {"role": "user", "content": "q"}
+
+
+# --- An empty completion is a failure too, not a successful turn ---
+
+
+def test_a_completion_with_no_text_and_no_tool_calls_triggers_the_fallback():
+    """The free path's real failure mode is a 200 OK with nothing in it —
+    reasoning-only output, or a truncation before any content. That is not
+    an exception, so it used to sail straight through to the report."""
+    from backend.agent.providers.base import LLMResponse
+
+    calls = []
+    primary = _fake_provider("openrouter", "m:free", calls=calls, response=LLMResponse(text="   ", model="m:free"))
+    fallback = _fake_provider("anthropic", "claude-sonnet-5", calls=calls)
+    provider = FallbackProvider(primary, fallback)
+
+    assert provider.complete("write the report", 100).text == "from anthropic"
+    assert provider.switched and "empty" in (provider.fallback_reason or "").lower()
+    assert calls == ["openrouter", "anthropic"]
+
+
+def test_a_tool_call_turn_with_no_text_is_not_treated_as_empty():
+    """A normal tool-use turn carries no prose. Falling back on that would
+    switch providers on nearly every ACT turn."""
+    from backend.agent.providers.base import LLMResponse, ToolCall, Transcript
+
+    calls = []
+    tool_turn = LLMResponse(
+        text="", tool_calls=[ToolCall(id="c1", name="pubmed", input={})], stop_reason="tool_use", model="m:free"
+    )
+    provider = FallbackProvider(
+        _fake_provider("openrouter", "m:free", calls=calls, response=tool_turn),
+        _fake_provider("anthropic", "claude-sonnet-5", calls=calls),
+    )
+    result = provider.create("sys", Transcript(), [], 100)
+    assert result.tool_calls and not provider.switched
+    assert calls == ["openrouter"]
+
+
+def test_the_fallback_returning_empty_is_not_an_infinite_loop():
+    from backend.agent.providers.base import LLMResponse
+
+    calls = []
+    empty = LLMResponse(text="", model="x")
+    provider = FallbackProvider(
+        _fake_provider("openrouter", "m:free", calls=calls, response=empty),
+        _fake_provider("anthropic", "claude-sonnet-5", calls=calls, response=empty),
+    )
+    assert provider.complete("hi", 100).text == ""
+    assert calls == ["openrouter", "anthropic"], "each provider is tried at most once"
+
+
+# --- OpenRouter streaming: reasoning, tool calls and the real finish reason ---
+
+
+def _chunk(content=None, reasoning=None, finish_reason=None, tool_calls=None, model="m:free", usage=None):
+    delta = SimpleNamespace(content=content, reasoning=reasoning, tool_calls=tool_calls)
+    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
+    return SimpleNamespace(model=model, choices=[choice], usage=usage)
+
+
+def _streaming_provider(chunks):
+    provider = OpenRouterProvider(api_key="k", model="m:free")
+    provider._call_with_retry = lambda **kwargs: iter(chunks)  # type: ignore[method-assign]
+    return provider
+
+
+def test_stream_falls_back_to_reasoning_when_no_content_arrives():
+    """Several free models stream their answer into `reasoning` and leave
+    `content` empty — that used to be reported as an empty response."""
+    from backend.agent.providers.base import Transcript
+
+    provider = _streaming_provider([
+        _chunk(reasoning="Weighing the evidence. "),
+        _chunk(reasoning="SIRT1 activation is plausible."),
+        _chunk(finish_reason="stop"),
+    ])
+    seen: list[str] = []
+    response = provider.stream("sys", Transcript(), 100, seen.append)
+    assert "SIRT1 activation is plausible." in response.text
+    assert seen, "the status bar still gets something to show"
+
+
+def test_stream_prefers_content_over_reasoning_when_both_arrive():
+    from backend.agent.providers.base import Transcript
+
+    provider = _streaming_provider([
+        _chunk(reasoning="thinking out loud"),
+        _chunk(content="## Hypothesis"),
+        _chunk(content="\n\nThe real answer.", finish_reason="stop"),
+    ])
+    response = provider.stream("sys", Transcript(), 100, lambda _: None)
+    assert response.text == "## Hypothesis\n\nThe real answer."
+    assert "thinking out loud" not in response.text
+
+
+def test_stream_reports_the_real_finish_reason():
+    from backend.agent.providers.base import Transcript
+
+    provider = _streaming_provider([_chunk(content="cut off here", finish_reason="length")])
+    assert provider.stream("sys", Transcript(), 100, lambda _: None).stop_reason == "length"
+
+
+def test_stream_accumulates_tool_call_deltas():
+    from backend.agent.providers.base import Transcript
+
+    provider = _streaming_provider([
+        _chunk(tool_calls=[SimpleNamespace(index=0, id="call_1", function=SimpleNamespace(name="pubmed", arguments='{"que'))]),
+        _chunk(tool_calls=[SimpleNamespace(index=0, id=None, function=SimpleNamespace(name=None, arguments='ry": "sirt1"}'))]),
+        _chunk(finish_reason="tool_calls"),
+    ])
+    response = provider.stream("sys", Transcript(), 100, lambda _: None)
+    assert [(c.id, c.name, c.input) for c in response.tool_calls] == [("call_1", "pubmed", {"query": "sirt1"})]
+    assert response.stop_reason == "tool_use"
+
+
+def test_a_400_on_the_cache_control_shape_retries_once_without_it():
+    """Caching is an optimization. If an upstream rejects the content-part
+    array that carries cache_control, the run continues uncached rather than
+    dying — this path cannot be exercised against a live key here, so the
+    safety net is asserted directly."""
+    import httpx
+    import openai
+
+    from backend.agent.providers.base import Transcript
+
+    sent: list[list[dict]] = []
+
+    def _create(**kwargs):
+        sent.append(kwargs["messages"])
+        if len(sent) == 1:
+            response = httpx.Response(400, request=httpx.Request("POST", "https://openrouter.ai/api/v1/x"))
+            raise openai.BadRequestError("invalid content part", response=response, body=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok", tool_calls=None))],
+            usage=None,
+            model="m:free",
+        )
+
+    provider = OpenRouterProvider(api_key="k", model="m:free")
+    provider.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
+    transcript = Transcript()
+    transcript.add_user_text("q")
+
+    assert provider.create("SYSTEM", transcript, [], 100).text == "ok"
+    assert len(sent) == 2, "exactly one retry"
+    assert isinstance(sent[0][0]["content"], list), "the first attempt carried the cache breakpoint"
+    assert sent[1][0]["content"] == "SYSTEM", "the retry sent a plain string"
+
+
+def test_a_400_unrelated_to_cache_control_is_not_retried():
+    import httpx
+    import openai
+
+    from backend.agent.providers.base import Transcript
+
+    calls = []
+
+    def _create(**kwargs):
+        calls.append(kwargs)
+        response = httpx.Response(400, request=httpx.Request("POST", "https://openrouter.ai/api/v1/x"))
+        raise openai.BadRequestError("model does not exist", response=response, body=None)
+
+    provider = OpenRouterProvider(api_key="k", model="m:free")
+    provider.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
+    transcript = Transcript()
+    transcript.add_user_text("q")
+
+    with pytest.raises(openai.BadRequestError):
+        provider.create("", transcript, [], 100)  # no system prompt -> no content-part array
+    assert len(calls) == 1

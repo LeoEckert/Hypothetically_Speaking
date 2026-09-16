@@ -240,3 +240,26 @@ def test_plan_roster_is_exactly_the_grounded_candidates():
     # No matching PLAN entry: a seed question is derived from the experiment itself.
     derived = _adopt_candidates([], candidates)
     assert derived[0]["seed_question"] == "Does 12 months of aerobic training change gait speed in adults aged 65-80?"
+
+
+def test_extract_hypotheses_keeps_prose_that_follows_the_fence():
+    """The prompt asks for prose first, fence last. A weaker model often
+    reverses it — cutting the text off at the fence threw the whole report
+    away and shipped an empty one."""
+    text = '```json\n{"hypotheses": [{"statement": "x"}]}\n```\n\n## Report\n\nThe actual body.'
+    stripped, hyps = _extract_hypotheses(text)
+    assert stripped == "## Report\n\nThe actual body."
+    assert hyps == [{"statement": "x"}]
+
+
+def test_extract_hypotheses_keeps_prose_on_both_sides_of_the_fence():
+    text = '## Report\n\nBefore.\n\n```json\n{"hypotheses": []}\n```\n\n## Next Experiment\n\nAfter.'
+    stripped, _ = _extract_hypotheses(text)
+    assert "Before." in stripped and "After." in stripped
+    assert "```" not in stripped
+
+
+def test_extract_hypotheses_on_a_fence_only_response_yields_no_prose_but_parses():
+    stripped, hyps = _extract_hypotheses('```json\n{"hypotheses": [{"statement": "x"}]}\n```')
+    assert stripped == ""
+    assert hyps == [{"statement": "x"}], "the caller decides what to do about the missing body"

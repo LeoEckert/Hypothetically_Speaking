@@ -57,7 +57,7 @@ MODEL = env_str("ANTHROPIC_MODEL", "claude-sonnet-5")
 # trust-bearing judgement, so it stays on the main model. Haiku takes the L1
 # probe (a creative elaboration step where a miss costs little); fast mode
 # saves the rest by reading fewer, shorter records.
-FAST_MODEL = env_str("GROUNDING_FAST_MODEL", "claude-haiku-4-5-20251001")
+FAST_MODEL = env_str("GROUNDING_FAST_MODEL", "claude-haiku-4-5")
 PROBE_MODEL = env_str("GROUNDING_PROBE_MODEL", FAST_MODEL)
 VERIFY_MODEL = env_str("GROUNDING_VERIFY_MODEL", MODEL)
 # Depths below are sized for a hard 300s-per-run external platform ceiling
