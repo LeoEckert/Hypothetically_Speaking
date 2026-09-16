@@ -82,12 +82,24 @@ export async function setToolEnabled(name: string, enabled: boolean) {
 // response body rather than issue a plain JSON fetch. Cancelling means
 // aborting that same request (@/lib/runStream's cancelCurrentStream).
 
+/** What the evaluation is doing right now — two long model passes, so
+ * without this the button just says "Evaluating…" for minutes on end. */
+export interface EvaluateProgress {
+  phase: "judge" | "revise"
+  chars: number
+  section: string | null
+}
+
 export async function evaluateHypothesis(
   runId: string,
   runResult: { report: string; hypotheses: unknown[]; evidence: Record<string, unknown> },
   comment: string,
-  apiKeys: Record<string, string> = {}
+  apiKeys: Record<string, string> = {},
+  onProgress?: (progress: EvaluateProgress) => void
 ): Promise<EvaluationResult> {
+  // Server-Sent Events over POST, same as /api/run — the two passes take
+  // long enough that a plain request/response is indistinguishable from a
+  // hang. A bad key still comes back as a plain 400 before the stream opens.
   const res = await fetch(`${API_BASE}/api/evaluate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -97,7 +109,39 @@ export async function evaluateHypothesis(
     const body = await res.json().catch(() => ({}))
     throw new Error(body.detail || `evaluate failed (${res.status})`)
   }
-  return res.json()
+  if (!res.body) throw new Error("evaluate returned no response body")
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let result: EvaluationResult | null = null
+  let failure: string | null = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const frames = buffer.split("\n\n")
+    buffer = frames.pop() ?? ""
+    for (const frame of frames) {
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data: ")) continue
+        let event: Record<string, unknown>
+        try {
+          event = JSON.parse(line.slice("data: ".length))
+        } catch {
+          continue
+        }
+        if (event.type === "progress") onProgress?.(event as unknown as EvaluateProgress)
+        else if (event.type === "evaluation") result = event.evaluation as EvaluationResult
+        else if (event.type === "error") failure = String(event.error)
+      }
+    }
+  }
+
+  if (failure) throw new Error(failure)
+  if (!result) throw new Error("the evaluation ended without returning a result")
+  return result
 }
 
 function adminHeaders(token: string): HeadersInit {

@@ -11,9 +11,11 @@ Two attempts at fixing it with a `vercel.json` rewrite failed, the second
 taking working routes down with it (docs/DEPLOY.md's routing section). So
 the contract is the route shape itself, and this test is what holds it.
 """
+import json
 import sys
 from pathlib import Path
 
+import anthropic
 import pytest
 from fastapi.testclient import TestClient
 
@@ -55,9 +57,13 @@ def test_the_frontend_only_calls_routes_on_that_list():
         assert path.count("/") == 2, f"frontend calls {path}, which is too deep for the deployed host"
 
 
-def test_evaluate_takes_the_run_id_in_the_body_not_the_path():
-    """A missing LLM key is a 400 from the handler — proof the request
-    reached it, which is all this asserts."""
+def test_evaluate_takes_the_run_id_in_the_body_not_the_path(monkeypatch):
+    """No key at all is knowable before any call, so it stays a plain 400 —
+    an error buried inside a 200 event stream is far harder to act on. (The
+    env vars are cleared because other test modules set a dummy key, which
+    would make get_provider succeed here.)"""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     response = client.post(
         "/api/evaluate",
         json={"comment": "", "api_keys": {}, "run_id": "abc123",
@@ -76,36 +82,46 @@ def test_the_flat_tool_toggle_works_and_rejects_a_missing_name():
     assert client.post("/api/tool", json={"name": "nope", "enabled": True}).status_code == 404
 
 
-def test_a_rejected_key_on_evaluate_is_a_readable_400_not_a_500():
-    """The run loop already turns a provider auth failure into its own
-    user-actionable message. Evaluate let it through as a bare 500, so a
-    stale key showed up in the UI as "evaluate failed (500)"."""
-    import anthropic
+def test_a_rejected_key_on_evaluate_reaches_the_user_readably():
+    """Whether a key is *accepted* is only knowable once a call is made, and
+    that now happens inside the stream — so this arrives as an error event
+    rather than a status code. What matters either way is that the message
+    names the cause and the stream closes instead of hanging, which is what
+    the bare 500 it used to raise did not do."""
+    import httpx
 
     from backend.server import app as app_module
 
     class _Rejecting:
         name, model, key_source = "anthropic", "claude-sonnet-5", "user"
 
-        def complete(self, prompt, max_tokens):
+        def stream(self, system, transcript, max_tokens, on_chunk):
             raise anthropic.AuthenticationError(
                 "invalid x-api-key",
                 response=httpx.Response(401, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")),
                 body=None,
             )
 
-    import httpx
+        def complete(self, prompt, max_tokens):
+            return self.stream("", None, max_tokens, None)
 
     original = app_module.get_provider
     app_module.get_provider = lambda *a, **k: _Rejecting()
     try:
-        response = client.post(
-            "/api/evaluate",
+        with client.stream(
+            "POST", "/api/evaluate",
             json={"comment": "", "api_keys": {"ANTHROPIC_API_KEY": "bad"}, "run_id": "x",
                   "run_result": {"report": "## Hypothesis\n\nx",
                                  "hypotheses": [{"id": "h1", "statement": "s", "selected": True}], "evidence": {}}},
-        )
+        ) as response:
+            events = [
+                json.loads(line[len("data: "):]) for line in response.iter_lines() if line.startswith("data: ")
+            ]
     finally:
         app_module.get_provider = original
-    assert response.status_code == 400
-    assert "rejected by the provider" in response.json()["detail"]
+
+    kinds = [e["type"] for e in events]
+    assert kinds[-1] == "stream_end", "a failure must still close the stream"
+    assert "evaluation" not in kinds
+    error = next(e for e in events if e["type"] == "error")
+    assert "rejected by the provider" in error["error"]

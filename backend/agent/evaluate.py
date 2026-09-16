@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 
 from backend.agent.costs import anthropic_cost_usd
+from backend.agent.providers import Transcript
 
 # Verbatim from the reference module's judge.py -- the core invariant that
 # keeps a "revision" from just being a more confident-sounding rewrite.
@@ -332,10 +334,21 @@ def _find_selected_hypothesis(hypotheses: list[dict]) -> dict | None:
     return hypotheses[0] if hypotheses else None
 
 
-def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
+# Used only to label progress while a pass streams — the judge and revise
+# prompts both answer in sections, so the latest one names where it is.
+_PROGRESS_HEADING_RE = re.compile(r'"section"\s*:\s*"([a-z_]+)"')
+
+
+def evaluate_hypothesis(run_result: dict, comment: str, provider, on_event=None) -> dict:
     """Judge the run's selected hypothesis against the rubric, then revise
     it once. Raises ValueError if the run has no hypotheses to evaluate --
-    callers are expected to only invoke this on a finished run."""
+    callers are expected to only invoke this on a finished run.
+
+    `on_event(event: dict)` is optional and mirrors run_agent's: it receives
+    a `phase` event as each of the two passes starts and a `progress` event
+    about once a second while the model writes. Both passes are long single
+    calls, so without this the UI has nothing to show but a spinner -- which
+    is exactly how it looked to users, indistinguishable from a hang."""
     hypothesis = _find_selected_hypothesis(run_result.get("hypotheses", []))
     if hypothesis is None:
         raise ValueError("run has no hypotheses to evaluate")
@@ -373,8 +386,35 @@ def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
         "cache_read_input_tokens": 0,
     }
 
-    def _call(prompt: str, max_tokens: int) -> str:
-        resp = provider.complete(prompt, max_tokens)
+    def _emit(event: dict) -> None:
+        if on_event is not None:
+            on_event(event)
+
+    def _call(prompt: str, max_tokens: int, phase: str = "") -> str:
+        """Streams when someone is listening, so the caller can report
+        progress; falls back to the plain single-shot call otherwise."""
+        if on_event is None:
+            resp = provider.complete(prompt, max_tokens)
+        else:
+            transcript = Transcript()
+            transcript.add_user_text(prompt)
+            buffer: list[str] = []
+            last_emit = 0.0
+
+            def on_chunk(chunk: str) -> None:
+                nonlocal last_emit
+                buffer.append(chunk)
+                now = time.time()
+                if now - last_emit < 1.0:
+                    return
+                last_emit = now
+                text = "".join(buffer)
+                headings = _PROGRESS_HEADING_RE.findall(text)
+                _emit({"type": "progress", "phase": phase, "chars": len(text),
+                       "section": headings[-1] if headings else None})
+
+            resp = provider.stream(system="", transcript=transcript, max_tokens=max_tokens, on_chunk=on_chunk)
+            _emit({"type": "progress", "phase": phase, "chars": len(resp.text or ""), "section": None})
         usage_totals["input_tokens"] += resp.usage.get("input_tokens", 0)
         usage_totals["output_tokens"] += resp.usage.get("output_tokens", 0)
         usage_totals["cache_creation_input_tokens"] += resp.usage.get("cache_creation_input_tokens", 0)
@@ -387,8 +427,9 @@ def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
     # block) rather than erroring -- confirmed empirically against a real
     # run while building this feature. 16000 leaves comfortable headroom
     # for a 5-section critique/revision without needing streaming.
+    _emit({"type": "phase", "phase": "judge", "detail": {"sections": len(RUBRIC)}})
     judge_text = _call(
-        build_judge_prompt(hypothesis, report_sections, evidence_lines, comment), max_tokens=16000
+        build_judge_prompt(hypothesis, report_sections, evidence_lines, comment), max_tokens=16000, phase="judge"
     )
     judge_payload = _extract_json_fence(judge_text, "critiques") or {}
     raw_critiques = judge_payload.get("critiques", [])
@@ -421,8 +462,10 @@ def evaluate_hypothesis(run_result: dict, comment: str, provider) -> dict:
             }
         )
 
+    _emit({"type": "phase", "phase": "revise",
+           "detail": {"findings": sum(len(c["findings"]) for c in critiques)}})
     revise_text = _call(
-        build_revise_prompt(hypothesis, report_sections, critiques, comment), max_tokens=16000
+        build_revise_prompt(hypothesis, report_sections, critiques, comment), max_tokens=16000, phase="revise"
     )
     revise_payload = _extract_json_fence(revise_text, "sections") or {}
 

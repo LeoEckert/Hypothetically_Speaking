@@ -2,6 +2,7 @@ import { ArrowLeftIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { ConfidenceBadge } from "@/components/HypothesisCard"
+import type { EvaluateProgress } from "@/lib/api"
 import { EvaluateBlock } from "@/components/EvaluateBlock"
 import { ReportView } from "@/components/ReportView"
 import type { EvaluationResult, EvidenceItem, RankedHypothesis } from "@/types"
@@ -20,7 +21,7 @@ export function HypothesisDetailsView({
   evidence: Record<string, EvidenceItem>
   evaluations?: EvaluationResult[]
   onIterate: (seedQuestion: string) => void
-  onEvaluate: (comment: string) => Promise<void>
+  onEvaluate: (comment: string, onProgress?: (p: EvaluateProgress) => void) => Promise<void>
   onBack: () => void
 }) {
   const h = hypothesis
