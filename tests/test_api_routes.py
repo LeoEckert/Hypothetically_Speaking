@@ -74,3 +74,38 @@ def test_the_flat_tool_toggle_works_and_rejects_a_missing_name():
     assert client.post("/api/tool", json={"name": "pubmed", "enabled": True}).json()["enabled"] is True
     assert client.post("/api/tool", json={"enabled": True}).status_code == 400
     assert client.post("/api/tool", json={"name": "nope", "enabled": True}).status_code == 404
+
+
+def test_a_rejected_key_on_evaluate_is_a_readable_400_not_a_500():
+    """The run loop already turns a provider auth failure into its own
+    user-actionable message. Evaluate let it through as a bare 500, so a
+    stale key showed up in the UI as "evaluate failed (500)"."""
+    import anthropic
+
+    from backend.server import app as app_module
+
+    class _Rejecting:
+        name, model, key_source = "anthropic", "claude-sonnet-5", "user"
+
+        def complete(self, prompt, max_tokens):
+            raise anthropic.AuthenticationError(
+                "invalid x-api-key",
+                response=httpx.Response(401, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")),
+                body=None,
+            )
+
+    import httpx
+
+    original = app_module.get_provider
+    app_module.get_provider = lambda *a, **k: _Rejecting()
+    try:
+        response = client.post(
+            "/api/evaluate",
+            json={"comment": "", "api_keys": {"ANTHROPIC_API_KEY": "bad"}, "run_id": "x",
+                  "run_result": {"report": "## Hypothesis\n\nx",
+                                 "hypotheses": [{"id": "h1", "statement": "s", "selected": True}], "evidence": {}}},
+        )
+    finally:
+        app_module.get_provider = original
+    assert response.status_code == 400
+    assert "rejected by the provider" in response.json()["detail"]

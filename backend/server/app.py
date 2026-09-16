@@ -45,7 +45,7 @@ from backend.agent import admin  # noqa: E402
 load_dotenv(admin.ADMIN_OVERRIDES_PATH, override=True)
 
 from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
-from backend.agent.loop import HARD_MAX_TOOL_CALLS, _env_int, run_agent  # noqa: E402
+from backend.agent.loop import _KEY_INVALID_ERRORS, HARD_MAX_TOOL_CALLS, _env_int, run_agent  # noqa: E402
 from backend.agent.model_policy import anthropic_policy  # noqa: E402
 from backend.agent.providers import get_provider  # noqa: E402
 from backend.kgviz.graph import snapshot as trajectory_snapshot  # noqa: E402
@@ -309,6 +309,21 @@ def _evaluate(req: EvaluateRequest) -> dict:
         return evaluate_hypothesis(req.run_result, req.comment, provider)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except _KEY_INVALID_ERRORS:
+        # The run loop gives this its own user-actionable message rather than
+        # the generic failure (see loop.py); evaluate used to let it fall
+        # through as a bare 500, so a stale key produced "evaluate failed
+        # (500)" with nothing to act on.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The API key in Settings was rejected by the provider. Double-check it, "
+                "or generate a fresh one (Anthropic Console, or openrouter.ai/keys for a "
+                "free OpenRouter key)."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — anything else is still worth naming
+        raise HTTPException(status_code=502, detail=f"The evaluation call failed: {exc}")
 
 
 @app.post("/api/evaluate")
