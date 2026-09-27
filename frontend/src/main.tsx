@@ -1,10 +1,9 @@
 import { Analytics } from '@vercel/analytics/react'
-import { StrictMode, useSyncExternalStore } from 'react'
+import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { AdminGate } from './components/AdminPage.tsx'
-import { FunkTrainer } from './components/FunkTrainer.tsx'
 import { EvalPreview } from './dev/EvalPreview.tsx'
 
 // Admin dashboard gate: reached via the `#admin` hash fragment (a login form
@@ -26,23 +25,9 @@ const wantsAdmin = hashMatch !== null || window.location.hash === '#admin'
 const previewEval =
   import.meta.env.DEV && new URLSearchParams(window.location.search).has('evalpreview')
 
-// `#funk` is the SRC radio trainer (backend/funk/). Unlike `#admin` it is
-// linked from the app header, so it follows hash changes without a reload.
-function subscribeHash(listener: () => void) {
-  window.addEventListener('hashchange', listener)
-  return () => window.removeEventListener('hashchange', listener)
-}
-
-function Root() {
-  const hash = useSyncExternalStore(subscribeHash, () => window.location.hash)
-  if (wantsAdmin) return <AdminGate />
-  if (previewEval) return <EvalPreview />
-  return hash === '#funk' ? <FunkTrainer /> : <App />
-}
-
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Root />
+    {wantsAdmin ? <AdminGate /> : previewEval ? <EvalPreview /> : <App />}
     <Analytics />
   </StrictMode>,
 )

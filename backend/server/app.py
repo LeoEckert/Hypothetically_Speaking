@@ -48,8 +48,6 @@ from backend.agent.evaluate import evaluate_hypothesis  # noqa: E402
 from backend.agent.loop import _KEY_INVALID_ERRORS, HARD_MAX_TOOL_CALLS, _env_int, run_agent  # noqa: E402
 from backend.agent.model_policy import anthropic_policy  # noqa: E402
 from backend.agent.providers import get_provider  # noqa: E402
-from backend.funk.grader import grade as grade_funk  # noqa: E402
-from backend.funk.tasks import TASKS as FUNK_TASKS, get_task as get_funk_task  # noqa: E402
 from backend.kgviz.graph import snapshot as trajectory_snapshot  # noqa: E402
 from backend.kgviz.render import render_html as render_trajectory  # noqa: E402
 from backend.tools import registry  # noqa: E402
@@ -126,12 +124,6 @@ class EvaluateRequest(BaseModel):
     # its streaming run; there is no server-side run cache to look it up
     # from any more (see the module docstring).
     run_result: dict
-
-
-class FunkGradeRequest(BaseModel):
-    task_id: str
-    transcript: str
-    api_keys: dict[str, str] = {}
 
 
 class KeyRotateRequest(BaseModel):
@@ -419,36 +411,6 @@ def evaluate_run(run_id: str, req: EvaluateRequest):
     """The original shape, kept for local dev and any existing caller. Two
     segments past /api, so it 404s on the production host."""
     return _evaluate(req)
-
-
-@app.get("/api/funk")
-def list_funk_tasks():
-    """The SRC radio trainer's task list, without reference answers."""
-    return {"tasks": [task.public() for task in FUNK_TASKS]}
-
-
-@app.post("/api/funk")
-def grade_funk_task(req: FunkGradeRequest):
-    """Grade a spoken SRC radio message (backend/funk/). One segment past
-    /api, same as every other route the frontend calls."""
-    task = get_funk_task(req.task_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail=f"Unknown task: {req.task_id}")
-    try:
-        provider = get_provider(req.api_keys, tier="main")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    try:
-        return grade_funk(task, req.transcript, provider)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except _KEY_INVALID_ERRORS:
-        raise HTTPException(
-            status_code=400,
-            detail="The API key in Settings was rejected by the provider. Double-check it, or generate a fresh one.",
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"The grading call failed: {exc}")
 
 
 def _trajectory(question: str | None, walk: str, depth: int, records: bool) -> dict:
