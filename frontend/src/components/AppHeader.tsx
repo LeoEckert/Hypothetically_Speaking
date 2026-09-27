@@ -1,4 +1,4 @@
-import { HelpCircleIcon, HistoryIcon } from "lucide-react"
+import { HelpCircleIcon, HistoryIcon, RadioIcon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -57,6 +57,12 @@ export function AppHeader({
             <HowItWorksPanel />
           </DialogContent>
         </Dialog>
+
+        <Button variant="outline" size="icon-lg" asChild title="SRC Funktrainer">
+          <a href="#funk">
+            <RadioIcon className="size-4" />
+          </a>
+        </Button>
 
         <SettingsDialog />
 

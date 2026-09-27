@@ -27,7 +27,7 @@ client = TestClient(app)
 
 # Called by frontend/src/lib/api.ts and lib/runStream.ts. Anything added here
 # must be reachable on the deployed host, so it must be one segment deep.
-FRONTEND_ROUTES = ["/api/config", "/api/models", "/api/tools", "/api/tool", "/api/run", "/api/evaluate"]
+FRONTEND_ROUTES = ["/api/config", "/api/models", "/api/tools", "/api/tool", "/api/run", "/api/evaluate", "/api/funk"]
 
 
 @pytest.mark.parametrize("path", FRONTEND_ROUTES)

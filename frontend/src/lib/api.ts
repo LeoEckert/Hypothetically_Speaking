@@ -188,3 +188,60 @@ export async function rotateAdminKey(
 export async function rotateAdminToken(token: string): Promise<{ token: string }> {
   return adminJson("/api/admin/token/rotate", token, { method: "POST" })
 }
+
+// --- SRC radio trainer (backend/funk/) -------------------------------------
+
+export interface FunkShip {
+  name: string
+  call_sign: string
+  mmsi: string
+}
+
+export interface FunkTask {
+  id: string
+  category: string
+  title: string
+  situation: string
+  own_ship: FunkShip
+  other_ship?: FunkShip
+}
+
+export interface FunkChecklistItem {
+  item: string
+  status: "ok" | "fehlerhaft" | "fehlt"
+  comment: string
+}
+
+export interface FunkGrade {
+  task_id: string
+  score: number
+  passed: boolean
+  summary: string
+  checklist: FunkChecklistItem[]
+  tips: string[]
+  reference: string
+  model: string
+}
+
+export async function fetchFunkTasks(): Promise<FunkTask[]> {
+  const res = await fetch(`${API_BASE}/api/funk`)
+  if (!res.ok) throw new Error(`Aufgaben konnten nicht geladen werden (${res.status})`)
+  return (await res.json()).tasks
+}
+
+export async function gradeFunkTask(
+  taskId: string,
+  transcript: string,
+  apiKeys: Record<string, string> = {}
+): Promise<FunkGrade> {
+  const res = await fetch(`${API_BASE}/api/funk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ task_id: taskId, transcript, api_keys: apiKeys }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Bewertung fehlgeschlagen (${res.status})`)
+  }
+  return res.json()
+}
